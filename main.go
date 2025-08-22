@@ -48,7 +48,6 @@ func main() {
 }
 
 func run(configPath string) error {
-
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
