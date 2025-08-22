@@ -1,0 +1,49 @@
+replication:
+  sources:
+    - name: source_db1
+      type: machbase
+      host: 192.168.0.87
+      port: 5654
+      
+    - name: source_db2
+      type: machbase
+      host: 192.168.0.99
+      port: 5654
+  
+  targets:
+    - name: target_db1
+      type: machbase
+      host: 192.168.0.87
+      port: 5654
+
+    - name: target_db2
+      type: machbase
+      host: 192.168.0.87
+      port: 5654
+  
+  replication_jobs:
+    - name: mach_to_mach
+      source: source_db1
+      target: target_db1
+      tables:
+        - name: tag
+          columns: [name, time, value, uuid]
+        - name: log
+          columns: [value, uuid]
+      options:
+        interval: "1m"
+        delay: "10m"
+
+    - name: mach_to_mach2
+      source: source_db2
+      target: target_db2
+      tables:
+        - name: tag
+          columns: [*]
+      options:
+        interval: "1m"
+        delay: "10m"
+
+logging:
+  level: INFO
+  file: ./tmp/replication.log
