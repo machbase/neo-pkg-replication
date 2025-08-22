@@ -1,4 +1,2 @@
-
-
 1. 설정 파일 작성 및 로드
-2. 설정 파일에 따른
+2. Source의 개수만큼 go replication(source, target)  실행

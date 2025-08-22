@@ -1,92 +1,11 @@
 package main
 
-type Config struct {
-	Replication ReplicationConfig `yaml:"replication"`
-	Logging     LoggingConfig     `yaml:"logging"`
-}
-
-type ReplicationConfig struct {
-	Sources         []DBConfig
-	Targets         []DBConfig
-	ReplicationJobs []ReplicationJob
-}
-
-type DBConfig struct {
-	Name       string
-	Type       string
-	Connection DBConnection
-	Options    DBOptions
-}
-
-type DBConnection struct {
-	Host      string
-	Port      int
-	TableName string
-	Protocol  string
-}
-
-type DBOptions struct {
-	UseMeta bool
-	Timeout int
-}
-
-type ReplicationJob struct {
-	Name    string
-	Source  string
-	Target  string
-	Tables  []string
-	Mode    string
-	Options JobOptions
-}
-
-type JobOptions struct {
-	BatchSize      int
-	RetryOnFailure bool
-
-	Interval  string
-	Delay     string
-	RateLimit int
-}
-
-type LoggingConfig struct {
-	Level string
-	File  string
-}
-
-// type Config struct {
-// 	Source []SourceInfo `json:"source"`
-// 	Target []TargetInfo `json:"target"`
-// }
-
-// type SourceInfo struct {
-// 	TargetName string // machbase-neo3
-
-// 	TableInfo
-
-// 	AttachMent string // prefix, suffix, regexp
-
-// 	Interval  string // 10m
-// 	Delay     string // 1m
-// 	RateLimit string // 3m
-
-// 	Sequence string // default : TO_TIMESTAMP(TIME)
-// }
-
-// type TargetInfo struct {
-// 	Name string // machbase-neo3
-
-// 	TableInfo
-
-// 	UseMeta  bool
-// 	UseToken bool // Neo token
-// }
-
-// type TableInfo struct {
-// 	TableName string
-// 	IP        string
-// 	Port      int
-// 	Protocol  string // REST, CGO, GRPC, CLI
-// }
+import (
+	"flag"
+	"fmt"
+	"os"
+	"repli/config"
+)
 
 type Source interface {
 	Read() ([][]any, error)
@@ -100,30 +19,66 @@ type Target interface {
 }
 
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stdout, "Usage: ./program <command> [flag]\n\t<start>: program start\n")
+		os.Exit(1)
+	}
 
-	// config Load
-	//
+	switch os.Args[1] {
+	case "start":
+		fs := flag.NewFlagSet("start", flag.ExitOnError)
+		configPath := fs.String("config", "", "ex) ./program start -config=config.json")
 
-	// var errCh := make(chan error, 4)
-	// replicationNEO= func(source, target ) {
-	// if err := repli(source, target); err !=nil {
-	// errCh <- err
-	// }
-	// }
+		_ = fs.Parse(os.Args[2:])
 
-	// for _, := range sources{
-	// replicationNEO(source1, target1)
-	// replicationNEO(source2, target2)
-	// replicationNEO(source3, target3)
-	// replicationNEO(source4, target4)
-	// }
+		if *configPath == "" {
+			fmt.Fprintln(os.Stderr, "error: -config is required")
+			fs.Usage()
+			os.Exit(2)
+		}
 
-	// defer func () {close(errCh)}()
-
-	// for err := errCh {
-	// if err != nil {
-	// return err
-	// }
-	// }
-
+		if err := run(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "run error: %v", err)
+			os.Exit(2)
+		}
+	default:
+		fmt.Fprintf(os.Stdout, "invalid command: %s", os.Args[1])
+		os.Exit(1)
+	}
 }
+
+func run(configPath string) error {
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("config: %v", cfg)
+	return nil
+}
+
+// config Load
+//
+
+// var errCh := make(chan error, 4)
+// replicationNEO= func(source, target ) {
+// if err := repli(source, target); err !=nil {
+// errCh <- err
+// }
+// }
+
+// for _, := range sources{
+// replicationNEO(source1, target1)
+// replicationNEO(source2, target2)
+// replicationNEO(source3, target3)
+// replicationNEO(source4, target4)
+// }
+
+// defer func () {close(errCh)}()
+
+// for err := errCh {
+// if err != nil {
+// return err
+// }
+// }
