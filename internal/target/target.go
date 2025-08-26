@@ -5,14 +5,6 @@ import (
 	"repli/config"
 )
 
-type Target interface {
-	Write([][]any) error
-	Close() error
-	// Lookup(name string) (config.DBConfig, bool)
-
-	List()
-}
-
 type target struct {
 	cfg config.DBConfig
 }

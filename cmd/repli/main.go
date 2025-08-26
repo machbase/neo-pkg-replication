@@ -62,11 +62,17 @@ func run(ctx context.Context, configPath string) error {
 		return err
 	}
 
+	// source + targets => jobs => replicator
+	// source + targets => replicator
+
 	// src.List()
 	// tar.List()
 
-	replicator := replicator.New(cfg.Replication.Jobs...)
-	replicator.Run(ctx, sources, targets)
+	replicator := replicator.New(
+		replicator.WithSourcesOptions(sources),
+		replicator.WithTargetsOptions(targets),
+		replicator.WithJobsOptions(cfg.Replication.Jobs),
+	)
 
 	return nil
 }

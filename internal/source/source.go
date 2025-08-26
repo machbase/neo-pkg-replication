@@ -5,14 +5,6 @@ import (
 	"repli/config"
 )
 
-type Source interface {
-	// Connect() ()
-	Read() ([][]any, error)
-	Close() error
-
-	List() // test
-}
-
 type source struct {
 	cfg config.DBConfig
 }
@@ -23,13 +15,6 @@ func (s *source) Read() ([][]any, error) {
 func (s *source) Close() error {
 	return nil
 }
-
-// func (s *source) Lookup(name string) (config.DBConfig, bool) {
-// 	if cfg, ok := s.dbConfigsByMap[name]; ok {
-// 		return cfg, true
-// 	}
-// 	return config.DBConfig{}, false
-// }
 
 func (s *source) List() {
 

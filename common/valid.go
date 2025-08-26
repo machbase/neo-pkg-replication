@@ -5,6 +5,13 @@ import (
 	"repli/config"
 )
 
+func ValidateNoEmpty(cfgs ...config.DBConfig) error {
+	if len(cfgs) == 0 {
+		return fmt.Errorf("config is empty")
+	}
+	return nil
+}
+
 func ValidateNoDuplicateNames(cfgs ...config.DBConfig) error {
 	cntMap := map[string]int{}
 	for _, cfg := range cfgs {

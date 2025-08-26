@@ -11,27 +11,26 @@ import (
 type Option func(*replicator)
 
 type Replicator interface {
-	Run(context.Context, []source.Source, []target.Target) error
+	Run(context.Context) error
 }
 
 type replicator struct {
-	jobs []config.ReplicationJob
-	src  source.Source
-	tar  target.Target
+	jobs    []config.ReplicationJob
+	sources []source.Source
+	targets []target.Target
 }
 
-func New(jobs ...config.ReplicationJob) Replicator {
-	repli := &replicator{
-		jobs: make([]config.ReplicationJob, 0, len(jobs)),
-		// src:  src,
-		// tar:  tar,
+func New(opts ...Option) Replicator {
+	repli := &replicator{}
+
+	for _, opt := range opts {
+		opt(repli)
 	}
-	repli.jobs = append(repli.jobs, jobs...)
 
 	return repli
 }
 
-func (repli *replicator) Run(ctx context.Context, srcs []source.Source, tars []target.Target) error {
+func (repli *replicator) Run(ctx context.Context) error {
 	for _, job := range repli.jobs {
 		fmt.Printf("replicator %q Run\n", job.Name)
 
@@ -43,7 +42,20 @@ func (repli *replicator) Run(ctx context.Context, srcs []source.Source, tars []t
 	return nil
 }
 
-func WithDBOptions(dbOption string) Option {
+func WithJobsOptions(jobs []config.ReplicationJob) Option {
 	return func(r *replicator) {
+		r.jobs = jobs
+	}
+}
+
+func WithSourcesOptions(srcs []source.Source) Option {
+	return func(r *replicator) {
+		r.sources = srcs
+	}
+}
+
+func WithTargetsOptions(tars []target.Target) Option {
+	return func(r *replicator) {
+		r.targets = tars
 	}
 }
