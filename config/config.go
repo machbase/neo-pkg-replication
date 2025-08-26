@@ -12,9 +12,9 @@ type Config struct {
 }
 
 type ReplicationConfig struct {
-	Sources         []DBConfig       `yaml:"sources"`
-	Targets         []DBConfig       `yaml:"targets"`
-	ReplicationJobs []ReplicationJob `yaml:"replication_jobs"`
+	Sources []DBConfig       `yaml:"sources"`
+	Targets []DBConfig       `yaml:"targets"`
+	Jobs    []ReplicationJob `yaml:"jobs"`
 }
 
 type DBConfig struct {
