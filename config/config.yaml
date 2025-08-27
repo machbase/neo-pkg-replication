@@ -35,6 +35,7 @@ replication:
       options: # Opion 추가
         interval: "1m"
         delay: "10m"
+      checkpoint: "./tmp/tag_to_log.chk"
 
     - name: mach_to_mach2
       source: source_db2
@@ -45,6 +46,7 @@ replication:
       options:
         interval: "1m"
         delay: "10m"
+      checkpoint: "./tmp/mach_to_mach.chk"
 
 logging:
   level: INFO

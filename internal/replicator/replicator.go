@@ -2,60 +2,31 @@ package replicator
 
 import (
 	"context"
-	"fmt"
-	"repli/config"
-	"repli/internal/source"
-	"repli/internal/target"
+	"repli/internal/job"
 )
 
-type Option func(*replicator)
-
-type Replicator interface {
-	Run(context.Context) error
+type Replicator struct {
+	jobs []job.Runner
 }
 
-type replicator struct {
-	jobs    []config.ReplicationJob
-	sources []source.Source
-	targets []target.Target
+func New(jobs ...job.Runner) *Replicator {
+	return &Replicator{jobs: jobs}
 }
 
-func New(opts ...Option) Replicator {
-	repli := &replicator{}
-
-	for _, opt := range opts {
-		opt(repli)
-	}
-
-	return repli
-}
-
-func (repli *replicator) Run(ctx context.Context) error {
+func (repli *Replicator) StartAll(ctx context.Context) error {
 	for _, job := range repli.jobs {
-		fmt.Printf("replicator %q Run\n", job.Name)
-
-		// srcCfg := src.Lookup(job.Source)
-		// tarCfg := tar.Lookup(job.Target)
-
+		if err := job.Start(ctx); err != nil {
+			return err
+		}
 	}
-
 	return nil
 }
 
-func WithJobsOptions(jobs []config.ReplicationJob) Option {
-	return func(r *replicator) {
-		r.jobs = jobs
+func (repli *Replicator) StopAll() error {
+	for _, job := range repli.jobs {
+		if err := job.Stop(); err != nil {
+			return err
+		}
 	}
-}
-
-func WithSourcesOptions(srcs []source.Source) Option {
-	return func(r *replicator) {
-		r.sources = srcs
-	}
-}
-
-func WithTargetsOptions(tars []target.Target) Option {
-	return func(r *replicator) {
-		r.targets = tars
-	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -12,19 +13,25 @@ type Config struct {
 }
 
 type ReplicationConfig struct {
-	Sources []DBConfig       `yaml:"sources"`
-	Targets []DBConfig       `yaml:"targets"`
-	Jobs    []ReplicationJob `yaml:"jobs"`
+	Sources []SourceSpec `yaml:"sources"`
+	Targets []TargetSpec `yaml:"targets"`
+	Jobs    []JobSpec    `yaml:"jobs"`
 }
 
-type DBConfig struct {
-	Name       string       `yaml:"name"`
-	Type       string       `yaml:"type"`
-	Connection DBConnection `yaml:"connection"`
-	Options    DBOptions    `yaml:"options,omitempty"`
+type SourceSpec struct {
+	Name       string    `yaml:"name"`
+	Type       string    `yaml:"type"`
+	Connection ConnSpec  `yaml:"connection"`
+	Options    DBOptions `yaml:"options,omitempty"`
+}
+type TargetSpec struct {
+	Name       string    `yaml:"name"`
+	Type       string    `yaml:"type"`
+	Connection ConnSpec  `yaml:"connection"`
+	Options    DBOptions `yaml:"options,omitempty"`
 }
 
-type DBConnection struct {
+type ConnSpec struct {
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
 	Protocol string `yaml:"rest"`
@@ -35,13 +42,14 @@ type DBOptions struct {
 	Timeout int  `yaml:"timeout"`
 }
 
-type ReplicationJob struct {
-	Name    string        `yaml:"name"`
-	Source  string        `yaml:"source"`
-	Target  string        `yaml:"target"`
-	Mode    string        `yaml:"mode"`
-	Tables  []TableOption `yaml:"tables"`
-	Options JobOptions    `yaml:"options"`
+type JobSpec struct {
+	Name       string        `yaml:"name"`
+	Source     string        `yaml:"source"`
+	Target     string        `yaml:"target"`
+	Mode       string        `yaml:"mode"`
+	Tables     []TableOption `yaml:"tables"`
+	Options    JobOptions    `yaml:"options"`
+	CheckPoint string        `yaml:"checkpoint"`
 }
 
 type TableOption struct {
@@ -79,5 +87,16 @@ func Load(filename string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := cfg.validate(); err != nil {
+		return Config{}, err
+	}
+
+	fmt.Printf("config: %v\n", cfg)
+
 	return cfg, nil
+}
+
+func (c Config) validate() error {
+
+	return nil
 }

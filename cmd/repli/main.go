@@ -7,9 +7,9 @@ import (
 	"os"
 	"os/signal"
 	"repli/config"
+	"repli/internal/job"
+	"repli/internal/registry"
 	"repli/internal/replicator"
-	"repli/internal/source"
-	"repli/internal/target"
 	"syscall"
 )
 
@@ -51,28 +51,28 @@ func run(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	fmt.Printf("config: %v\n", cfg)
+	// logging 추가
+	// cfg.Logging
 
-	sources, err := source.New(cfg.Replication.Sources...)
+	reg, err := registry.New(cfg.Replication.Sources, cfg.Replication.Targets)
 	if err != nil {
 		return err
 	}
-	targets, err := target.New(cfg.Replication.Targets...)
+
+	jobs, err := job.Build(cfg.Replication.Jobs, reg)
 	if err != nil {
 		return err
 	}
 
-	// source + targets => jobs => replicator
-	// source + targets => replicator
+	repli := replicator.New(jobs...)
+	if err := repli.StartAll(ctx); err != nil {
+		return err
+	}
 
-	// src.List()
-	// tar.List()
-
-	replicator := replicator.New(
-		replicator.WithSourcesOptions(sources),
-		replicator.WithTargetsOptions(targets),
-		replicator.WithJobsOptions(cfg.Replication.Jobs),
-	)
+	<-ctx.Done()
+	if err := repli.StopAll(); err != nil {
+		return err
+	}
 
 	return nil
 }
