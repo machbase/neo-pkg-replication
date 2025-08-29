@@ -13,13 +13,13 @@ type machbaseSource struct {
 	cli  *machbase.Client
 }
 
-func newMachbase(spec config.SourceSpec) *machbaseSource {
-	base := fmt.Sprintf("%s:%d", spec.Connection.Host, spec.Connection.Port)
+func newMachbase(spec config.SourceSpec) (*machbaseSource, error) {
+	base := fmt.Sprintf("%s://%s:%d", spec.Connection.Scheme, spec.Connection.Host, spec.Connection.Port)
 	cli, err := machbase.NewClient(base, nil)
 	if err != nil {
-
+		return nil, err
 	}
-	return &machbaseSource{name: spec.Name, conn: spec.Connection, cli: cli}
+	return &machbaseSource{name: spec.Name, conn: spec.Connection, cli: cli}, nil
 }
 
 func (m *machbaseSource) Name() string {

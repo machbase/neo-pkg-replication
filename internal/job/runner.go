@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"log"
 	"repli/config"
 	"repli/internal/ports"
 	"sync"
@@ -29,7 +30,7 @@ type runner struct {
 }
 
 func (r *runner) Name() string {
-	return r.name
+	return r.spec.Name
 }
 
 func (r *runner) Start(ctx context.Context) error {
@@ -50,9 +51,12 @@ func (r *runner) Start(ctx context.Context) error {
 	go func() {
 		defer r.wg.Done()
 		defer close(r.errCh)
+		defer func() { log.Printf("%s\n", r.Name) }()
 
 		r.RunCycle(c)
 
+		// log.Println("interval: ", r.interval)
+		r.interval, _ = time.ParseDuration("5s")
 		ticker := time.NewTicker(r.interval)
 
 		for {
@@ -83,9 +87,10 @@ func (r *runner) Stop() error {
 func (r *runner) Errors() <-chan error { return r.errCh }
 
 func (r *runner) RunCycle(ctx context.Context) error {
+	log.Println("run cycle")
 	// 최초 실행
-	waterMark := time.Now().Add(-r.delay)
-	waterMark.After(r.last)
+	// waterMark := time.Now().Add(-r.delay)
+	// waterMark.After(r.last)
 
 	// 주기적 실행
 

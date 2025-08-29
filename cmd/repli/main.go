@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"repli/config"
@@ -64,12 +65,13 @@ func run(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	repli := replicator.New(jobs...)
+	repli := replicator.New(jobs)
 	if err := repli.StartAll(ctx); err != nil {
 		return err
 	}
 
 	<-ctx.Done()
+	log.Println("recevied shutdown signall")
 	if err := repli.StopAll(); err != nil {
 		return err
 	}

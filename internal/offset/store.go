@@ -17,11 +17,20 @@ func NewFileStore(path string) Store {
 }
 
 func (f *fileStore) Load() (time.Time, error) {
-	bdata, err := os.ReadFile(f.path)
-	if err != nil {
-		if os.IsNotExist(err) {
+	if _, err := os.Stat(f.path); os.IsNotExist(err) {
+		f, err := os.OpenFile(f.path, os.O_RDWR|os.O_CREATE, 0645)
+		if err != nil {
 			return time.Time{}, err
 		}
+		_, err = f.WriteString(time.Now().Format(time.RFC3339))
+		if err != nil {
+			return time.Time{}, err
+		}
+		f.Close()
+	}
+
+	bdata, err := os.ReadFile(f.path)
+	if err != nil {
 		return time.Time{}, err
 	}
 

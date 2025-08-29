@@ -18,7 +18,7 @@ type Runner interface {
 }
 
 func Build(specs []config.JobSpec, reg *registry.Registry) ([]Runner, error) {
-	out := make([]Runner, len(specs))
+	out := make([]Runner, 0, len(specs))
 
 	for _, spec := range specs {
 		src, err := reg.GetSource(spec.Source)

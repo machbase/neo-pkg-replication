@@ -32,6 +32,7 @@ type TargetSpec struct {
 }
 
 type ConnSpec struct {
+	Scheme   string `yaml:"scheme"`
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
 	Protocol string `yaml:"rest"`

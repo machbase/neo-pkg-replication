@@ -12,10 +12,14 @@ func Build(specs ...config.TargetSpec) (map[string]ports.Target, error) {
 
 	for _, spec := range specs {
 		var impl ports.Target
+		var err error
 
 		switch strings.ToLower(spec.Type) {
 		case "machbase":
-			impl = newMachbase(spec)
+			impl, err = newMachbase(spec)
+			if err != nil {
+				return nil, err
+			}
 		default:
 			return nil, fmt.Errorf("unknown target type: %q", spec.Type)
 		}
