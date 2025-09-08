@@ -51,7 +51,7 @@ func (r *runner) Start(ctx context.Context) error {
 	go func() {
 		defer r.wg.Done()
 		defer close(r.errCh)
-		defer func() { log.Printf("%s\n", r.Name) }()
+		defer func(name string) { log.Printf("Close Runner: %q\n", name) }(r.Name())
 
 		r.RunCycle(c)
 

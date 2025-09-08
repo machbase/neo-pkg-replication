@@ -33,7 +33,7 @@ replication:
     - name: tag_to_log
       source: source_db1
       target: target_db1
-      tables: # table 은 오직 1개 사용
+      tables: # table 은 오직 1개 사용 (source 와 target 의 db이름 서로 다를 수 있음)
         - name: tag
           columns: [name, time, value, uuid]
       options: # Opion 추가
@@ -56,6 +56,8 @@ logging:
   level: INFO
   file: ./tmp/replication.log
 
+
+# checkpoint에 source 와 target 같이 포함?
 
 # confluence 작성
 # config. yaml

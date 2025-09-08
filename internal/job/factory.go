@@ -63,8 +63,7 @@ func newRunnerResolved(spec config.JobSpec, src ports.Source, tar ports.Target) 
 		interval: interval,
 		delay:    delay,
 		last:     last,
-
-		errCh: make(chan error, 1),
+		errCh:    make(chan error, 1),
 	}, nil
 
 }

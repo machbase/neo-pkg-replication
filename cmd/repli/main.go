@@ -33,12 +33,12 @@ func main() {
 		if *configPath == "" {
 			fmt.Fprintln(os.Stderr, "error: -config is required")
 			fs.Usage()
-			os.Exit(2)
+			os.Exit(1)
 		}
 
 		if err := run(ctx, *configPath); err != nil {
 			fmt.Fprintf(os.Stderr, "run error: %v\n", err)
-			os.Exit(2)
+			os.Exit(1)
 		}
 	default:
 		fmt.Fprintf(os.Stdout, "invalid command: %s", os.Args[1])
