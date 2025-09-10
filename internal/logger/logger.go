@@ -1,8 +1,11 @@
 package logger
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"path"
+	"runtime"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -28,6 +31,13 @@ func New(cfg Config) *logrus.Logger {
 		level = logrus.InfoLevel
 	}
 	logger.SetLevel(level)
+	logger.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: "2006-01-02 15:04:05",
+		CallerPrettyfier: func(f *runtime.Frame) (string, string) {
+			file := path.Base(f.File)
+			return "", fmt.Sprintf("%s:%d", file, f.Line)
+		},
+	})
 
 	lumberjackLogger := &lumberjack.Logger{
 		Filename:   cfg.Path,
@@ -39,16 +49,9 @@ func New(cfg Config) *logrus.Logger {
 
 	switch strings.ToLower(cfg.Mode) {
 	case "debug":
-		logger.SetReportCaller(false)
-		logger.SetFormatter(&logrus.JSONFormatter{
-			TimestampFormat: "2006-01-02 15:04:05",
-		})
+		logger.SetReportCaller(true)
 		logger.SetOutput(io.MultiWriter(os.Stdout, lumberjackLogger))
 	case "release":
-		logger.SetReportCaller(true)
-		logger.SetFormatter(&logrus.JSONFormatter{
-			TimestampFormat: "2006-01-02 15:04:05",
-		})
 		logger.SetOutput(lumberjackLogger)
 	default:
 		logger.Warnf("unknown log mode %q, falling back to release mode", cfg.Mode)

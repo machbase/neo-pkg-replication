@@ -24,6 +24,7 @@ type SourceSpec struct {
 	Connection ConnSpec  `yaml:"connection"`
 	Options    DBOptions `yaml:"options,omitempty"`
 }
+
 type TargetSpec struct {
 	Name       string    `yaml:"name"`
 	Type       string    `yaml:"type"`
@@ -44,18 +45,19 @@ type DBOptions struct {
 }
 
 type JobSpec struct {
-	Name       string        `yaml:"name"`
-	Source     string        `yaml:"source"`
-	Target     string        `yaml:"target"`
-	Mode       string        `yaml:"mode"`
-	Tables     []TableOption `yaml:"tables"`
-	Options    JobOptions    `yaml:"options"`
-	CheckPoint string        `yaml:"checkpoint"`
+	Name       string     `yaml:"name"`
+	Source     string     `yaml:"source"`
+	Target     string     `yaml:"target"`
+	Mode       string     `yaml:"mode"`
+	TableMap   []TableMap `yaml:"table_map"`
+	Options    JobOptions `yaml:"options"`
+	CheckPoint string     `yaml:"checkpoint"`
 }
 
-type TableOption struct {
-	Name    string   `yaml:"name"`
-	Columns []string `yaml:"columns,omitempty"`
+type TableMap struct {
+	Source  string   `yaml:"source"`
+	Target  string   `yaml:"target"`
+	Columns []string `yaml:"columns"`
 }
 
 type JobOptions struct {

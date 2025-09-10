@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"repli/config"
+	"repli/internal/offset"
 	"repli/internal/ports"
 	"sync"
 	"time"
@@ -27,6 +28,8 @@ type runner struct {
 	errCh  chan error
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
+
+	store offset.Store
 }
 
 func (r *runner) Name() string {

@@ -40,7 +40,6 @@ func Build(specs []config.JobSpec, reg *registry.Registry) ([]Runner, error) {
 }
 
 func newRunnerResolved(spec config.JobSpec, src ports.Source, tar ports.Target) (*runner, error) {
-	// 에러로 리턴할 지 기본값으로 사용할 지
 	interval, err := time.ParseDuration(spec.Options.Interval)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse interval %q: %v", spec.Options.Interval, err)
@@ -64,6 +63,7 @@ func newRunnerResolved(spec config.JobSpec, src ports.Source, tar ports.Target) 
 		delay:    delay,
 		last:     last,
 		errCh:    make(chan error, 1),
+		store:    store,
 	}, nil
 
 }

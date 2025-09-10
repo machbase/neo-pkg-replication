@@ -33,9 +33,10 @@ replication:
     - name: tag_to_log
       source: source_db1
       target: target_db1
-      tables: # table 은 오직 1개 사용 (source 와 target 의 db이름 서로 다를 수 있음)
-        - name: tag
-          columns: [name, time, value, uuid]
+      table_map: # table 은 오직 1:1 사용 (source 와 target 의 db이름 서로 다를 수 있음)
+        source: tag
+        target: guro
+        columns: [name, time, value, uuid]
       options: # Opion 추가
         interval: "1m"
         delay: "10m"
@@ -44,9 +45,10 @@ replication:
     - name: mach_to_mach2
       source: source_db2
       target: target_db2
-      tables:
-        - name: log
-          columns: [name, time, value]
+      table_map:
+        source: tag
+        target: guro
+        columns: [name, time, value, uuid]
       options:
         interval: "1m"
         delay: "10m"
