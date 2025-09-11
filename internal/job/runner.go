@@ -39,12 +39,10 @@ func (r *runner) Name() string {
 func (r *runner) Start(ctx context.Context) error {
 	c, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
-	//client, err :=
 	err := r.src.Open(c)
 	if err != nil {
 		return err
 	}
-	//client, err :=
 	err = r.tar.Open(c)
 	if err != nil {
 		return err
@@ -54,14 +52,12 @@ func (r *runner) Start(ctx context.Context) error {
 	go func() {
 		defer r.wg.Done()
 		defer close(r.errCh)
-		defer func(name string) { log.Printf("Close Runner: %q\n", name) }(r.Name())
+		defer func(name string) { log.Printf("close Runner: %q\n", name) }(r.Name())
 
 		r.RunCycle(c)
 
-		// log.Println("interval: ", r.interval)
 		r.interval, _ = time.ParseDuration("5s")
 		ticker := time.NewTicker(r.interval)
-
 		for {
 			select {
 			case <-ctx.Done():

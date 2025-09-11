@@ -61,7 +61,7 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, 
 		return nil, fmt.Errorf("machbase request failed: %s", resp.Reason)
 	}
 
-	if rsp.StatusCode < 200 || rsp.StatusCode >= 300 {
+	if rsp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("http request failed: status=%d, reason", rsp.StatusCode)
 	}
 

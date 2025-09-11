@@ -3,6 +3,7 @@ package target
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"repli/config"
 	"repli/internal/machbase"
 )
@@ -14,12 +15,10 @@ type machbaseTarget struct {
 }
 
 func newMachbase(spec config.TargetSpec) (*machbaseTarget, error) {
-	base := fmt.Sprintf("%s://%s:%d", spec.Connection.Scheme, spec.Connection.Host, spec.Connection.Port)
-	cli, err := machbase.NewClient(base, nil)
-	if err != nil {
-		return nil, err
-	}
-	return &machbaseTarget{name: spec.Name, conn: spec.Connection, cli: cli}, nil
+	return &machbaseTarget{
+		name: spec.Name,
+		conn: spec.Connection,
+	}, nil
 }
 
 func (m *machbaseTarget) Name() string {
@@ -27,6 +26,18 @@ func (m *machbaseTarget) Name() string {
 }
 
 func (m *machbaseTarget) Open(ctx context.Context) error {
+	rawURL := fmt.Sprintf("%s://%s:%d", m.conn.Scheme, m.conn.Host, m.conn.Port)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+
+	cli, err := machbase.NewClient(u.String(), nil)
+	if err != nil {
+		return err
+	}
+	m.cli = cli
+
 	return nil
 }
 

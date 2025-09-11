@@ -56,6 +56,7 @@ func newRunnerResolved(spec config.JobSpec, src ports.Source, tar ports.Target) 
 	}
 
 	return &runner{
+		name:     spec.Name,
 		spec:     spec,
 		src:      src,
 		tar:      tar,
