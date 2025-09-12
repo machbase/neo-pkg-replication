@@ -2,16 +2,18 @@ package job
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"repli/config"
 	"repli/internal/offset"
 	"repli/internal/ports"
-	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 type runner struct {
 	name string
+
 	spec config.JobSpec
 	src  ports.Source
 	tar  ports.Target
@@ -21,49 +23,58 @@ type runner struct {
 	interval time.Duration
 	delay    time.Duration
 
-	// chkpt int64
-	chkpt time.Time
-	last  time.Time
-
 	errCh  chan error
-	wg     sync.WaitGroup
 	cancel context.CancelFunc
 
 	store offset.Store
+	log   *logrus.Entry
 }
 
 func (r *runner) Name() string {
-	return r.spec.Name
+	return r.name
 }
 
 func (r *runner) Start(ctx context.Context) error {
 	c, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
-	err := r.src.Open(c)
+
+	last, err := r.store.Load()
 	if err != nil {
-		return err
-	}
-	err = r.tar.Open(c)
-	if err != nil {
-		return err
+		return fmt.Errorf("failed to load store %q: %v", r.spec.CheckPoint, err)
 	}
 
-	r.wg.Add(1)
+	// Source
+	if err = r.src.Open(c); err != nil {
+		return fmt.Errorf("%s: failed to open source: %v", r.name, err)
+	}
+	defer r.src.Close(c)
+
+	// Target
+	if err = r.tar.Open(c); err != nil {
+		return fmt.Errorf("%s: failed to open target: %v", r.name, err)
+	}
+	defer r.tar.Close(c)
+
+	ticker := time.NewTicker(r.interval)
 	go func() {
-		defer r.wg.Done()
-		defer close(r.errCh)
-		defer func(name string) { log.Printf("close Runner: %q\n", name) }(r.Name())
-
+		r.log.Info("Runner Start")
+		r.log.Error("halo")
+		defer func(name string) { r.log.Infof("close Runner: %q\n", name) }(r.Name())
 		r.RunCycle(c)
 
-		r.interval, _ = time.ParseDuration("5s")
-		ticker := time.NewTicker(r.interval)
 		for {
+			from := last
+			to := time.Now().Add(-r.delay)
+
 			select {
 			case <-ctx.Done():
 				ticker.Stop()
 				return
 			case <-ticker.C:
+				if to.Sub(from) > r.delay {
+					continue
+				}
+
 				_ = r.RunCycle(c)
 			}
 		}
@@ -78,15 +89,12 @@ func (r *runner) Stop() error {
 		r.cancel()
 	}
 
-	r.wg.Wait()
-
 	return nil
 }
 
 func (r *runner) Errors() <-chan error { return r.errCh }
 
 func (r *runner) RunCycle(ctx context.Context) error {
-	log.Println("run cycle")
 	// 최초 실행
 	// waterMark := time.Now().Add(-r.delay)
 	// waterMark.After(r.last)

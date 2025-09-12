@@ -3,13 +3,14 @@ package config
 import (
 	"fmt"
 	"os"
+	"repli/internal/logger"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
 	Replication ReplicationConfig `yaml:"replication"`
-	Logging     LoggingConfig     `yaml:"logging"`
+	Logging     logger.Config     `yaml:"logging"`
 }
 
 type ReplicationConfig struct {
@@ -49,7 +50,7 @@ type JobSpec struct {
 	Source     string     `yaml:"source"`
 	Target     string     `yaml:"target"`
 	Mode       string     `yaml:"mode"`
-	TableMap   []TableMap `yaml:"table_map"`
+	TableMap   TableMap   `yaml:"table_map"`
 	Options    JobOptions `yaml:"options"`
 	CheckPoint string     `yaml:"checkpoint"`
 }

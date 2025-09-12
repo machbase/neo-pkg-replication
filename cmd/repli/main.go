@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"repli/config"
 	"repli/internal/job"
+	"repli/internal/logger"
 	"repli/internal/registry"
 	"repli/internal/replicator"
 	"syscall"
@@ -55,12 +56,14 @@ func run(ctx context.Context, configPath string) error {
 	// logging 추가
 	// cfg.Logging
 
+	logger := logger.New(cfg.Logging)
+
 	reg, err := registry.New(cfg.Replication.Sources, cfg.Replication.Targets)
 	if err != nil {
 		return err
 	}
 
-	jobs, err := job.Build(cfg.Replication.Jobs, reg)
+	jobs, err := job.Build(cfg.Replication.Jobs, reg, logger)
 	if err != nil {
 		return err
 	}

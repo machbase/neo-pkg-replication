@@ -56,7 +56,12 @@ replication:
 
 logging:
   level: INFO
-  file: ./tmp/replication.log
+  path: ./tmp/replication.log
+  max_size: 20
+  max_backups: 5
+  max_age: 5
+  compress: true
+  mode: debug
 
 
 # checkpoint에 source 와 target 같이 포함?

@@ -8,6 +8,8 @@ import (
 	"repli/internal/ports"
 	"repli/internal/registry"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 type Runner interface {
@@ -17,7 +19,7 @@ type Runner interface {
 	Errors() <-chan error
 }
 
-func Build(specs []config.JobSpec, reg *registry.Registry) ([]Runner, error) {
+func Build(specs []config.JobSpec, reg *registry.Registry, root *logrus.Logger) ([]Runner, error) {
 	out := make([]Runner, 0, len(specs))
 
 	for _, spec := range specs {
@@ -29,7 +31,9 @@ func Build(specs []config.JobSpec, reg *registry.Registry) ([]Runner, error) {
 		if err != nil {
 			return nil, err
 		}
-		runner, err := newRunnerResolved(spec, src, tar)
+		child := logrus.NewEntry(root).WithField("runner", spec.Name)
+
+		runner, err := newRunnerResolved(spec, src, tar, child)
 		if err != nil {
 			return nil, err
 		}
@@ -39,7 +43,7 @@ func Build(specs []config.JobSpec, reg *registry.Registry) ([]Runner, error) {
 	return out, nil
 }
 
-func newRunnerResolved(spec config.JobSpec, src ports.Source, tar ports.Target) (*runner, error) {
+func newRunnerResolved(spec config.JobSpec, src ports.Source, tar ports.Target, lg *logrus.Entry) (*runner, error) {
 	interval, err := time.ParseDuration(spec.Options.Interval)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse interval %q: %v", spec.Options.Interval, err)
@@ -48,12 +52,7 @@ func newRunnerResolved(spec config.JobSpec, src ports.Source, tar ports.Target) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse delay %q: %v", spec.Options.Delay, err)
 	}
-
 	store := offset.NewFileStore(spec.CheckPoint)
-	last, err := store.Load()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load store %q: %v", spec.CheckPoint, err)
-	}
 
 	return &runner{
 		name:     spec.Name,
@@ -62,9 +61,8 @@ func newRunnerResolved(spec config.JobSpec, src ports.Source, tar ports.Target) 
 		tar:      tar,
 		interval: interval,
 		delay:    delay,
-		last:     last,
 		errCh:    make(chan error, 1),
 		store:    store,
+		log:      lg,
 	}, nil
-
 }
