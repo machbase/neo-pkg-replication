@@ -73,6 +73,12 @@ func run(ctx context.Context, configPath string) error {
 		return err
 	}
 
+	go func() {
+		for err := range repli.Errors(ctx) {
+			logger.Errorf("repli error: %v", err)
+		}
+	}()
+
 	<-ctx.Done()
 	log.Println("recevied shutdown signall")
 	if err := repli.StopAll(); err != nil {
