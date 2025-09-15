@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"repli/config"
@@ -55,8 +54,8 @@ func run(ctx context.Context, configPath string) error {
 
 	// logging 추가
 	// cfg.Logging
-
 	logger := logger.New(cfg.Logging)
+	logger.Infof("config load: %+v", cfg)
 
 	reg, err := registry.New(cfg.Replication.Sources, cfg.Replication.Targets)
 	if err != nil {
@@ -80,7 +79,7 @@ func run(ctx context.Context, configPath string) error {
 	}()
 
 	<-ctx.Done()
-	log.Println("recevied shutdown signall")
+	logger.Info("recevied shutdown signall")
 	if err := repli.StopAll(); err != nil {
 		return err
 	}

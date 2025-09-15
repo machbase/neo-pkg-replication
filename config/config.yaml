@@ -6,6 +6,7 @@ replication:
         scheme: http
         host: 192.168.0.87
         port: 5654
+        protocol : http
       
     - name: source_db2
       type: machbase
@@ -13,6 +14,7 @@ replication:
         scheme: http
         host: 192.168.0.99
         port: 5654
+        protocol : http
   
   targets:
     - name: target_db1
@@ -21,6 +23,7 @@ replication:
         scheme: http
         host: 192.168.0.87
         port: 5654
+        protocol : http
 
     - name: target_db2
       type: machbase
@@ -28,30 +31,37 @@ replication:
         scheme: http
         host: 192.168.0.87
         port: 5654
+        protocol : http
   
   jobs:
     - name: tag_to_log
       source: source_db1
       target: target_db1
+      kind: tag
       table_map: # table 은 오직 1:1 사용 (source 와 target 의 db이름 서로 다를 수 있음)
         source: tag
         target: guro
         columns: [name, time, value, uuid]
+        seq_expr: "TO_TIMESTAMP(time)"
       options: # Opion 추가
         interval: "1m"
         delay: "10m"
+        batch_window_limit: "1h"
       checkpoint: "./tmp/tag_to_log.chk"
 
     - name: mach_to_mach2
       source: source_db2
       target: target_db2
+      kind: tag
       table_map:
         source: tag
         target: guro
         columns: [name, time, value, uuid]
+        seq_expr: "_RID"
       options:
         interval: "1m"
         delay: "10m"
+        batch_window_limit: "1h"
       checkpoint: "./tmp/mach_to_mach.chk"
 
 logging:

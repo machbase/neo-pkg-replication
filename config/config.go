@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"repli/internal/logger"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -37,7 +38,7 @@ type ConnSpec struct {
 	Scheme   string `yaml:"scheme"`
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
-	Protocol string `yaml:"rest"`
+	Protocol string `yaml:"protocol"`
 }
 
 type DBOptions struct {
@@ -49,30 +50,38 @@ type JobSpec struct {
 	Name       string     `yaml:"name"`
 	Source     string     `yaml:"source"`
 	Target     string     `yaml:"target"`
-	Mode       string     `yaml:"mode"`
+	Kind       string     `yaml:"kind"`
 	TableMap   TableMap   `yaml:"table_map"`
 	Options    JobOptions `yaml:"options"`
 	CheckPoint string     `yaml:"checkpoint"`
+
+	Mode string `yaml:"mode"`
 }
 
 type TableMap struct {
 	Source  string   `yaml:"source"`
 	Target  string   `yaml:"target"`
 	Columns []string `yaml:"columns"`
+	SeqExpr string   `yaml:"seqExpr"`
 }
 
 type JobOptions struct {
 	// BatchSize      int `yaml:"`
 	// RetryOnFailure bool
 
-	Interval  string `yaml:"interval"`
-	Delay     string `yaml:"delay"`
-	RateLimit int    `yaml:"rate_limit"`
+	Interval         string `yaml:"interval"`
+	Delay            string `yaml:"delay"`
+	BatchWindowLimit string `yaml:"batch_window_limit"`
 }
 
 type LoggingConfig struct {
-	Level string `yaml:"level"`
-	File  string `yaml:"file"`
+	File       string `yaml:"file"`
+	Level      string `yaml:"level"`
+	MaxSize    int    `yaml:"max_size"`
+	MaxAge     int    `yaml:"max_age"`
+	MaxBackups int    `yaml:"max_backups"`
+	Compress   bool   `yaml:"compress"`
+	Mode       string `yaml:"mode"`
 }
 
 func Load(filename string) (Config, error) {
@@ -95,12 +104,40 @@ func Load(filename string) (Config, error) {
 		return Config{}, err
 	}
 
-	fmt.Printf("config: %v\n", cfg)
-
 	return cfg, nil
 }
 
 func (c Config) validate() error {
+	return nil
+}
+
+func (spec *JobSpec) Normalize() {
+	if spec.TableMap.SeqExpr == "" {
+		// kind가 빈값인경우
+		switch strings.ToUpper(spec.Kind) {
+		case "TAG":
+			spec.TableMap.SeqExpr = "TO_TIMESTAMP(TIME)"
+		case "LOG":
+			spec.TableMap.SeqExpr = "_RID"
+		}
+	}
+
+	if len(spec.TableMap.Columns) == 0 {
+		spec.TableMap.Columns = append(spec.TableMap.Columns, "*")
+	}
+
+	spec.TableMap.Columns = append(spec.TableMap.Columns[1:], spec.TableMap.Columns...)
+	spec.TableMap.Columns[0] = spec.TableMap.SeqExpr
+
+}
+
+func (spec *JobSpec) Validate() error {
+	switch strings.ToUpper(spec.Kind) {
+	case "TAG":
+	case "LOG":
+	default:
+		return fmt.Errorf("unknown table %q", spec.Kind)
+	}
 
 	return nil
 }

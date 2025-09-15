@@ -6,19 +6,22 @@ import (
 	"net/url"
 	"repli/config"
 	"repli/internal/machbase"
+	"strings"
 )
 
 type machbaseSource struct {
-	name string
-	conn config.ConnSpec
+	name   string
+	driver string
+	conn   config.ConnSpec
 
 	cli *machbase.Client
 }
 
 func newMachbase(spec config.SourceSpec) (*machbaseSource, error) {
 	return &machbaseSource{
-		name: spec.Name,
-		conn: spec.Connection,
+		name:   spec.Name,
+		driver: spec.Type,
+		conn:   spec.Connection,
 	}, nil
 }
 
@@ -51,4 +54,17 @@ func (m *machbaseSource) Close(ctx context.Context) error {
 // 가져올 테이블 이름과, 컬럼들 필요 (JOB에 있음)
 func (m *machbaseSource) Read(ctx context.Context) ([][]any, error) {
 	return nil, nil
+}
+
+func (m *machbaseSource) Driver() string {
+	return m.driver
+}
+
+func (m *machbaseSource) SupportsKind(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "tag", "log":
+		return true
+	default:
+		return false
+	}
 }

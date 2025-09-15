@@ -3,7 +3,6 @@ package replicator
 import (
 	"context"
 	"fmt"
-	"log"
 	"repli/internal/job"
 	"sync"
 )
@@ -63,7 +62,6 @@ func (repli *Replicator) Errors(ctx context.Context) <-chan error {
 
 func (repli *Replicator) StopAll() error {
 	for _, job := range repli.jobs {
-		log.Printf("job %q stop", job.Name())
 		if err := job.Stop(); err != nil {
 			return err
 		}
