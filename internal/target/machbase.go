@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"repli/config"
 	"repli/internal/machbase"
+	"repli/internal/ports"
 	"strings"
 )
 
@@ -49,8 +50,15 @@ func (m *machbaseTarget) Close(ctx context.Context) error {
 	return nil
 }
 
-func (m *machbaseTarget) Write(ctx context.Context, rows [][]any) error {
-	return nil
+func (m *machbaseTarget) NewWriter(ctx context.Context, table, seqExpr string, columns []string) (ports.TargetWriter, error) {
+	writer := &machbaseWriter{
+		table:   table,
+		seqExpr: seqExpr,
+		columns: columns,
+		cli:     m.cli,
+	}
+
+	return writer, nil
 }
 
 func (m *machbaseTarget) Driver() string {

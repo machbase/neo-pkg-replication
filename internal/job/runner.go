@@ -111,12 +111,12 @@ func (r *runner) Start(ctx context.Context) error {
 func (r *runner) RunCycle(ctx context.Context, from time.Time, to time.Time) (time.Time, error) {
 	r.log.Info("run cycle!")
 
-	data, err := r.src.Read(ctx)
-	if err != nil {
-		return time.Now(), err
-	}
+	// data, err := r.src.Read(ctx)
+	// if err != nil {
+	// 	return time.Now(), err
+	// }
 
-	r.tar.Write()
+	// r.tar.Write()
 
 	return time.Now(), nil
 }

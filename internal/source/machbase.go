@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"repli/config"
 	"repli/internal/machbase"
+	"repli/internal/ports"
 	"strings"
 )
 
@@ -42,8 +43,6 @@ func (m *machbaseSource) Open(ctx context.Context) error {
 	}
 	m.cli = cli
 
-	// ping/health Check
-
 	return nil
 }
 
@@ -51,9 +50,22 @@ func (m *machbaseSource) Close(ctx context.Context) error {
 	return nil
 }
 
-// 가져올 테이블 이름과, 컬럼들 필요 (JOB에 있음)
-func (m *machbaseSource) Read(ctx context.Context) ([][]any, error) {
-	return nil, nil
+func (m *machbaseSource) NewReader(ctx context.Context, table, seqExpr string, columns []string) (ports.SourceReader, error) {
+	if m.cli == nil {
+		return nil, fmt.Errorf("machbase source not opened")
+	}
+
+	table = strings.TrimSpace(table)
+	seqExpr = strings.TrimSpace(seqExpr)
+
+	reader := &machbaseReader{
+		table:   table,
+		seqExpr: seqExpr,
+		columns: columns,
+		cli:     m.cli,
+	}
+
+	return reader, nil
 }
 
 func (m *machbaseSource) Driver() string {

@@ -1,34 +1,47 @@
 package ports
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+type Range struct {
+	From time.Time
+	To   time.Time
+}
+
+type Batch struct {
+	Rows [][]any
+}
 
 type Source interface {
 	Name() string
 	Open(ctx context.Context) error
 	Close(ctx context.Context) error
-	Read(ctx context.Context) ([][]any, error)
-
-	NewReader(ctx context.Context) ([][]any, error)
+	NewReader(ctx context.Context, table, seqExpr string, columns []string) (SourceReader, error)
 }
 
 type SourceReader interface {
 	Prepare(ctx context.Context) error
 	Close(ctx context.Context) error
-	ReadBatch(ctx context.Context) ([][]any, error)
+	ReadRange(ctx context.Context, rng Range) (Batch, error)
+}
+
+type WriteResult struct {
+	written int
+	failed  int
 }
 
 type Target interface {
 	Name() string
 	Open(ctx context.Context) error
 	Close(ctx context.Context) error
-	Write(ctx context.Context, rows [][]any) error
-
-	NewWriter(ctx context.Context) error
+	NewWriter(ctx context.Context, table, seqExpr string, columns []string) (TargetWriter, error)
 }
 
 type TargetWriter interface {
-	Prepare(ctx context.Context)
-	WriteBatch(ctx context.Context, rows [][]any) error
+	Prepare(ctx context.Context) error
+	WriteBatch(ctx context.Context, batch Batch) (WriteResult, error)
 	Close(ctx context.Context) error
 }
 

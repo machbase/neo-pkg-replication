@@ -29,7 +29,7 @@ func NewClient(baseURL string, hc HTTPDoer) (*Client, error) {
 	return &Client{base: u, hc: hc}, nil
 }
 
-func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, body io.Reader, out any) (*Response, error) {
+func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, body io.Reader) (*Response, error) {
 	u := c.base.ResolveReference(&url.URL{Path: path})
 	if len(q) > 0 {
 		u.RawQuery = q.Encode()
@@ -42,7 +42,7 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, 
 	req.Header.Set("Accept", "application/json")
 
 	if body != nil && req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Typ", "application/json")
+		req.Header.Set("Content-Type", "application/json")
 	}
 
 	rsp, err := c.hc.Do(req)
@@ -69,10 +69,10 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, 
 }
 
 type Response struct {
-	Success bool   `json:"success"`
-	Reason  string `json:"reason"`
-	Elapse  string `json:"elapse"`
-	Data    any    `json:"data,omitempty"`
+	Success bool    `json:"success"`
+	Reason  string  `json:"reason"`
+	Elapse  string  `json:"elapse"`
+	Data    [][]any `json:"data,omitempty"`
 }
 
 type Table struct {
