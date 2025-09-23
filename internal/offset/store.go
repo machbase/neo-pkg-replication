@@ -16,9 +16,9 @@ func NewFileStore(path string) Store {
 	return &fileStore{path: path}
 }
 
-func (f *fileStore) Load() (time.Time, error) {
-	if _, err := os.Stat(f.path); os.IsNotExist(err) {
-		f, err := os.OpenFile(f.path, os.O_RDWR|os.O_CREATE, 0645)
+func (fs *fileStore) Load() (time.Time, error) {
+	if _, err := os.Stat(fs.path); os.IsNotExist(err) {
+		f, err := os.OpenFile(fs.path, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -29,7 +29,7 @@ func (f *fileStore) Load() (time.Time, error) {
 		f.Close()
 	}
 
-	bdata, err := os.ReadFile(f.path)
+	bdata, err := os.ReadFile(fs.path)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -42,6 +42,6 @@ func (f *fileStore) Load() (time.Time, error) {
 	return t, nil
 }
 
-func (f *fileStore) Save(t time.Time) error {
-	return os.WriteFile(f.path, []byte(t.Format(time.RFC3339)), 0644)
+func (fs *fileStore) Save(t time.Time) error {
+	return os.WriteFile(fs.path, []byte(t.Format(time.RFC3339)), 0644)
 }

@@ -42,7 +42,6 @@ func (m *machbaseReader) ReadRange(ctx context.Context, rng ports.Range) (ports.
 	if err != nil {
 		return ports.Batch{}, err
 	}
-
 	if !response.Success {
 		return ports.Batch{}, fmt.Errorf("failed to request: %v", response.Reason)
 	}

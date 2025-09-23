@@ -28,8 +28,8 @@ type SourceReader interface {
 }
 
 type WriteResult struct {
-	written int
-	failed  int
+	Written int
+	Failed  int
 }
 
 type Target interface {

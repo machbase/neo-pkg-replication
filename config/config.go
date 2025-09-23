@@ -62,7 +62,7 @@ type TableMap struct {
 	Source  string   `yaml:"source"`
 	Target  string   `yaml:"target"`
 	Columns []string `yaml:"columns"`
-	SeqExpr string   `yaml:"seqExpr"`
+	SeqExpr string   `yaml:"seq_expr"`
 }
 
 type JobOptions struct {

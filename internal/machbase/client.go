@@ -62,7 +62,7 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, 
 	}
 
 	if rsp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("http request failed: status=%d, reason", rsp.StatusCode)
+		return nil, fmt.Errorf("http request failed: status=%d, reason=%q", rsp.StatusCode, resp.Reason)
 	}
 
 	return &resp, nil

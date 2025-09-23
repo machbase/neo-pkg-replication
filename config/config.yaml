@@ -38,7 +38,7 @@ replication:
       source: source_db1
       target: target_db1
       kind: tag
-      table_map: # table 은 오직 1:1 사용 (source 와 target 의 db이름 서로 다를 수 있음)
+      table_map: # table_map은 오직 1:1 사용 (source 와 target의 테이블 이름이 서로 다를 수 있으나 구조는 같음)
         source: tag
         target: guro
         columns: [name, time, value, uuid]
@@ -71,6 +71,7 @@ logging:
   max_backups: 5
   max_age: 5
   compress: true
+  # mode: release
   mode: debug
 
 

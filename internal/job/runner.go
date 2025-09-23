@@ -33,6 +33,57 @@ func (r *runner) Name() string {
 	return r.name
 }
 
+func (r *runner) openResources(ctx context.Context) (func(), error) {
+	if err := r.src.Open(ctx); err != nil {
+		return func() {}, fmt.Errorf("%s: failed to open source: %v", r.name, err)
+	}
+
+	if err := r.tar.Open(ctx); err != nil {
+		r.src.Close(ctx)
+		return func() {}, fmt.Errorf("%s: failed to open target: %v", r.name, err)
+	}
+
+	return func() {
+		r.tar.Close(ctx)
+		r.src.Close(ctx)
+	}, nil
+}
+
+func (r *runner) loadCheckPoint() (time.Time, error) {
+	return r.store.Load()
+}
+
+func (r *runner) runLoop(ctx context.Context, cursor time.Time) {
+	// 최초 실행 시 한 번 실행
+	next, err := r.RunCycle(ctx, cursor)
+	if err != nil {
+		r.report(fmt.Errorf("failed to run cycle: %v", err))
+		return
+	}
+	cursor = next
+
+	ticker := time.NewTicker(r.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			next, err := r.RunCycle(ctx, cursor)
+			if err != nil {
+				r.report(fmt.Errorf("failed to run cycle: %v", err))
+				return
+			}
+			if err := r.store.Save(next); err != nil {
+				r.report(fmt.Errorf("failed to save checkpoint: %v", err))
+				return
+			}
+			cursor = next
+		}
+	}
+}
+
 func (r *runner) Start(ctx context.Context) error {
 	c, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
@@ -40,85 +91,80 @@ func (r *runner) Start(ctx context.Context) error {
 	go func() {
 		defer close(r.errCh)
 
-		if err := r.src.Open(c); err != nil {
-			r.report(fmt.Errorf("%s: failed to open source: %v", r.name, err))
+		cleanup, err := r.openResources(c)
+		if err != nil {
+			r.report(fmt.Errorf("failed to open resources: %v", err))
 			return
 		}
-		defer r.src.Close(c)
+		defer cleanup()
 
-		if err := r.tar.Open(c); err != nil {
-			r.report(fmt.Errorf("%s: failed to open target: %v", r.name, err))
-			return
-		}
-		defer r.tar.Close(c)
-
-		cursor, err := r.store.Load()
+		cursor, err := r.loadCheckPoint()
 		if err != nil {
 			r.report(fmt.Errorf("failed to load store %q: %v", r.spec.CheckPoint, err))
 			return
 		}
 
-		// 최초 실행 시 한 번 실행
-		// r.RunCycle(c)
+		r.runLoop(c, cursor)
 
-		ticker := time.NewTicker(r.interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-c.Done():
-				return
-			case <-ticker.C:
-				until := time.Now().Add(-r.delay)
-				from := cursor
-
-				for {
-					if !from.Before(until) {
-						break
-					}
-
-					to := from.Add(r.batchWindowLimit)
-					if to.After(until) {
-						to = until
-					}
-					if !from.Before(to) {
-						break
-					}
-
-					next, err := r.RunCycle(c, from, to)
-					if err != nil {
-						r.report(fmt.Errorf("failed to run cycle: %v", err))
-						return
-					}
-
-					if !next.After(from) {
-						next = to
-					}
-
-					if err := r.store.Save(next); err != nil {
-						r.report(fmt.Errorf("failed to save checkpoint: %v", err))
-						return
-					}
-					cursor, from = next, next
-				}
-			}
-		}
 	}()
 
 	return nil
 }
 
-func (r *runner) RunCycle(ctx context.Context, from time.Time, to time.Time) (time.Time, error) {
+func (r *runner) RunCycle(ctx context.Context, cursor time.Time) (time.Time, error) {
 	r.log.Info("run cycle!")
 
-	// data, err := r.src.Read(ctx)
-	// if err != nil {
-	// 	return time.Now(), err
-	// }
+	until := time.Now().Add(-r.delay)
+	from := cursor
 
-	// r.tar.Write()
+	if !from.Before(until) {
+		return from, nil
+	}
 
-	return time.Now(), nil
+	reader, err := r.src.NewReader(ctx, r.spec.TableMap.Source, r.spec.TableMap.SeqExpr, r.spec.TableMap.Columns)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to create reader: %v", err)
+	}
+	defer reader.Close(ctx)
+
+	if err := reader.Prepare(ctx); err != nil {
+		return time.Time{}, fmt.Errorf("failed to prepare reader: %v", err)
+	}
+
+	writer, err := r.tar.NewWriter(ctx, r.spec.TableMap.Target, r.spec.TableMap.SeqExpr, r.spec.TableMap.Columns)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to create writer: %v", err)
+	}
+	defer writer.Close(ctx)
+
+	if err := writer.Prepare(ctx); err != nil {
+		return time.Time{}, fmt.Errorf("failed to prepare writer: %v", err)
+	}
+
+	for {
+		to := from.Add(r.batchWindowLimit)
+		if to.After(until) {
+			to = until
+		}
+
+		if !from.Before(to) {
+			break
+		}
+
+		batch, err := reader.ReadRange(ctx, ports.Range{From: from, To: to})
+		if err != nil {
+			return time.Time{}, fmt.Errorf("failed to read range: %v", err)
+		}
+
+		_, err = writer.WriteBatch(ctx, batch)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("failed to write batch: %v", err)
+		}
+
+		from = to
+	}
+
+	return from, nil
 }
 
 func (r *runner) report(err error) {
@@ -135,7 +181,7 @@ func (r *runner) report(err error) {
 
 func (r *runner) Stop() error {
 	if r.cancel != nil {
-		r.log.Info("runner stop")
+		r.log.Infof("%q runner stop", r.name)
 		r.cancel()
 	}
 

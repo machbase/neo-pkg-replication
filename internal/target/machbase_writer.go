@@ -47,10 +47,7 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 	}
 
 	rangeCnt := len(batch.Rows) / m.limit
-	if rangeCnt == 0 {
-		rangeCnt = 1
-	}
-	if len(batch.Rows)%m.limit > 0 {
+	if rangeCnt == 0 || len(batch.Rows)%m.limit > 0 {
 		rangeCnt += 1
 	}
 
@@ -59,8 +56,10 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 	for i := 0; i < rangeCnt; i++ {
 		// rangeCnt 와 endLimit 확인 필요
 		if endLimit > len(batch.Rows) && startLimit < len(batch.Rows) {
+			// startLimit
 			endLimit = len(batch.Rows)
 		}
+
 		rows := batch.Rows[startLimit:endLimit]
 		startLimit += m.limit
 		endLimit += m.limit
@@ -74,7 +73,6 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 		if err != nil {
 			return ports.WriteResult{}, err
 		}
-
 		if !response.Success {
 			return ports.WriteResult{}, fmt.Errorf("failed to write: %s", response.Reason)
 		}
@@ -87,17 +85,4 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 
 func (m *machbaseWriter) Close(ctx context.Context) error {
 	return nil
-}
-
-type Reader struct {
-	buf []byte
-}
-
-func NewReader(bdata []byte) Reader {
-	return Reader{buf: make([]byte, 0, len(bdata))}
-}
-
-func (r *Reader) Read() ([]byte, error) {
-
-	return r.buf[:], nil
 }
