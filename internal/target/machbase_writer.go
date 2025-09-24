@@ -24,10 +24,6 @@ type machbaseWriter struct {
 }
 
 func (m *machbaseWriter) Prepare(ctx context.Context) error {
-	if len(m.columns) == 0 {
-		return fmt.Errorf("machbase writer ")
-	}
-
 	insertCols := strings.Join(m.columns, ",")
 	insertVals := strings.Repeat("%%s", len(m.columns))
 
@@ -43,7 +39,8 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 	}
 
 	if len(batch.Rows) == 0 {
-		return ports.WriteResult{}, fmt.Errorf("")
+		// return ports.WriteResult{}, fmt.Errorf("")
+		return ports.WriteResult{}, nil
 	}
 
 	rangeCnt := len(batch.Rows) / m.limit

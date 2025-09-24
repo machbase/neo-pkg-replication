@@ -31,6 +31,12 @@ func NewClient(baseURL string, hc HTTPDoer) (*Client, error) {
 
 func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, body io.Reader) (*Response, error) {
 	u := c.base.ResolveReference(&url.URL{Path: path})
+
+	// 임시
+	if method == http.MethodPost {
+		q.Set("method", "append")
+	}
+
 	if len(q) > 0 {
 		u.RawQuery = q.Encode()
 	}

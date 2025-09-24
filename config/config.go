@@ -68,6 +68,10 @@ type TableMap struct {
 type JobOptions struct {
 	// BatchSize      int `yaml:"`
 	// RetryOnFailure bool
+	UseMeta bool `yaml:"use_meta"`
+
+	Placement string `yaml:"placement"`
+	Affix     string `yaml:"affix"`
 
 	Interval         string `yaml:"interval"`
 	Delay            string `yaml:"delay"`
@@ -116,19 +120,15 @@ func (spec *JobSpec) Normalize() {
 		// kind가 빈값인경우
 		switch strings.ToUpper(spec.Kind) {
 		case "TAG":
-			spec.TableMap.SeqExpr = "TO_TIMESTAMP(TIME)"
+			spec.TableMap.SeqExpr = "_RID"
 		case "LOG":
 			spec.TableMap.SeqExpr = "_RID"
 		}
 	}
-
 	if len(spec.TableMap.Columns) == 0 {
 		spec.TableMap.Columns = append(spec.TableMap.Columns, "*")
+		return
 	}
-
-	spec.TableMap.Columns = append(spec.TableMap.Columns[1:], spec.TableMap.Columns...)
-	spec.TableMap.Columns[0] = spec.TableMap.SeqExpr
-
 }
 
 func (spec *JobSpec) Validate() error {

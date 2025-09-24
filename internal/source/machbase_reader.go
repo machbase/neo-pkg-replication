@@ -22,9 +22,18 @@ type machbaseReader struct {
 }
 
 func (m *machbaseReader) Prepare(ctx context.Context) error {
-	selectCols := fmt.Sprintf("(%s) AS _seq_", m.seqExpr)
+	var selectCols string
+	switch strings.ToUpper(m.seqExpr) {
+	case "RID":
+		selectCols = fmt.Sprintf("/*+ RID_RANGE(%s, %%s, %%s) */ _RID", m.table)
+	case "TIME":
+		//TO_TIMESTAMP()
+		selectCols = fmt.Sprintf("TO_TIMESTAMP(%s) AS _seq_", m.seqExpr)
+	}
 	if len(m.columns) > 0 {
 		selectCols += ", " + strings.Join(m.columns, ",")
+	} else {
+		selectCols += ", " + "*"
 	}
 
 	m.query = fmt.Sprintf("SELECT %s FROM %s WHERE _seq_ >= %%s AND _seq_ < %%s", selectCols, m.table)

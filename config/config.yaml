@@ -7,6 +7,7 @@ replication:
         host: 192.168.0.87
         port: 5654
         protocol : http
+        token: xxx
       
     - name: source_db2
       type: machbase
@@ -15,6 +16,7 @@ replication:
         host: 192.168.0.99
         port: 5654
         protocol : http
+        token: xxx
   
   targets:
     - name: target_db1
@@ -24,6 +26,7 @@ replication:
         host: 192.168.0.87
         port: 5654
         protocol : http
+        token: xxx
 
     - name: target_db2
       type: machbase
@@ -32,6 +35,7 @@ replication:
         host: 192.168.0.87
         port: 5654
         protocol : http
+        token: xxx
   
   jobs:
     - name: tag_to_log
@@ -42,8 +46,11 @@ replication:
         source: tag
         target: guro
         columns: [name, time, value, uuid]
-        seq_expr: "TO_TIMESTAMP(time)"
+        seq_expr: RID" # RID, TIME:TO_TIMESTAMP(time)
       options: # Opion 추가
+        use_meta: true
+
+
         interval: "1m"
         delay: "10m"
         batch_window_limit: "1h"
@@ -57,8 +64,11 @@ replication:
         source: tag
         target: guro
         columns: [name, time, value, uuid]
-        seq_expr: "_RID"
+        seq_expr: "RID"
       options:
+        placement: prefix # prefix, suffix, regexp
+        affix: svr1
+
         interval: "1m"
         delay: "10m"
         batch_window_limit: "1h"
