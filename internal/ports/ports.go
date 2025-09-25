@@ -18,6 +18,7 @@ type Source interface {
 	Name() string
 	Open(ctx context.Context) error
 	Close(ctx context.Context) error
+	TableExists(ctx context.Context, table string) (bool, error)
 	NewReader(ctx context.Context, table, seqExpr string, columns []string) (SourceReader, error)
 }
 
@@ -36,6 +37,7 @@ type Target interface {
 	Name() string
 	Open(ctx context.Context) error
 	Close(ctx context.Context) error
+	TableExists(ctx context.Context, table string) (bool, error)
 	NewWriter(ctx context.Context, table, seqExpr string, columns []string) (TargetWriter, error)
 }
 

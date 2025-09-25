@@ -46,7 +46,7 @@ replication:
         source: tag
         target: guro
         columns: [name, time, value, uuid]
-        seq_expr: RID" # RID, TIME:TO_TIMESTAMP(time)
+        seq_expr: _RID" # RID, TO_TIMESTAMP(time)
       options: # Opion 추가
         use_meta: true
 

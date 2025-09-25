@@ -37,6 +37,7 @@ func Build(specs []config.JobSpec, reg *registry.Registry, root *logrus.Logger) 
 		}
 
 		child := logrus.NewEntry(root).WithField("runner", spec.Name)
+
 		runner, err := newRunnerResolved(spec, src, tar, child)
 		if err != nil {
 			return nil, err

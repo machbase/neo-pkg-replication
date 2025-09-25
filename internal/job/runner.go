@@ -98,6 +98,16 @@ func (r *runner) Start(ctx context.Context) error {
 		}
 		defer cleanup()
 
+		exists, err := r.checkTableExists(c)
+		if err != nil {
+			r.report(err)
+			return
+		}
+		if !exists {
+			r.report(err)
+			return
+		}
+
 		cursor, err := r.loadCheckPoint()
 		if err != nil {
 			r.report(fmt.Errorf("failed to load store %q: %v", r.spec.CheckPoint, err))
@@ -111,6 +121,28 @@ func (r *runner) Start(ctx context.Context) error {
 	return nil
 }
 
+func (r *runner) checkTableExists(ctx context.Context) (bool, error) {
+	// source table exists
+	exists, err := r.src.TableExists(ctx, r.spec.TableMap.Source)
+	if err != nil {
+		return false, fmt.Errorf("failed to request exists: %v", err)
+	}
+	if !exists {
+		return false, fmt.Errorf("%q table is not exists: %v", r.spec.TableMap.Source, err)
+	}
+
+	// target table exists
+	exists, err = r.tar.TableExists(ctx, r.spec.TableMap.Target)
+	if err != nil {
+		return false, fmt.Errorf("failed to request exists: %v", err)
+	}
+	if !exists {
+		return false, fmt.Errorf("%q table is not exists: %v", r.spec.TableMap.Source, err)
+	}
+
+	return true, nil
+}
+
 func (r *runner) RunCycle(ctx context.Context, cursor time.Time) (time.Time, error) {
 	r.log.Info("run cycle!")
 
@@ -120,7 +152,6 @@ func (r *runner) RunCycle(ctx context.Context, cursor time.Time) (time.Time, err
 	if !from.Before(until) {
 		return from, nil
 	}
-
 	reader, err := r.src.NewReader(ctx, r.spec.TableMap.Source, r.spec.TableMap.SeqExpr, r.spec.TableMap.Columns)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("failed to create reader: %v", err)

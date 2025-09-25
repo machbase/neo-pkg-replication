@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 type HTTPDoer interface {
@@ -27,6 +28,26 @@ func NewClient(baseURL string, hc HTTPDoer) (*Client, error) {
 		hc = &http.Client{}
 	}
 	return &Client{base: u, hc: hc}, nil
+}
+
+const ErrTableNotExists = "MACH-ERR 2025"
+
+func (c *Client) TableExists(ctx context.Context, table string) (bool, error) {
+	query := url.Values{}
+	query.Set("q", fmt.Sprintf("SELECT * FROM %s LIMIT 1", table))
+
+	response, err := c.DoJSON(ctx, http.MethodGet, "/db/query", query, nil)
+	if err != nil {
+		return false, err
+	}
+
+	if response.Success {
+		return true, nil
+	} else if !response.Success && strings.HasPrefix(response.Reason, ErrTableNotExists) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("%q table is not exists: %v", table, response.Reason)
 }
 
 func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, body io.Reader) (*Response, error) {

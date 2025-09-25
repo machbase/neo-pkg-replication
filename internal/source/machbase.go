@@ -80,3 +80,7 @@ func (m *machbaseSource) SupportsKind(kind string) bool {
 		return false
 	}
 }
+
+func (m *machbaseSource) TableExists(ctx context.Context, table string) (bool, error) {
+	return m.cli.TableExists(ctx, table)
+}

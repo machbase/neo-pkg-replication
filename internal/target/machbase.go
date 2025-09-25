@@ -73,3 +73,7 @@ func (m *machbaseTarget) SupportsKind(kind string) bool {
 		return false
 	}
 }
+
+func (m *machbaseTarget) TableExists(ctx context.Context, table string) (bool, error) {
+	return m.cli.TableExists(ctx, table)
+}
