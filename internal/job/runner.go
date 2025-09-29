@@ -49,6 +49,10 @@ func (r *runner) openResources(ctx context.Context) (func(), error) {
 	}, nil
 }
 
+func (r *runner) saveCheckPoint(checkpoint time.Time) error {
+	return r.store.Save(checkpoint)
+}
+
 func (r *runner) loadCheckPoint() (time.Time, error) {
 	return r.store.Load()
 }
@@ -70,12 +74,12 @@ func (r *runner) runLoop(ctx context.Context, cursor time.Time) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			next, err := r.RunCycle(ctx, cursor)
+			next, err := r.RunCycle(ctx, cursor) // 메서드 이름 변경
 			if err != nil {
 				r.report(fmt.Errorf("failed to run cycle: %v", err))
 				return
 			}
-			if err := r.store.Save(next); err != nil {
+			if err := r.saveCheckPoint(next); err != nil {
 				r.report(fmt.Errorf("failed to save checkpoint: %v", err))
 				return
 			}
@@ -98,7 +102,7 @@ func (r *runner) Start(ctx context.Context) error {
 		}
 		defer cleanup()
 
-		exists, err := r.checkTableExists(c)
+		exists, err := r.validateTables(c)
 		if err != nil {
 			r.report(err)
 			return
@@ -115,13 +119,12 @@ func (r *runner) Start(ctx context.Context) error {
 		}
 
 		r.runLoop(c, cursor)
-
 	}()
 
 	return nil
 }
 
-func (r *runner) checkTableExists(ctx context.Context) (bool, error) {
+func (r *runner) validateTables(ctx context.Context) (bool, error) {
 	// source table exists
 	exists, err := r.src.TableExists(ctx, r.spec.TableMap.Source)
 	if err != nil {
@@ -157,7 +160,6 @@ func (r *runner) RunCycle(ctx context.Context, cursor time.Time) (time.Time, err
 		return time.Time{}, fmt.Errorf("failed to create reader: %v", err)
 	}
 	defer reader.Close(ctx)
-
 	if err := reader.Prepare(ctx); err != nil {
 		return time.Time{}, fmt.Errorf("failed to prepare reader: %v", err)
 	}
@@ -167,10 +169,12 @@ func (r *runner) RunCycle(ctx context.Context, cursor time.Time) (time.Time, err
 		return time.Time{}, fmt.Errorf("failed to create writer: %v", err)
 	}
 	defer writer.Close(ctx)
-
 	if err := writer.Prepare(ctx); err != nil {
 		return time.Time{}, fmt.Errorf("failed to prepare writer: %v", err)
 	}
+
+	mr, hasMetaRead := reader.(ports.MetaReader)
+	mw, hasMetaWrite := writer.(ports.MetaWriter)
 
 	for {
 		to := from.Add(r.batchWindowLimit)

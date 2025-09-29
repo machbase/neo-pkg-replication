@@ -53,11 +53,6 @@ func (c *Client) TableExists(ctx context.Context, table string) (bool, error) {
 func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, body io.Reader) (*Response, error) {
 	u := c.base.ResolveReference(&url.URL{Path: path})
 
-	// 임시
-	if method == http.MethodPost {
-		q.Set("method", "append")
-	}
-
 	if len(q) > 0 {
 		u.RawQuery = q.Encode()
 	}
@@ -96,10 +91,13 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, 
 }
 
 type Response struct {
-	Success bool    `json:"success"`
-	Reason  string  `json:"reason"`
-	Elapse  string  `json:"elapse"`
-	Data    [][]any `json:"data,omitempty"`
+	Success bool   `json:"success"`
+	Reason  string `json:"reason"`
+	Elapse  string `json:"elapse"`
+	Data    struct {
+		Columns []string `json:"columns"`
+		Rows    [][]any  `json:"rows"`
+	} `json:"data,omitempty"`
 }
 
 type Table struct {

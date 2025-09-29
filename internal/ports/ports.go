@@ -11,7 +11,10 @@ type Range struct {
 }
 
 type Batch struct {
-	Rows [][]any
+	Columns []string
+	Rows    [][]any
+
+	Meta map[string]any
 }
 
 type Source interface {
@@ -26,6 +29,10 @@ type SourceReader interface {
 	Prepare(ctx context.Context) error
 	Close(ctx context.Context) error
 	ReadRange(ctx context.Context, rng Range) (Batch, error)
+}
+
+type MetaReader interface {
+	ReadMeta(ctx context.Context, offset int) (Batch, error)
 }
 
 type WriteResult struct {
@@ -45,6 +52,10 @@ type TargetWriter interface {
 	Prepare(ctx context.Context) error
 	WriteBatch(ctx context.Context, batch Batch) (WriteResult, error)
 	Close(ctx context.Context) error
+}
+
+type MetaWriter interface {
+	WriteMeta(ctx context.Context, batch Batch) error
 }
 
 type Describer interface {

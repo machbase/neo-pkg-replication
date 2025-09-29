@@ -49,7 +49,9 @@ replication:
         seq_expr: _RID" # RID, TO_TIMESTAMP(time)
       options: # Opion 추가
         use_meta: true
-
+        
+        # placement: prefix # prefix, suffix, regexp
+        # affix: svr1
 
         interval: "1m"
         delay: "10m"

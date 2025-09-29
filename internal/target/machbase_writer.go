@@ -9,75 +9,65 @@ import (
 	"net/url"
 	"repli/internal/machbase"
 	"repli/internal/ports"
-	"strings"
 )
 
 type machbaseWriter struct {
 	table   string
 	columns []string
 	seqExpr string
-	query   string
-
-	limit int
+	useMeta bool
 
 	cli *machbase.Client
 }
 
 func (m *machbaseWriter) Prepare(ctx context.Context) error {
-	insertCols := strings.Join(m.columns, ",")
-	insertVals := strings.Repeat("%%s", len(m.columns))
-
-	m.query = fmt.Sprintf("INSERT INTO %s(%s) VALUES(%s)", m.table, insertCols, insertVals)
 
 	return nil
 }
 
+// insert into tag metadata values ('TAG_0002', 99, '2010-01-01', '1.1.1.1');
+
+func (m *machbaseWriter) writeMeta(ctx context.Context, batch ports.Batch) (ports.WriteResult, error) {
+
+	return ports.WriteResult{}, nil
+}
+
 func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (ports.WriteResult, error) {
+	if len(batch.Rows) == 0 {
+		return ports.WriteResult{}, nil // 수정?
+	}
+
 	path, err := url.JoinPath("/db/write", m.table)
 	if err != nil {
 		return ports.WriteResult{}, err
 	}
 
-	if len(batch.Rows) == 0 {
-		// return ports.WriteResult{}, fmt.Errorf("")
-		return ports.WriteResult{}, nil
+	if m.useMeta {
+
 	}
 
-	rangeCnt := len(batch.Rows) / m.limit
-	if rangeCnt == 0 || len(batch.Rows)%m.limit > 0 {
-		rangeCnt += 1
+	buf := bytes.Buffer{}
+	if err := json.NewEncoder(&buf).Encode(batch.Rows); err != nil {
+		return ports.WriteResult{}, fmt.Errorf("failed to encode json: %v", err)
 	}
 
-	startLimit := 0
-	endLimit := m.limit
-	for i := 0; i < rangeCnt; i++ {
-		// rangeCnt 와 endLimit 확인 필요
-		if endLimit > len(batch.Rows) && startLimit < len(batch.Rows) {
-			// startLimit
-			endLimit = len(batch.Rows)
-		}
+	query := url.Values{}
+	query.Set("method", "append")
 
-		rows := batch.Rows[startLimit:endLimit]
-		startLimit += m.limit
-		endLimit += m.limit
-
-		bdata, err := json.Marshal(rows)
-		if err != nil {
-			return ports.WriteResult{}, fmt.Errorf("failed to marshal json: %v", err)
-		}
-
-		response, err := m.cli.DoJSON(ctx, http.MethodPost, path, nil, bytes.NewReader(bdata))
-		if err != nil {
-			return ports.WriteResult{}, err
-		}
-		if !response.Success {
-			return ports.WriteResult{}, fmt.Errorf("failed to write: %s", response.Reason)
-		}
+	response, err := m.cli.DoJSON(ctx, http.MethodPost, path, query, &buf)
+	if err != nil {
+		return ports.WriteResult{}, err
 	}
-
-	// limit 을 기준으로 batch.Rows를 나눠서 전송
+	if !response.Success {
+		return ports.WriteResult{}, fmt.Errorf("failed to write: %s", response.Reason)
+	}
 
 	return ports.WriteResult{}, nil
+}
+
+type machbaseAppendRequest struct {
+	Columns []string `json:"columns"`
+	Rows    [][]any  `json:"rows"`
 }
 
 func (m *machbaseWriter) Close(ctx context.Context) error {
