@@ -28,6 +28,30 @@ func (m *machbaseWriter) Prepare(ctx context.Context) error {
 // insert into tag metadata values ('TAG_0002', 99, '2010-01-01', '1.1.1.1');
 
 func (m *machbaseWriter) writeMeta(ctx context.Context, batch ports.Batch) (ports.WriteResult, error) {
+	if len(batch.Rows) == 0 {
+		return ports.WriteResult{}, nil // 수정?
+	}
+
+	path, err := url.JoinPath("/db/write", m.table)
+	if err != nil {
+		return ports.WriteResult{}, err
+	}
+
+	buf := bytes.Buffer{}
+	if err := json.NewEncoder(&buf).Encode(batch.Rows); err != nil {
+		return ports.WriteResult{}, fmt.Errorf("failed to encode json: %v", err)
+	}
+
+	query := url.Values{}
+	query.Set("method", "append")
+
+	response, err := m.cli.DoJSON(ctx, http.MethodPost, path, query, &buf)
+	if err != nil {
+		return ports.WriteResult{}, err
+	}
+	if !response.Success {
+		return ports.WriteResult{}, fmt.Errorf("failed to write: %s", response.Reason)
+	}
 
 	return ports.WriteResult{}, nil
 }
@@ -40,10 +64,6 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 	path, err := url.JoinPath("/db/write", m.table)
 	if err != nil {
 		return ports.WriteResult{}, err
-	}
-
-	if m.useMeta {
-
 	}
 
 	buf := bytes.Buffer{}

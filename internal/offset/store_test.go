@@ -19,15 +19,15 @@ func TestStore(t *testing.T) {
 	assert.NoError(t, err)
 
 	now := time.Now()
-	ok := now.After(checkpoint)
+	ok := now.After(checkpoint.Cursor)
 	assert.True(t, ok)
 
-	err = store.Save(now)
+	err = store.Save(CheckPoint{Cursor: now})
 	assert.NoError(t, err)
 
 	checkpoint, err = store.Load()
 	assert.NoError(t, err)
-	assert.Equal(t, now.Format(time.RFC3339), checkpoint.Format(time.RFC3339))
+	assert.Equal(t, now.Format(time.RFC3339), checkpoint.Cursor.Format(time.RFC3339))
 
 	err = os.Remove(name)
 	assert.NoError(t, err)

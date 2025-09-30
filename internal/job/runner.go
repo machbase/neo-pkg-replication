@@ -49,22 +49,22 @@ func (r *runner) openResources(ctx context.Context) (func(), error) {
 	}, nil
 }
 
-func (r *runner) saveCheckPoint(checkpoint time.Time) error {
+func (r *runner) saveCheckPoint(checkpoint offset.CheckPoint) error {
 	return r.store.Save(checkpoint)
 }
 
-func (r *runner) loadCheckPoint() (time.Time, error) {
+func (r *runner) loadCheckPoint() (offset.CheckPoint, error) {
 	return r.store.Load()
 }
 
-func (r *runner) runLoop(ctx context.Context, cursor time.Time) {
+func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
 	// 최초 실행 시 한 번 실행
-	next, err := r.RunCycle(ctx, cursor)
+	next, err := r.RunCycle(ctx, chk)
 	if err != nil {
 		r.report(fmt.Errorf("failed to run cycle: %v", err))
 		return
 	}
-	cursor = next
+	chk = next
 
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -74,7 +74,7 @@ func (r *runner) runLoop(ctx context.Context, cursor time.Time) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			next, err := r.RunCycle(ctx, cursor) // 메서드 이름 변경
+			next, err := r.RunCycle(ctx, chk) // 메서드 이름 변경
 			if err != nil {
 				r.report(fmt.Errorf("failed to run cycle: %v", err))
 				return
@@ -83,7 +83,7 @@ func (r *runner) runLoop(ctx context.Context, cursor time.Time) {
 				r.report(fmt.Errorf("failed to save checkpoint: %v", err))
 				return
 			}
-			cursor = next
+			chk = next
 		}
 	}
 }
@@ -112,13 +112,13 @@ func (r *runner) Start(ctx context.Context) error {
 			return
 		}
 
-		cursor, err := r.loadCheckPoint()
+		checkpoint, err := r.loadCheckPoint()
 		if err != nil {
 			r.report(fmt.Errorf("failed to load store %q: %v", r.spec.CheckPoint, err))
 			return
 		}
 
-		r.runLoop(c, cursor)
+		r.runLoop(c, checkpoint)
 	}()
 
 	return nil
@@ -146,36 +146,37 @@ func (r *runner) validateTables(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (r *runner) RunCycle(ctx context.Context, cursor time.Time) (time.Time, error) {
-	r.log.Info("run cycle!")
-
+func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.CheckPoint, error) {
 	until := time.Now().Add(-r.delay)
-	from := cursor
+	from := chk.Cursor
 
 	if !from.Before(until) {
-		return from, nil
+		chk.Cursor = from
+		return chk, nil
 	}
+
 	reader, err := r.src.NewReader(ctx, r.spec.TableMap.Source, r.spec.TableMap.SeqExpr, r.spec.TableMap.Columns)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("failed to create reader: %v", err)
+		return offset.CheckPoint{}, fmt.Errorf("failed to create reader: %v", err)
 	}
 	defer reader.Close(ctx)
 	if err := reader.Prepare(ctx); err != nil {
-		return time.Time{}, fmt.Errorf("failed to prepare reader: %v", err)
+		return offset.CheckPoint{}, fmt.Errorf("failed to prepare reader: %v", err)
 	}
 
 	writer, err := r.tar.NewWriter(ctx, r.spec.TableMap.Target, r.spec.TableMap.SeqExpr, r.spec.TableMap.Columns)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("failed to create writer: %v", err)
+		return offset.CheckPoint{}, fmt.Errorf("failed to create writer: %v", err)
 	}
 	defer writer.Close(ctx)
 	if err := writer.Prepare(ctx); err != nil {
-		return time.Time{}, fmt.Errorf("failed to prepare writer: %v", err)
+		return offset.CheckPoint{}, fmt.Errorf("failed to prepare writer: %v", err)
 	}
 
 	mr, hasMetaRead := reader.(ports.MetaReader)
 	mw, hasMetaWrite := writer.(ports.MetaWriter)
 
+	metaOffset := 0
 	for {
 		to := from.Add(r.batchWindowLimit)
 		if to.After(until) {
@@ -186,20 +187,34 @@ func (r *runner) RunCycle(ctx context.Context, cursor time.Time) (time.Time, err
 			break
 		}
 
+		if r.spec.Options.UseMeta && hasMetaRead && hasMetaWrite {
+			batch, err := mr.ReadMeta(ctx, metaOffset)
+			if err != nil {
+				return offset.CheckPoint{}, fmt.Errorf("failed to read meta: %v", err)
+			}
+
+			metaOffset, err := mw.WriteMeta(ctx, batch)
+			if err != nil {
+				return offset.CheckPoint{}, fmt.Errorf("failed to write meta: %v", err)
+			}
+
+			chk.MetaOffset = metaOffset
+		}
+
 		batch, err := reader.ReadRange(ctx, ports.Range{From: from, To: to})
 		if err != nil {
-			return time.Time{}, fmt.Errorf("failed to read range: %v", err)
+			return offset.CheckPoint{}, fmt.Errorf("failed to read range: %v", err)
 		}
 
 		_, err = writer.WriteBatch(ctx, batch)
 		if err != nil {
-			return time.Time{}, fmt.Errorf("failed to write batch: %v", err)
+			return offset.CheckPoint{}, fmt.Errorf("failed to write batch: %v", err)
 		}
 
 		from = to
 	}
 
-	return from, nil
+	return chk, nil
 }
 
 func (r *runner) report(err error) {

@@ -55,7 +55,7 @@ type TargetWriter interface {
 }
 
 type MetaWriter interface {
-	WriteMeta(ctx context.Context, batch Batch) error
+	WriteMeta(ctx context.Context, batch Batch) (int, error)
 }
 
 type Describer interface {
