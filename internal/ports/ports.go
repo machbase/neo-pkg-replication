@@ -8,6 +8,8 @@ import (
 type Range struct {
 	From time.Time
 	To   time.Time
+
+	Offset int
 }
 
 type Batch struct {

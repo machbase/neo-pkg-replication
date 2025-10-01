@@ -12,25 +12,26 @@ import (
 )
 
 type machbaseWriter struct {
-	table   string
-	columns []string
-	seqExpr string
-	useMeta bool
+	table     string
+	metaTable string
+	columns   []string
+	seqExpr   string
 
 	cli *machbase.Client
 }
 
 func (m *machbaseWriter) Prepare(ctx context.Context) error {
+	m.metaTable = fmt.Sprintf("_%s_meta", m.table)
 
 	return nil
 }
 
-// insert into tag metadata values ('TAG_0002', 99, '2010-01-01', '1.1.1.1');
-
-func (m *machbaseWriter) writeMeta(ctx context.Context, batch ports.Batch) (ports.WriteResult, error) {
+func (m *machbaseWriter) WriteMeta(ctx context.Context, batch ports.Batch) (ports.WriteResult, error) {
 	if len(batch.Rows) == 0 {
 		return ports.WriteResult{}, nil // 수정?
 	}
+
+	// insert into _event_meta metadata values ('TAG_0002', 99, '2010-01-01', '1.1.1.1');
 
 	path, err := url.JoinPath("/db/write", m.table)
 	if err != nil {

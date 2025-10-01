@@ -77,11 +77,13 @@ func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
 			next, err := r.RunCycle(ctx, chk) // 메서드 이름 변경
 			if err != nil {
 				r.report(fmt.Errorf("failed to run cycle: %v", err))
-				return
+				continue // 본부장님께 질문
+				// return
 			}
 			if err := r.saveCheckPoint(next); err != nil {
 				r.report(fmt.Errorf("failed to save checkpoint: %v", err))
-				return
+				continue
+				// return
 			}
 			chk = next
 		}
@@ -176,7 +178,7 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 	mr, hasMetaRead := reader.(ports.MetaReader)
 	mw, hasMetaWrite := writer.(ports.MetaWriter)
 
-	metaOffset := 0
+	metaOffset := chk.MetaOffset
 	for {
 		to := from.Add(r.batchWindowLimit)
 		if to.After(until) {
@@ -192,12 +194,10 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 			if err != nil {
 				return offset.CheckPoint{}, fmt.Errorf("failed to read meta: %v", err)
 			}
-
 			metaOffset, err := mw.WriteMeta(ctx, batch)
 			if err != nil {
 				return offset.CheckPoint{}, fmt.Errorf("failed to write meta: %v", err)
 			}
-
 			chk.MetaOffset = metaOffset
 		}
 

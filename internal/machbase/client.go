@@ -78,14 +78,12 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, q url.Values, 
 	if err := decoder.Decode(&resp); err != nil {
 		return nil, fmt.Errorf("failed to decode json: %v", err)
 	}
-
 	if !resp.Success {
 		return nil, fmt.Errorf("machbase request failed: %s", resp.Reason)
 	}
-
-	if rsp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("http request failed: status=%d, reason=%q", rsp.StatusCode, resp.Reason)
-	}
+	// if rsp.StatusCode/100 != 2 {
+	// 	return nil, fmt.Errorf("http request failed: status=%d, reason=%q", rsp.StatusCode, resp.Reason)
+	// }
 
 	return &resp, nil
 }

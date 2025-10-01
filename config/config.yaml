@@ -43,16 +43,14 @@ replication:
       target: target_db1
       kind: tag
       table_map: # table_map은 오직 1:1 사용 (source 와 target의 테이블 이름이 서로 다를 수 있으나 구조는 같음)
-        source: tag
+        source: gasan
         target: guro
         columns: [name, time, value, uuid]
-        seq_expr: _RID" # RID, TO_TIMESTAMP(time)
+        seq_expr: RID" # RID, TO_TIMESTAMP(time)
       options: # Opion 추가
         use_meta: true
-        
         # placement: prefix # prefix, suffix, regexp
         # affix: svr1
-
         interval: "1m"
         delay: "10m"
         batch_window_limit: "1h"
@@ -63,14 +61,13 @@ replication:
       target: target_db2
       kind: tag
       table_map:
-        source: tag
+        source: gasan
         target: guro
         columns: [name, time, value, uuid]
         seq_expr: "RID"
       options:
         placement: prefix # prefix, suffix, regexp
         affix: svr1
-
         interval: "1m"
         delay: "10m"
         batch_window_limit: "1h"
