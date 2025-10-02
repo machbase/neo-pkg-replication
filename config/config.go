@@ -120,9 +120,9 @@ func (spec *JobSpec) Normalize() {
 		// kind가 빈값인경우
 		switch strings.ToUpper(spec.Kind) {
 		case "TAG":
-			spec.TableMap.SeqExpr = "_RID"
+			spec.TableMap.SeqExpr = "RID"
 		case "LOG":
-			spec.TableMap.SeqExpr = "_RID"
+			spec.TableMap.SeqExpr = "RID"
 		}
 	}
 	if len(spec.TableMap.Columns) == 0 {

@@ -6,31 +6,47 @@ import (
 	"time"
 )
 
+type RFC3339Time time.Time
+
+func (t RFC3339Time) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Time(t).Format(time.RFC3339))
+}
+
+func (t *RFC3339Time) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+
+	if s == "" {
+		*t = RFC3339Time(time.Time{})
+		return nil
+	}
+
+	tt, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return err
+	}
+	*t = RFC3339Time(tt)
+
+	return nil
+}
+
 type Store interface {
 	Load() (CheckPoint, error)
 	Save(CheckPoint) error
 }
 
+// 여러 DB CheckPoint 값을 한곳에서 관리, 필요한 것만 사용 -> 나중에 포인터로 변환?
 type CheckPoint struct {
-	Cursor     time.Time `json:"cursor"`
-	MetaOffset int       `json:"meta_offset"` /// 마크베이스 전용, 나중에 어떻게 할지 고민
-	RID        int       `json:"rid"`
+	Cursor     RFC3339Time `json:"cursor"`
+	MetaOffset int         `json:"meta_offset"`
+	RID        int         `json:"rid"`
 }
 
 type fileStore struct{ path string }
 
 func NewFileStore(path string) Store {
-	// NewFileStore(path string, mode string) Store{
-	// switch mode {
-	// case "machbase"
-	// return &machbase.FileStore{path}
-	// case "postgres"
-	// return &postgres.FileStore{path}
-	// case "SQLite"
-	// return &sqlite.FileStore{path}
-	// }
-	// 각 DB 패키지마다 fileStore 를 만들고 Store interface 구현
-	// 각 DB 마다 원하는 CheckPoint 구조체로 저장할 수 있음
 	return &fileStore{path: path}
 }
 
@@ -42,7 +58,7 @@ func (fs *fileStore) Load() (CheckPoint, error) {
 			return CheckPoint{}, err
 		}
 
-		chk.Cursor = time.Now()
+		chk.Cursor = RFC3339Time(time.Now())
 		chk.MetaOffset = 0
 
 		err = fs.Save(chk)
@@ -63,6 +79,11 @@ func (fs *fileStore) Load() (CheckPoint, error) {
 
 	return chk, nil
 }
+
+// time.Time, json으로 저장시 time.RFC3339Nano 포맷으로 저장
+// func(chk *Checkpoint) Marshal(v any) ([]byte, error) {
+// 		json.Marshal(chk.timeFOr)
+// }
 
 func (fs *fileStore) Save(chk CheckPoint) error {
 	bdata, err := json.Marshal(chk)
