@@ -53,6 +53,7 @@ replication:
         affix: svr1
         interval: "1m"
         delay: "10m"
+        rid_limit : 1000
         batch_window_limit: "1h"
       checkpoint: "./tmp/tag_to_log.chk"
 
@@ -66,8 +67,8 @@ replication:
         columns: [name, time, value, uuid]
         seq_expr: "RID"
       options:
-        placement: prefix # prefix, suffix, regexp
-        affix: svr1
+        placement: suffix # prefix, suffix, regexp
+        affix: svr2
         interval: "1m"
         delay: "10m"
         batch_window_limit: "1h"

@@ -83,6 +83,7 @@ func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
 			if err := r.saveCheckPoint(next); err != nil {
 				r.report(fmt.Errorf("failed to save checkpoint: %v", err))
 				continue
+
 				// return
 			}
 			chk = next
@@ -201,7 +202,7 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 			chk.MetaOffset = metaOffset
 		}
 
-		batch, err := reader.ReadRange(ctx, ports.Range{From: from, To: to})
+		batch, err := reader.ReadRange(ctx, ports.Range{From: from, To: to, Rid: chk.LastRID})
 		if err != nil {
 			return offset.CheckPoint{}, fmt.Errorf("failed to read range: %v", err)
 		}

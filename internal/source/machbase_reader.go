@@ -25,10 +25,11 @@ type machbaseReader struct {
 
 	mode mode
 
-	query     string
-	metaQuery string
-
+	query       string
+	metaQuery   string
 	maxRIDQuery string
+
+	ridLimit int
 
 	cli *machbase.Client
 }
@@ -47,7 +48,7 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 	case "RID":
 		m.mode = modeRID
 
-		selectList = fmt.Sprintf("/*+ RID_RANGE(%s, %%s, %%s) */ _RID", m.table)
+		selectList = fmt.Sprintf("/*+ RID_RANGE(%s, %%d, %%d) */ _RID", m.table)
 		selectList = buildSelectList(selectList)
 		m.query = fmt.Sprintf("SELECT %s FROM %s", selectList, m.table)
 		m.maxRIDQuery = fmt.Sprintf("SELECT MAX(v.TABLE_END_RID) FROM M$SYS_TABLES m, V$STORAGE_TAG_TABLES v WHERE  m.ID = v.ID AND m.NAME LIKE '_%s_DATA_%%' LIMIT 1", m.table)
@@ -58,6 +59,7 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 		selectList = buildSelectList(selectList)
 		m.query = fmt.Sprintf("SELECT %s FROM %s WHERE _seq_ >= %%s AND _seq_ < %%s ", selectList, m.table)
 	}
+
 	m.metaQuery = fmt.Sprintf("SELECT * FROM _%s_meta WHERE _ID > %%d ORDER BY _ID ASC", m.table)
 
 	return nil
@@ -69,7 +71,7 @@ func (m *machbaseReader) ReadRange(ctx context.Context, rng ports.Range) (ports.
 	case modeSeq:
 		query = fmt.Sprintf(m.query, tsLit(rng.From), tsLit(rng.To))
 	case modeRID:
-		query = fmt.Sprintf(m.query, rng.Offset)
+		query = fmt.Sprintf(m.query, rng.Offset, rng.Offset+m.ridLimit)
 	}
 
 	u := url.Values{}
@@ -82,6 +84,11 @@ func (m *machbaseReader) ReadRange(ctx context.Context, rng ports.Range) (ports.
 	if !response.Success {
 		return ports.Batch{}, fmt.Errorf("failed to request: %v", response.Reason)
 	}
+
+	// if len(response.Data.Rows) > 0 {
+	// 	lastRow := response.Data.Rows[len(response.Data.Rows)]
+	// 	lastRID := lastRow[0]
+	// }
 
 	return ports.Batch{
 		Columns: response.Data.Columns,

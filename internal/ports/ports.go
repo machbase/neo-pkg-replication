@@ -8,6 +8,7 @@ import (
 type Range struct {
 	From time.Time
 	To   time.Time
+	Rid  int
 
 	Offset int
 }
@@ -42,12 +43,21 @@ type WriteResult struct {
 	Failed  int
 }
 
+type WriteConfig struct {
+	TableName string
+	Columns   []string
+	BatchSize int
+
+	// ...
+}
+
 type Target interface {
 	Name() string
 	Open(ctx context.Context) error
 	Close(ctx context.Context) error
 	TableExists(ctx context.Context, table string) (bool, error)
 	NewWriter(ctx context.Context, table, seqExpr string, columns []string) (TargetWriter, error)
+	// NewWriter(ctx context.Context, spec config.JobSpec) (TargetWriter, error)
 }
 
 type TargetWriter interface {

@@ -24,14 +24,14 @@ func TestStore(t *testing.T) {
 	ok := now.After(checkpoint.Cursor)
 	assert.True(t, ok)
 
-	err = store.Save(CheckPoint{Cursor: now, MetaOffset: 11, RID: 22})
+	err = store.Save(CheckPoint{Cursor: now, MetaOffset: 11, LastRID: 22})
 	assert.NoError(t, err)
 
 	checkpoint, err = store.Load()
 	assert.NoError(t, err)
 	assert.Equal(t, now.Format(time.RFC3339), checkpoint.Cursor.Format(time.RFC3339))
 	assert.Equal(t, checkpoint.MetaOffset, 11)
-	assert.Equal(t, checkpoint.RID, 22)
+	assert.Equal(t, checkpoint.LastRID, 22)
 
 	err = os.Remove(name)
 	assert.NoError(t, err)

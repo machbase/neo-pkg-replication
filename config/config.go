@@ -76,6 +76,7 @@ type JobOptions struct {
 	Interval         string `yaml:"interval"`
 	Delay            string `yaml:"delay"`
 	BatchWindowLimit string `yaml:"batch_window_limit"`
+	RidLimit         int    `yaml:"rid_limit"`
 }
 
 type LoggingConfig struct {
