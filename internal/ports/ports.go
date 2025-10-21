@@ -8,7 +8,7 @@ import (
 type Range struct {
 	From time.Time
 	To   time.Time
-	Rid  int
+	RIDs map[string]int64 // 임시
 
 	Offset int
 }
@@ -73,4 +73,8 @@ type MetaWriter interface {
 type Describer interface {
 	Driver() string                //machbase, postgres
 	SupportsKind(kind string) bool // TAG/LOG 등
+}
+
+type RangePlanner interface {
+	PlanRange(ctx context.Context)
 }

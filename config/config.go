@@ -126,10 +126,10 @@ func (spec *JobSpec) Normalize() {
 			spec.TableMap.SeqExpr = "RID"
 		}
 	}
-	if len(spec.TableMap.Columns) == 0 {
-		spec.TableMap.Columns = append(spec.TableMap.Columns, "*")
-		return
-	}
+	// if len(spec.TableMap.Columns) == 0 {
+	// 	spec.TableMap.Columns = append(spec.TableMap.Columns, "*")
+	// 	return
+	// }
 }
 
 func (spec *JobSpec) Validate() error {

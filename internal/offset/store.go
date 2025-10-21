@@ -40,9 +40,10 @@ type Store interface {
 // 여러 DB CheckPoint 값을 한곳에서 관리, 필요한 것만 사용 -> 나중에 포인터로 변환?
 type CheckPoint struct {
 	// Cursor     RFC3339Time `json:"cursor"`
-	Cursor     time.Time `json:"cursor"`
-	MetaOffset int       `json:"meta_offset"`
-	LastRID    int       `json:"last_rid"`
+	Mode       string           `json:"mode"`
+	Cursor     time.Time        `json:"cursor,omitempty"`
+	MetaOffset int              `json:"meta_offset"`
+	RIDs       map[string]int64 `json:"rids,omitempty"`
 }
 
 type fileStore struct{ path string }
@@ -62,6 +63,7 @@ func (fs *fileStore) Load() (CheckPoint, error) {
 		// chk.Cursor = RFC3339Time(time.Now())
 		chk.Cursor = time.Now()
 		chk.MetaOffset = 0
+		chk.RIDs = map[string]int64{}
 
 		err = fs.Save(chk)
 		if err != nil {

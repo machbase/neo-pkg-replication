@@ -17,4 +17,9 @@ clean:
 	@echo "Cleaning $(BIN_DIR)/$(PACKAGE_NAME)"
 	@rm -rf ./$(BIN_DIR)
 
+package: clean build
+	@echo "Packging $(PACKAGE_NAME)..."
+	@cp $(CONFIG_DIR)/$(CONFIG_FILE) $(BIN_DIR)/$(PACKAGE_NAME)/$(CONFIG_FILE)
+	@cd $(BIN_DIR) && zip $(PACKAGE_NAME).zip $(PACKAGE_NAME)/*
+
 .PHONY: run build

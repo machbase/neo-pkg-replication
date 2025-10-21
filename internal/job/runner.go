@@ -83,7 +83,6 @@ func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
 			if err := r.saveCheckPoint(next); err != nil {
 				r.report(fmt.Errorf("failed to save checkpoint: %v", err))
 				continue
-
 				// return
 			}
 			chk = next
@@ -136,6 +135,7 @@ func (r *runner) validateTables(ctx context.Context) (bool, error) {
 	if !exists {
 		return false, fmt.Errorf("%q table is not exists: %v", r.spec.TableMap.Source, err)
 	}
+	r.log.Info("source table exists")
 
 	// target table exists
 	exists, err = r.tar.TableExists(ctx, r.spec.TableMap.Target)
@@ -179,7 +179,6 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 	mr, hasMetaRead := reader.(ports.MetaReader)
 	mw, hasMetaWrite := writer.(ports.MetaWriter)
 
-	metaOffset := chk.MetaOffset
 	for {
 		to := from.Add(r.batchWindowLimit)
 		if to.After(until) {
@@ -191,7 +190,7 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 		}
 
 		if r.spec.Options.UseMeta && hasMetaRead && hasMetaWrite {
-			batch, err := mr.ReadMeta(ctx, metaOffset)
+			batch, err := mr.ReadMeta(ctx, chk.MetaOffset)
 			if err != nil {
 				return offset.CheckPoint{}, fmt.Errorf("failed to read meta: %v", err)
 			}
@@ -202,9 +201,14 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 			chk.MetaOffset = metaOffset
 		}
 
-		batch, err := reader.ReadRange(ctx, ports.Range{From: from, To: to, Rid: chk.LastRID})
+		batch, err := reader.ReadRange(ctx, ports.Range{From: from, To: to, RIDs: chk.RIDs})
 		if err != nil {
 			return offset.CheckPoint{}, fmt.Errorf("failed to read range: %v", err)
+		}
+
+		r.log.Infof("batch.columns : %v %d", batch.Columns, len(batch.Columns))
+		for _, row := range batch.Rows {
+			r.log.Infof("batch.rows : %v %d", row, len(row))
 		}
 
 		_, err = writer.WriteBatch(ctx, batch)

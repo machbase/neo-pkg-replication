@@ -20,6 +20,7 @@ func Build(specs ...config.SourceSpec) (map[string]ports.Source, error) {
 			if err != nil {
 				return nil, err
 			}
+		case "postgres":
 		default:
 			return nil, fmt.Errorf("unknown source type: %q", spec.Type)
 		}
