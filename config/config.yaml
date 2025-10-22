@@ -30,10 +30,10 @@ replication:
         columns: []
         seq_expr: RID # RID, TO_TIMESTAMP(time)
       options: # Opion 추가
-        use_meta: true
+        use_meta: false
         placement: none #prefix # prefix, suffix, regexp, none
         # affix: svr1
-        interval: 10s
+        interval: 1m
         delay: 1m
         rid_limit : 1000
         batch_window_limit: 1h

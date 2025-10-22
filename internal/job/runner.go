@@ -154,6 +154,7 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 	from := chk.Cursor
 
 	if !from.Before(until) {
+		r.log.Info("from > unil")
 		chk.Cursor = from
 		return chk, nil
 	}
@@ -178,6 +179,12 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 
 	mr, hasMetaRead := reader.(ports.MetaReader)
 	mw, hasMetaWrite := writer.(ports.MetaWriter)
+
+	// Transfrom
+	// pipeline, err := transform.BuildPipeline(r.src.Name(), r.tar.Name(), r.spec)
+	// if err != nil {
+	// 	return offset.CheckPoint{}, err
+	// }
 
 	for {
 		to := from.Add(r.batchWindowLimit)

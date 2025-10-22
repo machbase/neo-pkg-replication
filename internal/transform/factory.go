@@ -16,8 +16,8 @@ func BuildPipeline(src, tar string, spec config.JobSpec) ([]ports.Transformer, e
 	case "postgres":
 	}
 
-	// CIS ---> CIS
-	chain = append(chain, transoform?)
+	// // CIS ---> CIS
+	// chain = append(chain, transoform?)
 
 	// CIS ---> Target
 	switch tar {

@@ -84,3 +84,27 @@ type Describer interface {
 type RangePlanner interface {
 	PlanRange(ctx context.Context)
 }
+
+// // reader가 읽어서 돌려주는 배치 (필요한 필드만 쓰면 됨)
+// type Batch struct {
+//     Columns []string
+//     Rows    [][]any
+
+//     // 시간 모드용 제안 하이워터마크(없으면 zero)
+//     NextTime time.Time
+
+//     // RID 모드용 제안 하이워터마크(단일/샤드)
+//     NextRID        int64
+//     NextShardRIDs  map[string]int64
+
+//     // 부분성공 시 정확한 커서 계산용(선택)
+//     RowTimes []time.Time  // 각 행의 시각
+//     RowRIDs  []int64      // 각 행의 RID
+// }
+
+// // writer 결과 (부분성공까지 표현)
+// type WriteResult struct {
+//     Written          int
+//     Failed           int
+//     LastAppliedIndex int // -1이면 아무 것도 적용 안 됨
+// }

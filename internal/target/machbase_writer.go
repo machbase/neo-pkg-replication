@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"repli/internal/machbase"
 	"repli/internal/ports"
+	"strings"
 )
 
 type machbaseWriter struct {
@@ -60,7 +61,9 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 	for i, rows := range batch.Rows {
 		payload[i] = make([]any, len(rows))
 		rows = append(rows, metaAppend...)
-		// m.AppendAffix(rows[0])
+		if strings.ToLower(m.placement) != "none" {
+			rows[0] = m.AppendAffix(rows[0])
+		}
 		payload[i] = rows
 	}
 	for _, row := range payload {
@@ -129,17 +132,20 @@ func (m *machbaseWriter) Close(ctx context.Context) error {
 	return nil
 }
 
-func (m *machbaseWriter) AppendAffix(s string) string {
-	switch m.placement {
-	case "prefix":
-		return m.affix + "." + s
-	case "suffix":
-		return s + "." + m.affix
-	case "regexp":
-	case "none":
-		return s
-	default:
-		return s
+func (m *machbaseWriter) AppendAffix(s any) string {
+	switch v := s.(type) {
+	case string:
+		switch m.placement {
+		case "prefix":
+			return m.affix + "." + v
+		case "suffix":
+			return v + "." + m.affix
+		case "regexp":
+		case "none":
+			return v
+		default:
+			return v
+		}
 	}
 	return ""
 }
