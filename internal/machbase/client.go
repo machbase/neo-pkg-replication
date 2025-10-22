@@ -87,39 +87,13 @@ func (c *Client) LookupEndRIDS(ctx context.Context, table string) ([]RIDStore, e
 // select c.NAME,c.ID from M$SYS_TABLES t, M$SYS_COLUMNS c WHERE c.TABLE_ID = t.ID AND t.NAME = '_EVENT_DATA_0' AND c.ID > 0 AND c.ID <65534  order by c.ID asc;
 // select c.NAME,c.ID from M$SYS_TABLES t, M$SYS_COLUMNS c WHERE c.TABLE_ID = t.ID AND t.NAME = '_EVENT_META' AND c.ID > 1 AND c.ID <65534  order by c.ID asc;
 
-func (c *Client) LookupDataColumns(ctx context.Context, table string) ([]any, error) {
-	baseSQL := fmt.Sprintf("SELECT c.NAME AS NAME FROM M$SYS_TABLES t, M$SYS_COLUMNS c WHERE c.TABLE_ID = t.ID AND t.NAME = '_%s_DATA_0' AND c.ID > 0 AND c.ID < 65534 ORDER BY c.ID ASC", strings.ToUpper(table))
+func (c *Client) LookupDataColumns(ctx context.Context, table string) ([]string, error) {
+	baseSQL := fmt.Sprintf("SELECT c.NAME FROM M$SYS_TABLES t, M$SYS_COLUMNS c WHERE c.TABLE_ID = t.ID AND t.NAME = '_%s_DATA_0' AND c.ID > 0 AND c.ID < 65534 ORDER BY c.ID ASC", strings.ToUpper(table))
 	log.Printf("baseSQL: %s", baseSQL)
 
 	query := url.Values{}
 	query.Set("q", baseSQL)
-
-	response, err := c.DoANY(ctx, http.MethodGet, "/db/query", query, nil)
-	if err != nil {
-		return nil, err
-	}
-	if !response.Success {
-		return nil, err
-	}
-
-	dataColumns := []string{}
-	if len(response.Data.Rows) > 0 {
-		for _, row := range response.Data.Rows {
-			for _, r := range row {
-				r.(string)
-				dataColumns = append(dataColumns, r)
-			}
-		}
-	}
-
-	return response.Data.Rows, nil
-}
-
-func (c *Client) LookupMetaColumns(ctx context.Context, table string) ([]string, error) {
-	baseSQL := fmt.Sprintf("select c.NAME from M$SYS_TABLES t, M$SYS_COLUMNS c WHERE c.TABLE_ID = t.ID AND t.NAME = '_%s_META' AND c.ID > 1 AND c.ID <65534  order by c.ID asc", table)
-
-	query := url.Values{}
-	query.Set("q", baseSQL)
+	query.Set("rowsArray", "true")
 
 	response, err := c.DoJSON(ctx, http.MethodGet, "/db/query", query, nil)
 	if err != nil {
@@ -129,9 +103,51 @@ func (c *Client) LookupMetaColumns(ctx context.Context, table string) ([]string,
 		return nil, err
 	}
 
-	metaColumns := []string{}
-	if err := json.Unmarshal(response.Data.Rows, &metaColumns); err != nil {
+	v := []struct {
+		Name string `json:"NAME"`
+	}{}
+
+	err = json.Unmarshal(response.Data.Rows, &v)
+	if err != nil {
 		return nil, err
+	}
+
+	columns := make([]string, 0, len(v))
+	for _, col := range v {
+		columns = append(columns, col.Name)
+	}
+
+	return columns, nil
+}
+
+func (c *Client) LookupMetaColumns(ctx context.Context, table string) ([]string, error) {
+	baseSQL := fmt.Sprintf("SELECT c.NAME FROM M$SYS_TABLES t, M$SYS_COLUMNS c WHERE c.TABLE_ID = t.ID AND t.NAME = '_%s_META' AND c.ID > 1 AND c.ID < 65534  ORDER BY c.ID ASC", strings.ToUpper(table))
+	log.Println("query: ", baseSQL)
+
+	query := url.Values{}
+	query.Set("q", baseSQL)
+	query.Set("rowsArray", "true")
+
+	response, err := c.DoJSON(ctx, http.MethodGet, "/db/query", query, nil)
+	if err != nil {
+		return nil, err
+	}
+	if !response.Success {
+		return nil, err
+	}
+
+	v := []struct {
+		Name string `json:"NAME"`
+	}{}
+
+	err = json.Unmarshal(response.Data.Rows, &v)
+	if err != nil {
+		return nil, err
+	}
+
+	metaColumns := make([]string, 0, len(v))
+	for _, col := range v {
+		metaColumns = append(metaColumns, col.Name)
 	}
 
 	return metaColumns, nil

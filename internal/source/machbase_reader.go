@@ -40,15 +40,16 @@ type machbaseReader struct {
 
 // Prepare는 쿼리 템플릿만 준비
 func (m *machbaseReader) Prepare(ctx context.Context) error {
-	_, err := m.cli.LookupDataColumns(ctx, m.table)
+	dataColumns, err := m.cli.LookupDataColumns(ctx, m.table)
 	if err != nil {
 		return err
 	}
-	// metaColumns, err := m.cli.LookupMetaColumns(ctx, m.table)
-	// if err != nil {
-	// 	return err
-	// }
+	metaColumns, err := m.cli.LookupMetaColumns(ctx, m.table)
+	if err != nil {
+		return err
+	}
 
+	// 수정 필요
 	buildSelectList := func(base string) string {
 		columns := make([]string, 0, len(m.columns))
 		if len(m.columns) > 0 {
@@ -57,12 +58,15 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 			}
 			return base + ", " + strings.Join(columns, ", ")
 		} else {
-			// for _, col := range dataColumns {
-			// 	columns = append(columns, "d."+col)
-			// }
-			// return base + ", " + strings.Join(columns, ", ")
+			for i, col := range dataColumns {
+				if i == 0 {
+					columns = append(columns, "m."+col)
+				} else {
+					columns = append(columns, "d."+col)
+				}
+			}
+			return base + ", " + strings.Join(columns, ", ")
 		}
-		return ""
 	}
 
 	m.metaFmt = fmt.Sprintf("SELECT * FROM _%s_meta WHERE _ID > 0 ORDER BY _ID ASC", m.table)
@@ -76,7 +80,6 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 		if err != nil {
 			return nil
 		}
-		log.Printf("ridStore: %+v", ridStore)
 
 		m.queryFmt = fmt.Sprintf("SELECT %%s FROM %%s d, _%s_meta m WHERE  d.name = m._ID LIMIT 1", m.table)
 		m.readFn = func(ctx context.Context, rng ports.Range) (ports.Batch, error) {
@@ -85,9 +88,9 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 				rows [][]any
 			)
 
-			if rng.RIDs == nil {
-				rng.RIDs = map[string]int64{}
-			}
+			// if rng.RIDs == nil {
+			// 	rng.RIDs = map[string]int64{}
+			// }
 
 			for _, store := range ridStore {
 				rid, ok := rng.RIDs[store.Name]
@@ -98,9 +101,8 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 
 				base := fmt.Sprintf("/*+ RID_RANGE(%s, %d, %d) */ d._RID", store.Name, rid, (rid+1)+m.ridLimit)
 				selectList := buildSelectList(base)
-				log.Println(selectList)
 				query := fmt.Sprintf(m.queryFmt, selectList, store.Name)
-				log.Println("query: ", query)
+				log.Printf("query: %s", query)
 
 				b, err := m.execQuery(ctx, query)
 				if err != nil {
@@ -119,6 +121,7 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 
 				if cols == nil {
 					cols = b.Columns
+					cols = append(cols, metaColumns...)
 				}
 
 				for i := 0; i < len(b.Rows); i++ {
@@ -133,6 +136,9 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 			return ports.Batch{
 				Columns: cols,
 				Rows:    rows,
+				Meta: map[string]any{
+					"metaColumns": metaColumns,
+				},
 			}, nil
 		}
 	default:

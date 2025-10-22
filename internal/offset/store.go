@@ -53,7 +53,7 @@ func NewFileStore(path string) Store {
 }
 
 func (fs *fileStore) Load() (CheckPoint, error) {
-	chk := CheckPoint{}
+	chk := CheckPoint{RIDs: map[string]int64{}}
 	if _, err := os.Stat(fs.path); os.IsNotExist(err) {
 		f, err := os.OpenFile(fs.path, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {

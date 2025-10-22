@@ -51,6 +51,12 @@ type WriteConfig struct {
 	// ...
 }
 
+type Transformer interface {
+	Prepare(ctx context.Context) error
+	Transform(ctx context.Context, batch Batch) (Batch, error)
+	Close(ctx context.Context) error
+}
+
 type Target interface {
 	Name() string
 	Open(ctx context.Context) error
