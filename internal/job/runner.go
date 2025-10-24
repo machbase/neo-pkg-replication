@@ -135,7 +135,6 @@ func (r *runner) validateTables(ctx context.Context) (bool, error) {
 	if !exists {
 		return false, fmt.Errorf("%q table is not exists: %v", r.spec.TableMap.Source, err)
 	}
-	r.log.Info("source table exists")
 
 	// target table exists
 	exists, err = r.tar.TableExists(ctx, r.spec.TableMap.Target)
@@ -145,6 +144,8 @@ func (r *runner) validateTables(ctx context.Context) (bool, error) {
 	if !exists {
 		return false, fmt.Errorf("%q table is not exists: %v", r.spec.TableMap.Source, err)
 	}
+
+	r.log.Infof("source(%s) & target(%s) table exists", r.spec.TableMap.Source, r.spec.TableMap.Target)
 
 	return true, nil
 }
@@ -218,10 +219,12 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 			r.log.Infof("batch.rows : %v %d", row, len(row))
 		}
 
-		_, err = writer.WriteBatch(ctx, batch)
+		writeResult, err := writer.WriteBatch(ctx, batch)
 		if err != nil {
 			return offset.CheckPoint{}, fmt.Errorf("failed to write batch: %v", err)
 		}
+
+		r.log.Infof("write result RIDs: %v", writeResult.RIDs)
 
 		from = to
 	}

@@ -71,6 +71,13 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 	}
 	batch.Rows = payload
 
+	metaRIDs, ok := batch.Meta["rids"]
+	if !ok {
+
+	}
+	RIDs, ok := metaRIDs.(map[string]float64)
+	log.Printf("RIDs: %v", RIDs)
+
 	// 아래 수정 필요
 
 	buf := bytes.Buffer{}

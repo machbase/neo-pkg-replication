@@ -15,7 +15,7 @@ replication:
       connection:
         scheme: http
         host: 127.0.0.1
-        port: 7654
+        port: 6654
         protocol : http
         token: xxx
 
@@ -25,14 +25,14 @@ replication:
       target: neoB
       kind: tag
       table_map: # table_map은 오직 1:1 사용 (source 와 target의 테이블 이름이 서로 다를 수 있으나 구조는 같음)
-        source: event
-        target: event2
+        source: tableA
+        target: tableB
         columns: []
         seq_expr: RID # RID, TO_TIMESTAMP(time)
       options: # Opion 추가
         use_meta: false
         placement: none #prefix # prefix, suffix, regexp, none
-        # affix: svr1
+        affix: svr1
         interval: 1m
         delay: 1m
         rid_limit : 1000

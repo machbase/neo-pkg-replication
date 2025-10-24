@@ -1,6 +1,31 @@
-replication:
-  sources:
-    - name: source_db1
+replication:                                      # 레플리케이션(복제) 전체 설정 루트
+  sources:                                        # 데이터 원본(소스) 목록
+    - name: source_db1                            # 소스 식별 이름
+      type: machbase                              # 소스 DB 타입 (machbase, postgres, mysql...)
+      connection:                                 # 소스 접속 정보
+        scheme: http                              # 접속 스킴 (예: http, https)
+        host: 192.168.0.87                        # 소스 호스트/IP
+        port: 5654                                # 소스 포트
+        protocol : http                           # 통신 프로토콜 (예: http/REST, go-native, ~~ cgo, grpc)
+        token: xxx                                # 인증 토큰(예시 값)
+    - name: source_db2                            # 두 번째 소스
+      type: machbase
+      connection:
+        scheme: http                              # scheme 명칭 변경 검토 주석
+        host: 192.168.0.99                        # 소스2 호스트/IP
+        port: 5654
+        protocol : http                           # REST, GO-Native 등 프로토콜 표기
+        token: xxx
+  targets:                                        # 데이터 대상(타깃) 목록
+    - name: target_db1                            # 타깃 식별 이름
+      type: machbase
+      connection:
+        scheme: http
+        host: 192.168.0.87                        # 타깃 호스트/IP
+        port: 5654
+        protocol : http
+        token: xxx
+    - name: target_db2                            # 두 번째 타깃
       type: machbase
       connection:
         scheme: http
@@ -8,56 +33,26 @@ replication:
         port: 5654
         protocol : http
         token: xxx
-      
-    - name: source_db2
-      type: machbase
-      connection:
-        scheme: http          #scheme 명칭 변경
-        host: 192.168.0.99
-        port: 5654
-        protocol : http       # REST, GO-Native
-        token: xxx
-  
-  targets:
-    - name: target_db1
-      type: machbase
-      connection:
-        scheme: http
-        host: 192.168.0.87
-        port: 5654
-        protocol : http
-        token: xxx
-
-    - name: target_db2
-      type: machbase
-      connection:
-        scheme: http
-        host: 192.168.0.87
-        port: 5654
-        protocol : http
-        token: xxx
-  
-  jobs:
-    - name: tag_to_log
-      source: source_db1
-      target: target_db1
-      kind: tag
-      table_map: # table_map은 오직 1:1 사용 (source 와 target의 테이블 이름이 서로 다를 수 있으나 구조는 같음) (* 구조 다를 수 있음 ) 
-        source: gasan
-        target: guro
-        columns: [name, time, value, uuid]
-        seq_expr: RID # RID, TO_TIMESTAMP(time)
-      options: # Opion 추가
-        use_meta: true
-        placement: prefix # prefix, suffix, regexp, none
-        affix: svr1
-        interval: 1m
-        delay: 10m
-        rid_limit : 1000
-        batch_window_limit: 1h
-      checkpoint: ./tmp/tag_to_log.chk
-
-    - name: mach_to_mach2
+  jobs:                                           # 수행할 복제 작업(Job) 정의
+    - name: tag_to_log                            # 첫 번째 잡 이름
+      source: source_db1                          # 사용할 소스 이름
+      target: target_db1                          # 전송할 타깃 이름
+      kind: tag                                   # 복제 종류(예: tag/log 등)
+      table_map:                                  # 테이블 매핑 (1:1 권장)
+        source: tableA                            # 소스 테이블명
+        target: tableB                            # 타깃 테이블명 (구조 동일 권장)
+        columns: [name, time, value]              # 복제할 컬럼 목록(순서 중요)
+        seq_expr: RID                             # 증가 기준(증분 동기화 키) 예: RID 또는 TO_TIMESTAMP(time)
+      options:                                    # 잡 실행 옵션
+        use_meta: true                            # 메타 정보 사용 여부(원본 메타를 타깃에 반영)
+        placement: prefix                         # name 가공 위치: prefix/suffix/regexp/none
+        affix: svr1                               # 접두/접미에 붙일 문자열
+        interval: 1m                              # 폴링 주기(예: 1m=1분)
+        delay: 10m                                # 지연 처리(지정 시간 이전 데이터만 집계)
+        rid_limit : 1000                          # 한 사이클에서 읽을 최대 RID 수(안전 한도)
+        batch_window_limit: 1h                    # 배치 윈도우 최대 범위 ( seq_expr = TO_TIMESTAMP 시에만 사용 )
+      checkpoint: ./tmp/tag_to_log.chk            # 체크포인트 파일 경로(증분 이어받기)
+    - name: mach_to_mach2                         # 두 번째 잡 이름
       source: source_db2
       target: target_db2
       kind: tag
@@ -67,24 +62,21 @@ replication:
         columns: [name, time, value, uuid]
         seq_expr: RID
       options:
-        placement: suffix # prefix, suffix, regexp
-        affix: svr2
+        placement: suffix                         # name 가공 위치: suffix 사용
+        affix: svr2                               # 붙일 문자열
         interval: 1m
         delay: 10m
         batch_window_limit: 1h
-      checkpoint: ./tmp/mach_to_mach.chk
-
-logging:
-  level: INFO
-  path: ./tmp/replication.log
-  max_size: 20
-  max_backups: 5
-  max_age: 5
-  compress: true
-  # mode: release
-  mode: debug
-
-
+      checkpoint: ./tmp/mach_to_mach.chk          # 체크포인트 파일 경로
+logging:                                          # 로깅 설정
+  level: INFO                                     # 로그 레벨(TRACE/DEBUG/INFO/WARN/ERROR)
+  path: ./tmp/replication.log                     # 로그 파일 경로
+  max_size: 20                                    # 로그 롤링 단위(단위: MB 등 구현체 의존)
+  max_backups: 5                                  # 보관할 롤링 파일 개수
+  max_age: 5                                      # 보관 일수(일 단위)
+  compress: true                                  # 롤링 파일 압축 여부
+  mode: debug                                     # 디버그 모드(세부 로그 출력)
+  
 # checkpoint에 source 와 target 같이 포함?
 
 # confluence 작성

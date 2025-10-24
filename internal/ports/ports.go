@@ -41,6 +41,9 @@ type MetaReader interface {
 type WriteResult struct {
 	Written int
 	Failed  int
+
+	Rng  Range
+	RIDs map[string]float64
 }
 
 type WriteConfig struct {
