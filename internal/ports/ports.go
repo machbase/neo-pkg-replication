@@ -42,8 +42,8 @@ type WriteResult struct {
 	Written int
 	Failed  int
 
-	Rng  Range
-	RIDs map[string]float64
+	NextCheckPointData map[string]any
+	MetaOffset         int
 }
 
 type WriteConfig struct {
@@ -82,10 +82,6 @@ type MetaWriter interface {
 type Describer interface {
 	Driver() string                //machbase, postgres
 	SupportsKind(kind string) bool // TAG/LOG 등
-}
-
-type RangePlanner interface {
-	PlanRange(ctx context.Context)
 }
 
 // // reader가 읽어서 돌려주는 배치 (필요한 필드만 쓰면 됨)

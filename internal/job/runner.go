@@ -2,7 +2,9 @@ package job
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"repli/config"
 	"repli/internal/offset"
 	"repli/internal/ports"
@@ -54,7 +56,25 @@ func (r *runner) saveCheckPoint(checkpoint offset.CheckPoint) error {
 }
 
 func (r *runner) loadCheckPoint() (offset.CheckPoint, error) {
-	return r.store.Load()
+	chk, err := r.store.Load()
+
+	if errors.Is(err, os.ErrNotExist) {
+		chk = offset.NewCheckPoint(r.spec.TableMap.SeqExpr)
+
+		if err := r.store.Save(chk); err != nil {
+			return offset.CheckPoint{}, fmt.Errorf("failed to save inital checkpoint: %v", err)
+		}
+
+		r.log.Infof("created inital checkpoint: mode=%s", chk.Mode)
+		return chk, nil
+	}
+
+	if err != nil {
+		return chk, err
+	}
+
+	r.log.Infof("loaded checkpoint: mode=%s", chk.Mode)
+	return offset.CheckPoint{}, nil
 }
 
 func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
@@ -224,7 +244,7 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 			return offset.CheckPoint{}, fmt.Errorf("failed to write batch: %v", err)
 		}
 
-		r.log.Infof("write result RIDs: %v", writeResult.RIDs)
+		r.log.Infof("write result RIDs: %v", writeResult)
 
 		from = to
 	}

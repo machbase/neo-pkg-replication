@@ -25,8 +25,8 @@ replication:
       target: neoB
       kind: tag
       table_map: # table_map은 오직 1:1 사용 (source 와 target의 테이블 이름이 서로 다를 수 있으나 구조는 같음)
-        source: tableA
-        target: tableB
+        source: tag
+        target: tag
         columns: []
         seq_expr: RID # RID, TO_TIMESTAMP(time)
       options: # Opion 추가
