@@ -13,14 +13,15 @@ var (
 )
 
 type timestampStrategy struct {
-	delay time.Duration
+	delay            time.Duration
+	batchWindowLimit time.Duration
 }
 
-func NewTimestampStrategy(delay time.Duration) ReplicationStrategy {
-	return &timestampStrategy{delay: delay}
+func NewTimestampStrategy(delay time.Duration, batchWindowLimit time.Duration) ReplicationStrategy {
+	return &timestampStrategy{delay: delay, batchWindowLimit: batchWindowLimit}
 }
 
-func (s *timestampStrategy) ShouldReplicate(chk offset.CheckPoint, delay time.Duration) (bool, error) {
+func (s *timestampStrategy) ShouldReplicate(chk offset.CheckPoint) (bool, error) {
 	cursor, err := chk.GetCursor()
 	if err != nil {
 		return false, fmt.Errorf("failed to get cursor: %v", err)
@@ -29,19 +30,20 @@ func (s *timestampStrategy) ShouldReplicate(chk offset.CheckPoint, delay time.Du
 		return true, nil
 	}
 
-	until := time.Now().Add(-delay)
+	until := time.Now().Add(-s.delay)
 	return cursor.Before(until), nil
 }
 
-func (s *timestampStrategy) BuildRange(chk offset.CheckPoint, windowLimit time.Duration) (ports.Range, error) {
+func (s *timestampStrategy) BuildRange(chk offset.CheckPoint) (ports.Range, error) {
 	cursor, err := chk.GetCursor()
 	if err != nil {
 		return ports.Range{}, fmt.Errorf("failed to get cursor: %v", err)
 	}
 
+	// (FROM < TO) <= (NOW() - delay) < NOW()
 	until := time.Now().Add(-s.delay)
 	from := cursor
-	to := from.Add(windowLimit)
+	to := from.Add(s.batchWindowLimit)
 
 	if to.After(until) {
 		to = until
@@ -59,9 +61,26 @@ func (s *timestampStrategy) BuildRange(chk offset.CheckPoint, windowLimit time.D
 }
 
 func (s *timestampStrategy) UpdateCheckPoint(chk *offset.CheckPoint, result ports.WriteResult) error {
+	if result.NextCheckPointData == nil {
+		return nil
+	}
+
+	if cursorStr, ok := result.NextCheckPointData["cursor"].(string); ok {
+		cursor, err := time.Parse(time.RFC3339, cursorStr)
+		if err != nil {
+			return fmt.Errorf("invalid cursor in write result: %v", err)
+		}
+		return chk.SetCursor(cursor)
+	}
+
 	return nil
 }
 
-func (s *timestampStrategy) NextWindow(rng *ports.Range, windowLimit time.Duration) {
-
+func (s *timestampStrategy) NextWindow(rng *ports.Range) {
+	until := time.Now().Add(-s.delay)
+	rng.From = rng.To
+	rng.To = rng.From.Add(s.batchWindowLimit)
+	if rng.To.After(until) {
+		rng.To = until
+	}
 }
