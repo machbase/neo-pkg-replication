@@ -21,6 +21,8 @@ type machbaseWriter struct {
 	affix     string
 	placement string
 
+	metaColumnCount int
+
 	cli *machbase.Client
 }
 
@@ -32,7 +34,10 @@ func (m *machbaseWriter) Prepare(ctx context.Context) error {
 
 func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (ports.WriteResult, error) {
 	if len(batch.Rows) == 0 {
-		return ports.WriteResult{}, nil // 수정?
+		return ports.WriteResult{
+			Written: 0,
+			Failed:  0,
+		}, nil
 	}
 
 	path, err := url.JoinPath("/db/write", m.table)

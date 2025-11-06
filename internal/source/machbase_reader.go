@@ -68,7 +68,6 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 			return base + ", " + strings.Join(columns, ", ")
 		}
 	}
-
 	m.metaFmt = fmt.Sprintf("SELECT * FROM _%s_meta WHERE _ID > 0 ORDER BY _ID ASC", m.table)
 
 	switch strings.ToUpper(m.seqExpr) {
@@ -136,9 +135,6 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 			return ports.Batch{
 				Columns: cols,
 				Rows:    rows,
-				Meta: map[string]any{
-					"metaColumns": metaColumns,
-				},
 			}, nil
 		}
 	default:

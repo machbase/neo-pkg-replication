@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"repli/internal/offset"
 	"repli/internal/ports"
+	"time"
 )
 
 type ridStrategy struct {
@@ -25,11 +26,13 @@ func (s *ridStrategy) ShouldReplicate(chk offset.CheckPoint) (bool, error) {
 
 func (s *ridStrategy) BuildRange(chk offset.CheckPoint) (ports.Range, error) {
 	rids := chk.GetRIDs()
-	if len(rids) == 0 {
-		return ports.Range{}, nil // 처리
+	if rids == nil {
+		rids = make(map[string]int64)
 	}
 
 	return ports.Range{
+		From: time.Time{},
+		To:   time.Time{},
 		RIDs: rids,
 	}, nil
 }
@@ -37,47 +40,51 @@ func (s *ridStrategy) BuildRange(chk offset.CheckPoint) (ports.Range, error) {
 // 프로그램 최초 실행, Unmarshal 시 float64
 // 프로그램 실행 중,   메모리에서는 int64
 func (s *ridStrategy) UpdateCheckPoint(chk *offset.CheckPoint, result ports.WriteResult) error {
-	if result.NextCheckPointData == nil {
-		return nil
-	}
-
-	ridsRaw, ok := result.NextCheckPointData["rids"]
-	if !ok {
-		return nil
-	}
-
-	if ridsMap, ok := ridsRaw.(map[string]int64); ok {
-		chk.SetRIDs(ridsMap)
-		return nil
-	}
-
-	if ridsMap, ok := ridsRaw.(map[string]any); ok {
-		rids := make(map[string]int64)
-		for k, v := range ridsMap {
-			switch num := v.(type) {
-			case int64:
-				rids[k] = num
-			case float64:
-				rids[k] = int64(num)
-			case int:
-				rids[k] = int64(num)
-			default:
-				return fmt.Errorf("invalid RID type %s: %T", k, v)
-			}
+	if result.Written > 0 {
+		if result.NextCheckPointData == nil {
+			return fmt.Errorf("written %d rows but NextCheckPointData is nil", result.Written)
 		}
-		chk.SetRIDs(rids)
-		return nil
+
+		ridsRaw, ok := result.NextCheckPointData["rids"]
+		if !ok {
+			return fmt.Errorf("written %d rows but rids not found", result.Written)
+		}
+
+		if ridsMap, ok := ridsRaw.(map[string]int64); ok {
+			chk.SetRIDs(ridsMap)
+			return nil
+		}
+
+		if ridsMap, ok := ridsRaw.(map[string]any); ok {
+			rids := make(map[string]int64)
+			for k, v := range ridsMap {
+				switch num := v.(type) {
+				case int64:
+					rids[k] = num
+				case float64:
+					rids[k] = int64(num)
+				case int:
+					rids[k] = int64(num)
+				default:
+					return fmt.Errorf("invalid RID type %s: %T", k, v)
+				}
+			}
+			chk.SetRIDs(rids)
+			return nil
+		}
+
+		return fmt.Errorf("rids has unexpected type: %T", ridsRaw)
 	}
 
-	return fmt.Errorf("rids has unexpected type: %T", ridsRaw)
+	return nil
 }
 
 func (s *ridStrategy) NextWindow(rng *ports.Range) {
-	if len(rng.RIDs) == 0 {
-		return
-	}
+	// if len(rng.RIDs) == 0 {
+	// 	return
+	// }
 
-	for k, v := range rng.RIDs {
-		rng.RIDs[k] = v + s.ridLimit + 1 // 확인 필요
-	}
+	// for k, v := range rng.RIDs {
+	// 	rng.RIDs[k] = v + s.ridLimit + 1 // 확인 필요
+	// }
 }
