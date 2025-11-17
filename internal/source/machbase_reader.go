@@ -87,10 +87,6 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 				rows [][]any
 			)
 
-			// if rng.RIDs == nil {
-			// 	rng.RIDs = map[string]int64{}
-			// }
-
 			for _, store := range ridStore {
 				rid, ok := rng.RIDs[store.Name]
 				if !ok {

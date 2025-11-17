@@ -37,8 +37,8 @@ func (s *ridStrategy) BuildRange(chk offset.CheckPoint) (ports.Range, error) {
 	}, nil
 }
 
-// 프로그램 최초 실행, Unmarshal 시 float64
-// 프로그램 실행 중,   메모리에서는 int64
+// 프로그램 최초 실행,   숫자는 Unmarshal 시 float64
+// 프로그램 실행 중,    메모리에서는 int64
 func (s *ridStrategy) UpdateCheckPoint(chk *offset.CheckPoint, result ports.WriteResult) error {
 	if result.Written > 0 {
 		if result.NextCheckPointData == nil {
@@ -80,11 +80,4 @@ func (s *ridStrategy) UpdateCheckPoint(chk *offset.CheckPoint, result ports.Writ
 }
 
 func (s *ridStrategy) NextWindow(rng *ports.Range) {
-	// if len(rng.RIDs) == 0 {
-	// 	return
-	// }
-
-	// for k, v := range rng.RIDs {
-	// 	rng.RIDs[k] = v + s.ridLimit + 1 // 확인 필요
-	// }
 }

@@ -31,52 +31,6 @@ type runner struct {
 	log   *logrus.Entry
 }
 
-func (r *runner) Name() string {
-	return r.name
-}
-
-func (r *runner) openResources(ctx context.Context) (func(), error) {
-	if err := r.src.Open(ctx); err != nil {
-		return func() {}, fmt.Errorf("%s: failed to open source: %v", r.name, err)
-	}
-
-	if err := r.tar.Open(ctx); err != nil {
-		r.src.Close(ctx)
-		return func() {}, fmt.Errorf("%s: failed to open target: %v", r.name, err)
-	}
-
-	return func() {
-		r.tar.Close(ctx)
-		r.src.Close(ctx)
-	}, nil
-}
-
-func (r *runner) saveCheckPoint(checkpoint offset.CheckPoint) error {
-	return r.store.Save(checkpoint)
-}
-
-func (r *runner) loadCheckPoint() (offset.CheckPoint, error) {
-	chk, err := r.store.Load()
-
-	if errors.Is(err, os.ErrNotExist) {
-		chk = offset.NewCheckPoint(r.spec.TableMap.SeqExpr)
-
-		if err := r.store.Save(chk); err != nil {
-			return offset.CheckPoint{}, fmt.Errorf("failed to save inital checkpoint: %v", err)
-		}
-
-		r.log.Infof("created inital checkpoint: mode=%s", chk.Mode)
-		return chk, nil
-	}
-
-	if err != nil {
-		return chk, err
-	}
-
-	r.log.Infof("loaded checkpoint: mode=%s", chk.Mode)
-	return offset.CheckPoint{}, nil
-}
-
 func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
 	// 최초 실행 시 한 번 실행
 	next, err := r.RunCycle(ctx, chk)
@@ -94,13 +48,13 @@ func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			next, err := r.RunCycle(ctx, chk) // 메서드 이름 변경
+			nextCheckPoint, err := r.RunCycle(ctx, chk) // 메서드 이름 변경
 			if err != nil {
 				r.report(fmt.Errorf("failed to run cycle: %v", err))
 				continue // 본부장님께 질문
 				// return
 			}
-			if err := r.saveCheckPoint(next); err != nil {
+			if err := r.saveCheckPoint(nextCheckPoint); err != nil {
 				r.report(fmt.Errorf("failed to save checkpoint: %v", err))
 				continue
 				// return
@@ -171,6 +125,7 @@ func (r *runner) validateTables(ctx context.Context) (bool, error) {
 }
 
 func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.CheckPoint, error) {
+
 	until := time.Now().Add(-r.delay)
 	from := chk.Cursor
 
@@ -252,6 +207,26 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 	return chk, nil
 }
 
+func (r *runner) Name() string {
+	return r.name
+}
+
+func (r *runner) openResources(ctx context.Context) (func(), error) {
+	if err := r.src.Open(ctx); err != nil {
+		return func() {}, fmt.Errorf("%s: failed to open source: %v", r.name, err)
+	}
+
+	if err := r.tar.Open(ctx); err != nil {
+		r.src.Close(ctx)
+		return func() {}, fmt.Errorf("%s: failed to open target: %v", r.name, err)
+	}
+
+	return func() {
+		r.tar.Close(ctx)
+		r.src.Close(ctx)
+	}, nil
+}
+
 func (r *runner) report(err error) {
 	if err == nil {
 		return
@@ -274,3 +249,29 @@ func (r *runner) Stop() error {
 }
 
 func (r *runner) Errors() <-chan error { return r.errCh }
+
+func (r *runner) saveCheckPoint(checkpoint offset.CheckPoint) error {
+	return r.store.Save(checkpoint)
+}
+
+func (r *runner) loadCheckPoint() (offset.CheckPoint, error) {
+	chk, err := r.store.Load()
+
+	if errors.Is(err, os.ErrNotExist) {
+		chk = offset.NewCheckPoint(r.spec.TableMap.SeqExpr)
+
+		if err := r.store.Save(chk); err != nil {
+			return offset.CheckPoint{}, fmt.Errorf("failed to save inital checkpoint: %v", err)
+		}
+
+		r.log.Infof("created inital checkpoint: mode=%s", chk.Mode)
+		return chk, nil
+	}
+
+	if err != nil {
+		return chk, err
+	}
+
+	r.log.Infof("loaded checkpoint: mode=%s", chk.Mode)
+	return offset.CheckPoint{}, nil
+}
