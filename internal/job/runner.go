@@ -20,7 +20,11 @@ type runner struct {
 	src  ports.Source
 	tar  ports.Target
 
-	interval         time.Duration
+	interval time.Duration
+	// RID
+	ridLimit int64
+
+	// TIMESTAMP
 	delay            time.Duration
 	batchWindowLimit time.Duration
 
@@ -33,12 +37,16 @@ type runner struct {
 
 func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
 	// 최초 실행 시 한 번 실행
-	next, err := r.RunCycle(ctx, chk)
+	nextCheckPoint, err := r.RunCycle(ctx, chk)
 	if err != nil {
 		r.report(fmt.Errorf("failed to run cycle: %v", err))
 		return
 	}
-	chk = next
+	if err := r.saveCheckPoint(nextCheckPoint); err != nil {
+		r.report(fmt.Errorf("failed to save checkpoint: %v", err))
+		return
+	}
+	chk = nextCheckPoint
 
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -48,18 +56,16 @@ func (r *runner) runLoop(ctx context.Context, chk offset.CheckPoint) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			nextCheckPoint, err := r.RunCycle(ctx, chk) // 메서드 이름 변경
+			nextCheckPoint, err := r.RunCycle(ctx, chk)
 			if err != nil {
 				r.report(fmt.Errorf("failed to run cycle: %v", err))
-				continue // 본부장님께 질문
-				// return
+				continue
 			}
 			if err := r.saveCheckPoint(nextCheckPoint); err != nil {
 				r.report(fmt.Errorf("failed to save checkpoint: %v", err))
 				continue
-				// return
 			}
-			chk = next
+			chk = nextCheckPoint
 		}
 	}
 }
@@ -104,7 +110,7 @@ func (r *runner) validateTables(ctx context.Context) (bool, error) {
 	// source table exists
 	exists, err := r.src.TableExists(ctx, r.spec.TableMap.Source)
 	if err != nil {
-		return false, fmt.Errorf("failed to request exists: %v", err)
+		return false, fmt.Errorf("failed to request exists(source.%s): %v", r.spec.TableMap.Source, err)
 	}
 	if !exists {
 		return false, fmt.Errorf("%q table is not exists: %v", r.spec.TableMap.Source, err)
@@ -113,10 +119,10 @@ func (r *runner) validateTables(ctx context.Context) (bool, error) {
 	// target table exists
 	exists, err = r.tar.TableExists(ctx, r.spec.TableMap.Target)
 	if err != nil {
-		return false, fmt.Errorf("failed to request exists: %v", err)
+		return false, fmt.Errorf("failed to request exists(target.%s): %v", r.spec.TableMap.Target, err)
 	}
 	if !exists {
-		return false, fmt.Errorf("%q table is not exists: %v", r.spec.TableMap.Source, err)
+		return false, fmt.Errorf("%q table is not exists: %v", r.spec.TableMap.Target, err)
 	}
 
 	r.log.Infof("source(%s) & target(%s) table exists", r.spec.TableMap.Source, r.spec.TableMap.Target)
@@ -125,17 +131,8 @@ func (r *runner) validateTables(ctx context.Context) (bool, error) {
 }
 
 func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.CheckPoint, error) {
-
-	until := time.Now().Add(-r.delay)
-	from := chk.Cursor
-
-	if !from.Before(until) {
-		r.log.Info("from > unil")
-		chk.Cursor = from
-		return chk, nil
-	}
-
-	reader, err := r.src.NewReader(ctx, r.spec.TableMap.Source, r.spec.TableMap.SeqExpr, r.spec.TableMap.Columns)
+	// Create reader
+	reader, err := r.src.NewReader(ctx, r.spec.TableMap.Source, r.spec.TableMap.SeqExpr, r.spec.TableMap.Columns, r.ridLimit)
 	if err != nil {
 		return offset.CheckPoint{}, fmt.Errorf("failed to create reader: %v", err)
 	}
@@ -144,6 +141,7 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 		return offset.CheckPoint{}, fmt.Errorf("failed to prepare reader: %v", err)
 	}
 
+	// Create writer
 	writer, err := r.tar.NewWriter(ctx, r.spec.TableMap.Target, r.spec.TableMap.SeqExpr, r.spec.TableMap.Columns)
 	if err != nil {
 		return offset.CheckPoint{}, fmt.Errorf("failed to create writer: %v", err)
@@ -153,26 +151,11 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 		return offset.CheckPoint{}, fmt.Errorf("failed to prepare writer: %v", err)
 	}
 
-	mr, hasMetaRead := reader.(ports.MetaReader)
-	mw, hasMetaWrite := writer.(ports.MetaWriter)
-
-	// Transfrom
-	// pipeline, err := transform.BuildPipeline(r.src.Name(), r.tar.Name(), r.spec)
-	// if err != nil {
-	// 	return offset.CheckPoint{}, err
-	// }
-
-	for {
-		to := from.Add(r.batchWindowLimit)
-		if to.After(until) {
-			to = until
-		}
-
-		if !from.Before(to) {
-			break
-		}
-
-		if r.spec.Options.UseMeta && hasMetaRead && hasMetaWrite {
+	// Handle meta replication if enabled
+	if r.spec.Options.UseMeta {
+		mr, hasMetaRead := reader.(ports.MetaReader)
+		mw, hasMetaWrite := writer.(ports.MetaWriter)
+		if hasMetaRead && hasMetaWrite {
 			batch, err := mr.ReadMeta(ctx, chk.MetaOffset)
 			if err != nil {
 				return offset.CheckPoint{}, fmt.Errorf("failed to read meta: %v", err)
@@ -183,28 +166,21 @@ func (r *runner) RunCycle(ctx context.Context, chk offset.CheckPoint) (offset.Ch
 			}
 			chk.MetaOffset = metaOffset
 		}
-
-		batch, err := reader.ReadRange(ctx, ports.Range{From: from, To: to, RIDs: chk.RIDs})
-		if err != nil {
-			return offset.CheckPoint{}, fmt.Errorf("failed to read range: %v", err)
-		}
-
-		r.log.Infof("batch.columns : %v %d", batch.Columns, len(batch.Columns))
-		for _, row := range batch.Rows {
-			r.log.Infof("batch.rows : %v %d", row, len(row))
-		}
-
-		writeResult, err := writer.WriteBatch(ctx, batch)
-		if err != nil {
-			return offset.CheckPoint{}, fmt.Errorf("failed to write batch: %v", err)
-		}
-
-		r.log.Infof("write result RIDs: %v", writeResult)
-
-		from = to
 	}
 
-	return chk, nil
+	// Create strategy based on mode
+	var strategy ReplicationStrategy
+	switch chk.Mode {
+	case "RID":
+		strategy = NewRIDStrategy(r.ridLimit)
+	case "TIMESTAMP":
+		strategy = NewTimestampStrategy(r.delay, r.batchWindowLimit)
+	default:
+		return offset.CheckPoint{}, fmt.Errorf("invalid checkpoint mode: %q", chk.Mode)
+	}
+
+	// Execute replication using strategy
+	return strategy.Execute(ctx, chk, reader, writer)
 }
 
 func (r *runner) Name() string {
@@ -256,7 +232,6 @@ func (r *runner) saveCheckPoint(checkpoint offset.CheckPoint) error {
 
 func (r *runner) loadCheckPoint() (offset.CheckPoint, error) {
 	chk, err := r.store.Load()
-
 	if errors.Is(err, os.ErrNotExist) {
 		chk = offset.NewCheckPoint(r.spec.TableMap.SeqExpr)
 
@@ -273,5 +248,5 @@ func (r *runner) loadCheckPoint() (offset.CheckPoint, error) {
 	}
 
 	r.log.Infof("loaded checkpoint: mode=%s", chk.Mode)
-	return offset.CheckPoint{}, nil
+	return chk, nil
 }

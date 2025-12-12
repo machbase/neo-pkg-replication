@@ -76,14 +76,20 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 	}
 	batch.Rows = payload
 
-	metaRIDs, ok := batch.Meta["rids"]
-	if !ok {
-
+	// Extract RIDs from meta
+	nextRIDs := make(map[string]any)
+	if batch.Meta == nil {
+		log.Printf("WARNING: batch.Meta is nil")
+	} else if metaRIDs, ok := batch.Meta["rids"]; !ok {
+		log.Printf("WARNING: batch.Meta[\"rids\"] not found, Meta keys: %v", batch.Meta)
+	} else if ridsMap, ok := metaRIDs.(map[string]int64); ok {
+		for k, v := range ridsMap {
+			nextRIDs[k] = v
+		}
+		log.Printf("RIDs extracted: %v", nextRIDs)
+	} else {
+		log.Printf("WARNING: rids has unexpected type: %T, value: %v", metaRIDs, metaRIDs)
 	}
-	RIDs, ok := metaRIDs.(map[string]float64)
-	log.Printf("RIDs: %v", RIDs)
-
-	// 아래 수정 필요
 
 	buf := bytes.Buffer{}
 	if err := json.NewEncoder(&buf).Encode(batch.Rows); err != nil {
@@ -101,24 +107,28 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 		return ports.WriteResult{}, fmt.Errorf("failed to write: %s", response.Reason)
 	}
 
-	return ports.WriteResult{}, nil
+	return ports.WriteResult{
+		Written:            len(batch.Rows),
+		Failed:             0,
+		NextCheckPointData: map[string]any{"rids": nextRIDs},
+	}, nil
 }
 
-func (m *machbaseWriter) WriteMeta(ctx context.Context, batch ports.Batch) (ports.WriteResult, error) {
+func (m *machbaseWriter) WriteMeta(ctx context.Context, batch ports.Batch) (int, error) {
 	if len(batch.Rows) == 0 {
-		return ports.WriteResult{}, nil // 수정?
+		return 0, nil
 	}
 
 	// insert into _event_meta metadata values ('TAG_0002', 99, '2010-01-01', '1.1.1.1');
 
-	path, err := url.JoinPath("/db/write", m.table)
+	path, err := url.JoinPath("/db/write", m.metaTable)
 	if err != nil {
-		return ports.WriteResult{}, err
+		return 0, err
 	}
 
 	buf := bytes.Buffer{}
 	if err := json.NewEncoder(&buf).Encode(batch.Rows); err != nil {
-		return ports.WriteResult{}, fmt.Errorf("failed to encode json: %v", err)
+		return 0, fmt.Errorf("failed to encode json: %v", err)
 	}
 
 	query := url.Values{}
@@ -126,13 +136,13 @@ func (m *machbaseWriter) WriteMeta(ctx context.Context, batch ports.Batch) (port
 
 	response, err := m.cli.DoJSON(ctx, http.MethodPost, path, query, &buf)
 	if err != nil {
-		return ports.WriteResult{}, err
+		return 0, err
 	}
 	if !response.Success {
-		return ports.WriteResult{}, fmt.Errorf("failed to write: %s", response.Reason)
+		return 0, fmt.Errorf("failed to write: %s", response.Reason)
 	}
 
-	return ports.WriteResult{}, nil
+	return len(batch.Rows), nil
 }
 
 type machbaseAppendRequest struct {

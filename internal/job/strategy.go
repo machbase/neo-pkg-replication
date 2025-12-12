@@ -1,13 +1,11 @@
 package job
 
 import (
+	"context"
 	"repli/internal/offset"
 	"repli/internal/ports"
 )
 
 type ReplicationStrategy interface {
-	ShouldReplicate(chk offset.CheckPoint) (bool, error)
-	BuildRange(chk offset.CheckPoint) (ports.Range, error)
-	UpdateCheckPoint(chk *offset.CheckPoint, result ports.WriteResult) error
-	NextWindow(rng *ports.Range)
+	Execute(ctx context.Context, chk offset.CheckPoint, reader ports.SourceReader, writer ports.TargetWriter) (offset.CheckPoint, error)
 }

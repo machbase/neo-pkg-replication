@@ -68,7 +68,7 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 			return base + ", " + strings.Join(columns, ", ")
 		}
 	}
-	m.metaFmt = fmt.Sprintf("SELECT * FROM _%s_meta WHERE _ID > 0 ORDER BY _ID ASC", m.table)
+	m.metaFmt = fmt.Sprintf("SELECT * FROM _%s_meta WHERE _ID > %%d ORDER BY _ID ASC", m.table)
 
 	switch strings.ToUpper(m.seqExpr) {
 	case "RID":
@@ -77,14 +77,18 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 
 		ridStore, err := m.cli.LookupEndRIDS(ctx, m.table)
 		if err != nil {
-			return nil
+			return fmt.Errorf("failed to lookup RID stores: %v", err)
+		}
+		if len(ridStore) == 0 {
+			return fmt.Errorf("no RID stores found for table %s", m.table)
 		}
 
-		m.queryFmt = fmt.Sprintf("SELECT %%s FROM %%s d, _%s_meta m WHERE  d.name = m._ID LIMIT 1", m.table)
+		m.queryFmt = fmt.Sprintf("SELECT %%s FROM %%s d, _%s_meta m WHERE  d.%s= m._ID LIMIT %%d", m.table, dataColumns[0])
 		m.readFn = func(ctx context.Context, rng ports.Range) (ports.Batch, error) {
 			var (
-				cols []string
-				rows [][]any
+				cols        []string
+				rows        [][]any
+				nextRIDs    = make(map[string]int64)
 			)
 
 			for _, store := range ridStore {
@@ -94,9 +98,16 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 					rid = 0
 				}
 
-				base := fmt.Sprintf("/*+ RID_RANGE(%s, %d, %d) */ d._RID", store.Name, rid, (rid+1)+m.ridLimit)
-				selectList := buildSelectList(base)
-				query := fmt.Sprintf(m.queryFmt, selectList, store.Name)
+				// Skip if current RID has reached or exceeded the max RID for this store
+				if rid >= int64(store.RID) {
+					log.Printf("[%s] skipping: current RID %d >= max RID %d", store.Name, rid, store.RID)
+					nextRIDs[store.Name] = rid // Keep current RID
+					continue
+				}
+
+				base := fmt.Sprintf("/*+ RID_RANGE(%s, %d, %d) */ d._RID", store.Name, rid, rid+m.ridLimit)
+				selectList := buildSelectList(base) // buildSelectList 수정, 가독성이 너무 안좋음;;
+				query := fmt.Sprintf(m.queryFmt, selectList, store.Name, m.ridLimit)
 				log.Printf("query: %s", query)
 
 				b, err := m.execQuery(ctx, query)
@@ -119,18 +130,35 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 					cols = append(cols, metaColumns...)
 				}
 
+				// Extract RID from each row and track the last one
+				var lastRID int64
 				for i := 0; i < len(b.Rows); i++ {
+					if ridVal, ok := b.Rows[i][0].(int64); ok {
+						lastRID = ridVal
+					} else if ridVal, ok := b.Rows[i][0].(float64); ok {
+						lastRID = int64(ridVal)
+					}
 					b.Rows[i] = b.Rows[i][1:]
 				}
 
+				// Update next RID for this store
 				if len(b.Rows) > 0 {
+					nextRIDs[store.Name] = lastRID + 1
 					rows = append(rows, b.Rows...)
+					log.Printf("[%s] read %d rows, lastRID=%d, nextRID=%d", store.Name, len(b.Rows), lastRID, lastRID+1)
+				} else {
+					nextRIDs[store.Name] = rid // Keep current if no new data
+					log.Printf("[%s] no data, keeping rid=%d", store.Name, rid)
 				}
 			}
 
 			return ports.Batch{
 				Columns: cols,
 				Rows:    rows,
+				Meta: map[string]any{
+					"rids":        nextRIDs,
+					"metaColumns": metaColumns,
+				},
 			}, nil
 		}
 	default:

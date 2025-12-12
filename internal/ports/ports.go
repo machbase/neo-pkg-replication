@@ -9,8 +9,6 @@ type Range struct {
 	From time.Time
 	To   time.Time
 	RIDs map[string]int64 // 임시
-
-	Offset int
 }
 
 type Batch struct {
@@ -25,7 +23,7 @@ type Source interface {
 	Open(ctx context.Context) error
 	Close(ctx context.Context) error
 	TableExists(ctx context.Context, table string) (bool, error)
-	NewReader(ctx context.Context, table, seqExpr string, columns []string) (SourceReader, error)
+	NewReader(ctx context.Context, table, seqExpr string, columns []string, ridLimit int64) (SourceReader, error)
 }
 
 type SourceReader interface {

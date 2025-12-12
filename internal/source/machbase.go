@@ -50,7 +50,7 @@ func (m *machbaseSource) Close(ctx context.Context) error {
 	return nil
 }
 
-func (m *machbaseSource) NewReader(ctx context.Context, table, seqExpr string, columns []string) (ports.SourceReader, error) {
+func (m *machbaseSource) NewReader(ctx context.Context, table, seqExpr string, columns []string, ridLimit int64) (ports.SourceReader, error) {
 	if m.cli == nil {
 		return nil, fmt.Errorf("machbase source not opened")
 	}
@@ -59,10 +59,11 @@ func (m *machbaseSource) NewReader(ctx context.Context, table, seqExpr string, c
 	seqExpr = strings.TrimSpace(seqExpr)
 
 	reader := &machbaseReader{
-		table:   table,
-		seqExpr: seqExpr,
-		columns: columns,
-		cli:     m.cli,
+		table:    table,
+		seqExpr:  seqExpr,
+		columns:  columns,
+		ridLimit: ridLimit,
+		cli:      m.cli,
 	}
 
 	return reader, nil

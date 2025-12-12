@@ -8,25 +8,23 @@ replication:
         port: 5654
         protocol : http
         token: xxx
-
   targets:
     - name: neoB
       type: machbase
       connection:
         scheme: http
-        host: 127.0.0.1
+        host: 127.0.0.2
         port: 6654
         protocol : http
         token: xxx
-
   jobs:
     - name: neoA-to-neoB
       source: neoA
       target: neoB
       kind: tag
       table_map: # table_map은 오직 1:1 사용 (source 와 target의 테이블 이름이 서로 다를 수 있으나 구조는 같음)
-        source: tag
-        target: tag
+        source: WAREHOUSE_SENSORS
+        target: WAREHOUSE_SENSORS
         columns: []
         seq_expr: RID # RID, TO_TIMESTAMP(time)
       options: # Opion 추가
@@ -38,7 +36,6 @@ replication:
         rid_limit : 1000
         batch_window_limit: 1h
       checkpoint: ./tmp/tag_to_log.chk
-
 logging:
   level: INFO
   path: ./tmp/replication.log

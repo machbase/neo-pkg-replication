@@ -43,5 +43,7 @@ func (fs *fileStore) Save(chk CheckPoint) error {
 	if err != nil {
 		return err
 	}
+	// Debug: print what we're saving
+	println("Saving checkpoint:", string(bdata))
 	return os.WriteFile(fs.path, bdata, 0644)
 }

@@ -28,51 +28,20 @@ func NewCheckPoint(seqExpr string) CheckPoint {
 	var chk CheckPoint
 
 	switch strings.ToUpper(seqExpr) {
-	case "RID":
+	case "RID", "":
 		chk.Mode = "RID"
 		chk.SetRIDs(make(map[string]int64))
 	default:
 		// case "TIMESTAMP":
 		chk.Mode = "TIMESTAMP"
-		chk.SetCursor(time.Now())
+		// Start from 24 hours ago to replicate recent data
+		chk.SetCursor(time.Now().Add(-24 * time.Hour))
 	}
 
 	return chk
 }
 
-// ========================= TIMESTAMP (cursor 모드) =========================
-
-func (c *CheckPoint) GetCursor() (time.Time, error) {
-	if c.Data == nil {
-		return time.Time{}, nil
-	}
-
-	if val, ok := c.Data[checkPointCursor]; ok {
-		switch v := val.(type) {
-		case string:
-			return time.Parse(time.RFC3339, v)
-		case time.Time:
-			return v, nil
-		}
-	}
-
-	return time.Time{}, nil
-}
-
-func (c *CheckPoint) SetCursor(cursor time.Time) error {
-	if c.Data == nil {
-		c.Data = make(map[string]any)
-	}
-	if cursor.IsZero() {
-		return fmt.Errorf("cursor is zero")
-	}
-
-	c.Data[checkPointCursor] = cursor
-	return nil
-}
-
 // ========================= RIDs (RID 모드) =========================
-
 func (c *CheckPoint) GetRIDs() map[string]int64 {
 	if c.Data == nil {
 		return make(map[string]int64)
@@ -106,4 +75,34 @@ func (c *CheckPoint) SetRIDs(rids map[string]int64) {
 	}
 
 	c.Data[checkPointRIDs] = rids
+}
+
+// ========================= TIMESTAMP (cursor 모드) =========================
+func (c *CheckPoint) GetCursor() (time.Time, error) {
+	if c.Data == nil {
+		return time.Time{}, nil
+	}
+
+	if val, ok := c.Data[checkPointCursor]; ok {
+		switch v := val.(type) {
+		case string:
+			return time.Parse(time.RFC3339, v)
+		case time.Time:
+			return v, nil
+		}
+	}
+
+	return time.Time{}, nil
+}
+
+func (c *CheckPoint) SetCursor(cursor time.Time) error {
+	if c.Data == nil {
+		c.Data = make(map[string]any)
+	}
+	if cursor.IsZero() {
+		return fmt.Errorf("cursor is zero")
+	}
+
+	c.Data[checkPointCursor] = cursor
+	return nil
 }
