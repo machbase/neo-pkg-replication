@@ -33,145 +33,62 @@ type machbaseReader struct {
 	metaFmt   string
 	maxRIDFmt string
 
-	readFn readRangeFn
+	// RID mode specific fields
+	lastRIDStore []machbase.RIDStore
+	metaColumns  []string
+
+	idToName map[int64]string
 
 	cli *machbase.Client
 }
 
 // Prepare는 쿼리 템플릿만 준비
 func (m *machbaseReader) Prepare(ctx context.Context) error {
-	dataColumns, err := m.cli.LookupDataColumns(ctx, m.table)
-	if err != nil {
-		return err
-	}
+	// dataColumns, err := m.cli.LookupDataColumns(ctx, m.table)
+	// if err != nil {
+	// 	return err
+	// }
 	metaColumns, err := m.cli.LookupMetaColumns(ctx, m.table)
 	if err != nil {
 		return err
 	}
 
-	// 수정 필요
-	buildSelectList := func(base string) string {
-		columns := make([]string, 0, len(m.columns))
-		if len(m.columns) > 0 {
-			for _, col := range m.columns {
-				columns = append(columns, "d."+col)
-			}
-			return base + ", " + strings.Join(columns, ", ")
-		} else {
-			for i, col := range dataColumns {
-				if i == 0 {
-					columns = append(columns, "m."+col)
-				} else {
-					columns = append(columns, "d."+col)
-				}
-			}
-			return base + ", " + strings.Join(columns, ", ")
-		}
-	}
+	// meta query
 	m.metaFmt = fmt.Sprintf("SELECT * FROM _%s_meta WHERE _ID > %%d ORDER BY _ID ASC", m.table)
 
 	switch strings.ToUpper(m.seqExpr) {
 	case "RID":
 		m.mode = modeRID
-		// m.maxRIDFmt = fmt.Sprintf("SELECT MAX(v.TABLE_END_RID) FROM M$SYS_TABLES m, V$STORAGE_TAG_TABLES v WHERE  m.ID = v.ID AND m.NAME LIKE '_%s_DATA_%%' LIMIT 1", m.table)
 
-		ridStore, err := m.cli.LookupEndRIDS(ctx, m.table)
+		// Lookup RID stores
+		ridStore, err := m.cli.LookupLastRIDS(ctx, m.table)
 		if err != nil {
 			return fmt.Errorf("failed to lookup RID stores: %v", err)
 		}
 		if len(ridStore) == 0 {
 			return fmt.Errorf("no RID stores found for table %s", m.table)
 		}
+		log.Printf("ridStore: %v", ridStore)
 
-		m.queryFmt = fmt.Sprintf("SELECT %%s FROM %%s d, _%s_meta m WHERE  d.%s= m._ID LIMIT %%d", m.table, dataColumns[0])
-		m.readFn = func(ctx context.Context, rng ports.Range) (ports.Batch, error) {
-			var (
-				cols        []string
-				rows        [][]any
-				nextRIDs    = make(map[string]int64)
-			)
-
-			for _, store := range ridStore {
-				rid, ok := rng.RIDs[store.Name]
-				if !ok {
-					rng.RIDs[store.Name] = 0
-					rid = 0
-				}
-
-				// Skip if current RID has reached or exceeded the max RID for this store
-				if rid >= int64(store.RID) {
-					log.Printf("[%s] skipping: current RID %d >= max RID %d", store.Name, rid, store.RID)
-					nextRIDs[store.Name] = rid // Keep current RID
-					continue
-				}
-
-				base := fmt.Sprintf("/*+ RID_RANGE(%s, %d, %d) */ d._RID", store.Name, rid, rid+m.ridLimit)
-				selectList := buildSelectList(base) // buildSelectList 수정, 가독성이 너무 안좋음;;
-				query := fmt.Sprintf(m.queryFmt, selectList, store.Name, m.ridLimit)
-				log.Printf("query: %s", query)
-
-				b, err := m.execQuery(ctx, query)
-				if err != nil {
-					return ports.Batch{}, err
-				}
-				b.Columns = b.Columns[1:]
-
-				// b.Columns = append(b.Columns[0:3], b.Columns[4:]...)
-				// i := 3
-				// if i >= 0 && i < len(b.Columns) {
-				// 	copy(b.Columns[i:], b.Columns[i+1:]) // 뒤를 한 칸 당김
-				// 	// 마지막 칸 비워서 참조 끊기 (GC 위해)
-				// 	b.Columns[len(b.Columns)-1] = ""
-				// 	b.Columns = b.Columns[:len(b.Columns)-1]
-				// }
-
-				if cols == nil {
-					cols = b.Columns
-					cols = append(cols, metaColumns...)
-				}
-
-				// Extract RID from each row and track the last one
-				var lastRID int64
-				for i := 0; i < len(b.Rows); i++ {
-					if ridVal, ok := b.Rows[i][0].(int64); ok {
-						lastRID = ridVal
-					} else if ridVal, ok := b.Rows[i][0].(float64); ok {
-						lastRID = int64(ridVal)
-					}
-					b.Rows[i] = b.Rows[i][1:]
-				}
-
-				// Update next RID for this store
-				if len(b.Rows) > 0 {
-					nextRIDs[store.Name] = lastRID + 1
-					rows = append(rows, b.Rows...)
-					log.Printf("[%s] read %d rows, lastRID=%d, nextRID=%d", store.Name, len(b.Rows), lastRID, lastRID+1)
-				} else {
-					nextRIDs[store.Name] = rid // Keep current if no new data
-					log.Printf("[%s] no data, keeping rid=%d", store.Name, rid)
-				}
-			}
-
-			return ports.Batch{
-				Columns: cols,
-				Rows:    rows,
-				Meta: map[string]any{
-					"rids":        nextRIDs,
-					"metaColumns": metaColumns,
-				},
-			}, nil
+		tagNameColumn, err := m.cli.LookupTagNameColumn(ctx, m.table)
+		if err != nil {
+			return fmt.Errorf("failed to lookup tagname column: %v", err)
 		}
+		log.Printf("tagNameColumn: %v", tagNameColumn)
+		idToName, err := m.cli.LookupIDAndTagname(ctx, tagNameColumn, m.table)
+		if err != nil {
+			return fmt.Errorf("failed to lookup tagname column: %v", err)
+		}
+		m.idToName = idToName
+		log.Printf("idToname: %v", idToName)
+
+		// Store fields for readRangeRID method
+		m.lastRIDStore = ridStore
+		m.metaColumns = metaColumns
+		m.queryFmt = fmt.Sprintf("SELECT %%s FROM %%s")
 	default:
 		m.mode = modeSeq
-
 		m.queryFmt = fmt.Sprintf("SELECT %%s FROM %s WHERE _seq_ >= %%s AND _seq_ < %%s", m.table)
-		m.readFn = func(ctx context.Context, rng ports.Range) (ports.Batch, error) {
-			base := fmt.Sprintf("%s AS _seq_", m.seqExpr)
-			selectList := buildSelectList(base)
-			query := fmt.Sprintf(m.queryFmt, selectList)
-
-			return m.execQuery(ctx, query)
-		}
 	}
 
 	return nil
@@ -196,7 +113,131 @@ func (m *machbaseReader) execQuery(ctx context.Context, query string) (ports.Bat
 }
 
 func (m *machbaseReader) ReadRange(ctx context.Context, rng ports.Range) (ports.Batch, error) {
-	return m.readFn(ctx, rng)
+	switch m.mode {
+	case modeRID:
+		return m.readRangeRID(ctx, rng)
+	case modeSeq:
+		return m.readRangeSeq(ctx, rng)
+	default:
+		return ports.Batch{}, fmt.Errorf("unknown mode: %v", m.mode)
+	}
+}
+
+func (m *machbaseReader) readRangeRID(ctx context.Context, rng ports.Range) (ports.Batch, error) {
+	// Helper function to build SELECT list
+	buildSelectList := func(ridColumn string) string {
+		if len(m.columns) > 0 {
+			return ridColumn + ", " + strings.Join(m.columns, ", ")
+		} else {
+			dataColumns, _ := m.cli.LookupDataColumns(ctx, m.table)
+			return ridColumn + ", " + strings.Join(dataColumns, ", ")
+		}
+	}
+
+	var (
+		cols     []string
+		rows     [][]any
+		nextRIDs = make(map[string]int64)
+	)
+
+	/* lastRIDStore : [
+		{_WAREHOUSE_SENSORS_DATA_0 1584}
+		{_WAREHOUSE_SENSORS_DATA_1 1584}
+		{_WAREHOUSE_SENSORS_DATA_2 1584}
+		{_WAREHOUSE_SENSORS_DATA_3 0}
+	] */
+
+	for _, store := range m.lastRIDStore {
+		rid, ok := rng.RIDs[store.Name]
+		if !ok {
+			rid = 0
+		}
+
+		// Skip if current RID has reached or exceeded the max RID for this store
+		if rid >= int64(store.RID) {
+			log.Printf("[%s] skipping: current RID %d >= max RID %d", store.Name, rid, store.RID)
+			nextRIDs[store.Name] = rid // Keep current RID
+			continue
+		}
+
+		ridColumnWithHint := fmt.Sprintf("/*+ RID_RANGE(%s, %d, %d) */ _RID, *", store.Name, rid, rid+m.ridLimit)
+		selectColumns := buildSelectList(ridColumnWithHint)
+		query := fmt.Sprintf(m.queryFmt, selectColumns, store.Name)
+
+		log.Printf("query: %s", query)
+		// SELECT /*+ RID_RANGE(_WAREHOUSE_SENSORS_DATA_2, 0, 1000) */ _RID, *, SENSOR_ID, TIME, TEMPERATURE, HUMIDITY FROM _WAREHOUSE_SENSORS_DATA_2
+
+		b, err := m.execQuery(ctx, query)
+		if err != nil {
+			return ports.Batch{}, err
+		}
+		b.Columns = b.Columns[1:] // Remove _RID column
+
+		if cols == nil {
+			cols = b.Columns
+			cols = append(cols, m.metaColumns...)
+		}
+
+		// Extract RID from each row and track the last one
+		var lastRID int64
+		for i := 0; i < len(b.Rows); i++ {
+			log.Println("b.rows[i]: ", b.Rows[i])
+			if ridVal, ok := b.Rows[i][0].(int64); ok {
+				lastRID = ridVal
+			} else if ridVal, ok := b.Rows[i][0].(float64); ok {
+				lastRID = int64(ridVal)
+			}
+			b.Rows[i] = b.Rows[i][1:] // Remove RID from row
+		}
+
+		// Update next RID for this store
+		if len(b.Rows) > 0 {
+			nextRIDs[store.Name] = lastRID
+			rows = append(rows, b.Rows...)
+			log.Printf("[%s] read %d rows, lastRID=%d, nextRID=%d", store.Name, len(b.Rows), lastRID, lastRID+1)
+		} else {
+			nextRIDs[store.Name] = rid // Keep current if no new data
+			log.Printf("[%s] no data, keeping rid=%d", store.Name, rid)
+		}
+	}
+
+	return ports.Batch{
+		Columns: cols,
+		Rows:    rows,
+		Meta: map[string]any{
+			"rids":        nextRIDs,
+			"metaColumns": m.metaColumns,
+		},
+	}, nil
+}
+
+func (m *machbaseReader) readRangeSeq(ctx context.Context, rng ports.Range) (ports.Batch, error) {
+	// Helper function to build SELECT list
+	buildSelectList := func(seqColumn string) string {
+		columns := make([]string, 0, len(m.columns))
+		if len(m.columns) > 0 {
+			for _, col := range m.columns {
+				columns = append(columns, "d."+col)
+			}
+			return seqColumn + ", " + strings.Join(columns, ", ")
+		} else {
+			dataColumns, _ := m.cli.LookupDataColumns(ctx, m.table)
+			for i, col := range dataColumns {
+				if i == 0 {
+					columns = append(columns, "m."+col)
+				} else {
+					columns = append(columns, "d."+col)
+				}
+			}
+			return seqColumn + ", " + strings.Join(columns, ", ")
+		}
+	}
+
+	seqColumnAlias := fmt.Sprintf("%s AS _seq_", m.seqExpr)
+	selectColumns := buildSelectList(seqColumnAlias)
+	query := fmt.Sprintf(m.queryFmt, selectColumns)
+
+	return m.execQuery(ctx, query)
 }
 
 func (m *machbaseReader) ReadMeta(ctx context.Context, offset int) (ports.Batch, error) {

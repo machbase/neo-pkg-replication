@@ -57,8 +57,9 @@ type RIDStore struct {
 }
 
 // baseSQL := fmt.Sprintf("select v.ID, m.NAME, v.TABLE_END_RID from V$STORAGE_TAG_TABLES v, M$SYS_TABLES m WHERE v.ID = m.ID AND m.NAME LIKE '_%s_DATA_%%'", table)
-func (c *Client) LookupEndRIDS(ctx context.Context, table string) ([]RIDStore, error) {
+func (c *Client) LookupLastRIDS(ctx context.Context, table string) ([]RIDStore, error) {
 	baseSQL := fmt.Sprintf("SELECT m.NAME AS name, v.TABLE_END_RID AS rid FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m WHERE v.ID = m.ID AND m.NAME LIKE '_%s_DATA_%%'", table)
+	log.Printf("last rid query: %v\n", baseSQL)
 
 	query := url.Values{}
 	query.Set("q", baseSQL)
@@ -89,7 +90,6 @@ func (c *Client) LookupEndRIDS(ctx context.Context, table string) ([]RIDStore, e
 
 func (c *Client) LookupDataColumns(ctx context.Context, table string) ([]string, error) {
 	baseSQL := fmt.Sprintf("SELECT c.NAME FROM M$SYS_TABLES t, M$SYS_COLUMNS c WHERE c.TABLE_ID = t.ID AND t.NAME = '_%s_DATA_0' AND c.ID > 0 AND c.ID < 65534 ORDER BY c.ID ASC", strings.ToUpper(table))
-	log.Printf("baseSQL: %s", baseSQL)
 
 	query := url.Values{}
 	query.Set("q", baseSQL)
@@ -118,6 +118,69 @@ func (c *Client) LookupDataColumns(ctx context.Context, table string) ([]string,
 	}
 
 	return columns, nil
+}
+
+func (c *Client) LookupIDAndTagname(ctx context.Context, column string, table string) (map[int64]string, error) {
+	baseSQL := fmt.Sprintf("SELECT _ID AS ID, %s AS NAME FROM _%s_META", column, table)
+
+	query := url.Values{}
+	query.Set("q", baseSQL)
+	query.Set("rowsArray", "true")
+
+	response, err := c.DoJSON(ctx, http.MethodGet, "/db/query", query, nil)
+	if err != nil {
+		return nil, err
+	}
+	if !response.Success {
+		return nil, err
+	}
+
+	v := []struct {
+		ID   int64  `json:"ID"`
+		Name string `json:"NAME"`
+	}{}
+
+	err = json.Unmarshal(response.Data.Rows, &v)
+	if err != nil {
+		return nil, err
+	}
+
+	idToName := make(map[int64]string, len(v))
+	for _, m := range v {
+		idToName[m.ID] = m.Name
+	}
+
+	return idToName, nil
+}
+
+// select _ID, SENSOR_ID from _WAREHOUSE_SENSORS_meta;
+// baseSQL := fmt.Sprintf("SELECT _ID, SENSOR_ID FROM _WAREHOUSE_SENSORS_META", )
+
+func (c *Client) LookupTagNameColumn(ctx context.Context, table string) (string, error) {
+	baseSQL := fmt.Sprintf("SELECT C.NAME AS NAME FROM M$SYS_TABLES T, M$SYS_COLUMNS C WHERE T.NAME = '%s' AND C.TABLE_ID = T.ID AND C.ID = 0", table)
+
+	query := url.Values{}
+	query.Set("q", baseSQL)
+	query.Set("rowsArray", "true")
+
+	response, err := c.DoJSON(ctx, http.MethodGet, "/db/query", query, nil)
+	if err != nil {
+		return "", err
+	}
+	if !response.Success {
+		return "", err
+	}
+
+	v := []struct {
+		Name string `json:"NAME"`
+	}{}
+
+	err = json.Unmarshal(response.Data.Rows, &v)
+	if err != nil {
+		return "", err
+	}
+
+	return v[0].Name, nil
 }
 
 func (c *Client) LookupMetaColumns(ctx context.Context, table string) ([]string, error) {

@@ -8,7 +8,7 @@ import (
 type Range struct {
 	From time.Time
 	To   time.Time
-	RIDs map[string]int64 // 임시
+	RIDs map[string]int64
 }
 
 type Batch struct {

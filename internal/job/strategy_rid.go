@@ -24,7 +24,6 @@ func (s *ridStrategy) Execute(ctx context.Context, chk offset.CheckPoint, reader
 		return chk, err
 	}
 
-	// RID mode: LIMIT-based loop
 	for {
 		rids := chk.GetRIDs()
 		if rids == nil {
@@ -66,11 +65,8 @@ func (s *ridStrategy) Execute(ctx context.Context, chk offset.CheckPoint, reader
 	return chk, nil
 }
 
-// Private helper methods
-
 func (s *ridStrategy) shouldReplicate(chk offset.CheckPoint) (bool, error) {
-	// Always replicate in RID mode
-	// Empty RIDs map means first run, should start replication
+	//
 	return true, nil
 }
 

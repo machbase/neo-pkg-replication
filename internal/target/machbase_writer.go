@@ -71,9 +71,9 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 		}
 		payload[i] = rows
 	}
-	for _, row := range payload {
-		log.Printf("row: %v, %d", row, len(row))
-	}
+	// for _, row := range payload {
+	// 	log.Printf("row: %v, %d", row, len(row))
+	// }
 	batch.Rows = payload
 
 	// Extract RIDs from meta
