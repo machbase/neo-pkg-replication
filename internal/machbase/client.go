@@ -56,6 +56,12 @@ type RIDStore struct {
 	RID  int    `json:"rid"`
 }
 
+// TagIDName represents a mapping between tag ID and tag name
+type TagIDName struct {
+	ID   int64  `json:"ID"`
+	Name string `json:"NAME"`
+}
+
 // baseSQL := fmt.Sprintf("select v.ID, m.NAME, v.TABLE_END_RID from V$STORAGE_TAG_TABLES v, M$SYS_TABLES m WHERE v.ID = m.ID AND m.NAME LIKE '_%s_DATA_%%'", table)
 func (c *Client) LookupLastRIDS(ctx context.Context, table string) ([]RIDStore, error) {
 	baseSQL := fmt.Sprintf("SELECT m.NAME AS name, v.TABLE_END_RID AS rid FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m WHERE v.ID = m.ID AND m.NAME LIKE '_%s_DATA_%%'", table)
@@ -120,7 +126,9 @@ func (c *Client) LookupDataColumns(ctx context.Context, table string) ([]string,
 	return columns, nil
 }
 
-func (c *Client) LookupIDAndTagname(ctx context.Context, column string, table string) (map[int64]string, error) {
+// LookupTagIDNames retrieves tag ID to name mappings from the meta table
+// It returns a map where keys are tag IDs and values are tag names
+func (c *Client) LookupTagIDNames(ctx context.Context, column string, table string) (map[int64]string, error) {
 	baseSQL := fmt.Sprintf("SELECT _ID AS ID, %s AS NAME FROM _%s_META", column, table)
 
 	query := url.Values{}
@@ -135,19 +143,15 @@ func (c *Client) LookupIDAndTagname(ctx context.Context, column string, table st
 		return nil, err
 	}
 
-	v := []struct {
-		ID   int64  `json:"ID"`
-		Name string `json:"NAME"`
-	}{}
-
-	err = json.Unmarshal(response.Data.Rows, &v)
+	var tagIDNames []TagIDName
+	err = json.Unmarshal(response.Data.Rows, &tagIDNames)
 	if err != nil {
 		return nil, err
 	}
 
-	idToName := make(map[int64]string, len(v))
-	for _, m := range v {
-		idToName[m.ID] = m.Name
+	idToName := make(map[int64]string, len(tagIDNames))
+	for _, tag := range tagIDNames {
+		idToName[tag.ID] = tag.Name
 	}
 
 	return idToName, nil

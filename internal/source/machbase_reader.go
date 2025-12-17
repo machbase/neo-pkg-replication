@@ -75,12 +75,14 @@ func (m *machbaseReader) Prepare(ctx context.Context) error {
 			return fmt.Errorf("failed to lookup tagname column: %v", err)
 		}
 		log.Printf("tagNameColumn: %v", tagNameColumn)
-		idToName, err := m.cli.LookupIDAndTagname(ctx, tagNameColumn, m.table)
+
+		// Lookup tag ID to name mappings
+		idToName, err := m.cli.LookupTagIDNames(ctx, tagNameColumn, m.table)
 		if err != nil {
-			return fmt.Errorf("failed to lookup tagname column: %v", err)
+			return fmt.Errorf("failed to lookup tag ID to name mappings: %v", err)
 		}
 		m.idToName = idToName
-		log.Printf("idToname: %v", idToName)
+		log.Printf("tag ID to name mappings: %v", idToName)
 
 		// Store fields for readRangeRID method
 		m.lastRIDStore = ridStore
@@ -188,6 +190,22 @@ func (m *machbaseReader) readRangeRID(ctx context.Context, rng ports.Range) (por
 				lastRID = int64(ridVal)
 			}
 			b.Rows[i] = b.Rows[i][1:] // Remove RID from row
+
+			// Convert tag ID to tag name using idToName mapping
+			if len(b.Rows[i]) > 0 && m.idToName != nil {
+				// The first column after removing _RID is the tag ID column
+				if tagID, ok := b.Rows[i][0].(int64); ok {
+					if tagName, exists := m.idToName[tagID]; exists {
+						b.Rows[i][0] = tagName
+						log.Printf("Converted tag ID %d to name '%s'", tagID, tagName)
+					}
+				} else if tagID, ok := b.Rows[i][0].(float64); ok {
+					if tagName, exists := m.idToName[int64(tagID)]; exists {
+						b.Rows[i][0] = tagName
+						log.Printf("Converted tag ID %d to name '%s'", int64(tagID), tagName)
+					}
+				}
+			}
 		}
 
 		// Update next RID for this store
