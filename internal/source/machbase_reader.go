@@ -162,12 +162,12 @@ func (m *machbaseReader) readRangeRID(ctx context.Context, rng ports.Range) (por
 			continue
 		}
 
-		ridColumnWithHint := fmt.Sprintf("/*+ RID_RANGE(%s, %d, %d) */ _RID, *", store.Name, rid, rid+m.ridLimit)
+		ridColumnWithHint := fmt.Sprintf("/*+ RID_RANGE(%s, %d, %d) */ _RID", store.Name, rid, rid+m.ridLimit)
 		selectColumns := buildSelectList(ridColumnWithHint)
 		query := fmt.Sprintf(m.queryFmt, selectColumns, store.Name)
 
 		log.Printf("query: %s", query)
-		// SELECT /*+ RID_RANGE(_WAREHOUSE_SENSORS_DATA_2, 0, 1000) */ _RID, *, SENSOR_ID, TIME, TEMPERATURE, HUMIDITY FROM _WAREHOUSE_SENSORS_DATA_2
+		// SELECT /*+ RID_RANGE(_WAREHOUSE_SENSORS_DATA_2, 0, 1000) */ _RID, SENSOR_ID, TIME, TEMPERATURE, HUMIDITY FROM _WAREHOUSE_SENSORS_DATA_2
 
 		b, err := m.execQuery(ctx, query)
 		if err != nil {
@@ -177,7 +177,6 @@ func (m *machbaseReader) readRangeRID(ctx context.Context, rng ports.Range) (por
 
 		if cols == nil {
 			cols = b.Columns
-			cols = append(cols, m.metaColumns...)
 		}
 
 		// Extract RID from each row and track the last one
@@ -210,7 +209,7 @@ func (m *machbaseReader) readRangeRID(ctx context.Context, rng ports.Range) (por
 
 		// Update next RID for this store
 		if len(b.Rows) > 0 {
-			nextRIDs[store.Name] = lastRID
+			nextRIDs[store.Name] = lastRID + 1
 			rows = append(rows, b.Rows...)
 			log.Printf("[%s] read %d rows, lastRID=%d, nextRID=%d", store.Name, len(b.Rows), lastRID, lastRID+1)
 		} else {

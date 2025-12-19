@@ -45,27 +45,12 @@ func (m *machbaseWriter) WriteBatch(ctx context.Context, batch ports.Batch) (por
 		return ports.WriteResult{}, err
 	}
 
-	metaColumns, ok := batch.Meta["metaColumns"]
-	if !ok {
-
-	}
-	meta, ok := metaColumns.([]string)
-	if !ok {
-
-	}
-
-	metaAppend := make([]any, 0, len(meta))
-	for range meta {
-		metaAppend = append(metaAppend, "")
-	}
-
 	// placement : nonce  				====> DoANY
 	// placement : prefix, suffsic      ====> DoJSON
 
 	payload := make([][]any, len(batch.Rows))
 	for i, rows := range batch.Rows {
 		payload[i] = make([]any, len(rows))
-		rows = append(rows, metaAppend...)
 		if strings.ToLower(m.placement) != "none" {
 			rows[0] = m.AppendAffix(rows[0])
 		}
