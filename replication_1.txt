@@ -1,0 +1,1507 @@
+데이터베이스 테이블 복제 시스템
+요구사항 명세서 v2.2 (공개용)
+1. 목적
+
+본 시스템은 원본 Database의 특정 논리 테이블에 속한 데이터 테이블에서
+지속적으로 입력되는 데이터를 읽어,
+사전에 생성된 다른 서버의 대상 테이블로 복제하는 것을 목적으로 한다.
+
+복제 대상은 사용자가 선택한 테이블만 해당하며,
+테이블 간 매핑은 1:1, 1:n, n:m 구조를 모두 지원한다.
+
+2. 용어 정의
+용어	    정의
+논리 테이블	    원본 테이블. 데이터 테이블 구성정보만 보유
+데이터 테이블	    실제 데이터가 저장되는 테이블
+_rid	    데이터 테이블별 순차적이고 unique한 일련번호
+메타 테이블	    tag id ↔ tag name 및 tag 메타정보 저장
+체크포인트	    데이터 테이블별 마지막 성공 복제 _rid
+
+3. 시스템 범위
+3.1 포함 범위
+
+- 데이터 테이블의 Insert 데이터 복제
+- tag id → tag name 변환
+- 메타 정보 동기화 (1차 범위에서는 보류, 추후 별도 설계 예정)
+- 재시작 시 정합성 유지
+- 네트워크 오류에 대한 재시도
+
+3.2 제외 범위
+
+- Update / Delete 처리
+- 대상 테이블 생성 및 스키마 관리
+- 인덱스, 롤업 등 부가 정보 복제
+- 메타 정보 삭제 처리
+
+3.3 스키마 불일치 처리 정책
+
+대상 테이블은 사전 생성되어야 하며 스키마 관리는 제외 범위이다.
+원본과 대상의 컬럼 수/타입이 다를 경우:
+   - 원본에 있고 대상에 없는 컬럼은 무시한다.
+   - 대상에 있고 원본에 없는 컬럼은 Null로 채운다.
+
+4. 데이터 테이블 컬럼 규칙 (고정)
+
+다음 규칙은 Tag 테이블의 데이터 테이블에만 적용되는 Database의 기본 제약 사항이다.
+   1. 데이터 테이블의 1번째 컬럼은 tag 컬럼이다.
+      - 저장 값은 tag id
+      - 복제 시 write는 tag name 기반으로 수행한다.
+   2. 데이터 테이블의 2번째 컬럼은 time 컬럼이다.
+      - 타입: int64
+      - 단위: Unix epoch 기준 nanoseconds (UTC)
+위 규칙을 만족하지 않는 테이블은 사용자 설정 오류로 간주하며,
+해당 매핑은 실패 처리 후 스킵한다.
+
+5. 메타(tag) 처리 요구사항
+
+   1. 데이터 테이블에는 tag id만 저장된다.
+   2. tag name 및 메타정보는 메타 테이블에 존재한다.
+   3. 메타정보는 tag name에 귀속되며 데이터 테이블과 독립적이다.
+   4. 메타정보는 수정될 수 있음을 고려한다.
+   5. 메타정보 삭제는 고려하지 않는다.
+
+6. Tag name 충돌 방지
+
+   1. 여러 원본 테이블이 하나의 대상 테이블로 복제될 수 있다.
+   2. tag name 충돌 방지를 위해 원본 테이블 단위 식별자 적용을 지원한다.
+   3. 적용 방식:
+      - prefix | suffix | none
+      - 적용 문자열은 구분자를 포함한 임의 문자열이다.
+      - 해당 원본 테이블의 모든 tag name에 적용한다.
+
+7. 테이블 매핑 규칙
+
+   1. 복제 설정은 논리 테이블 단위로 수행한다.
+   2. 데이터 테이블 목록 및 실제 테이블명은 Database 설정 테이블을 조회하여 자동 유도한다.
+   3. 원본 테이블과 대상 테이블의 테이블 type은 동일해야 한다.
+   4. type 불일치 또는 설정 조회 실패 시 해당 매핑은 실패 처리 후 스킵한다.
+   5. Log 테이블은 1:1 매핑만 허용한다. n:1 매핑은 설정 오류로 간주한다.
+
+8. 복제 시작 방식 (start_mode)
+
+start_mode는 최초 실행 시에만 적용된다.
+
+8.1 start_mode 종류
+
+- full : _rid 0부터 복제
+- now : 실행 시점의 max(_rid) 이후부터 복제
+- rid_after : 지정한 _rid 이후부터 복제
+
+8.2 시작점 결정 우선순위
+
+- 체크포인트가 존재하는 경우
+   → start_mode와 무관하게 체크포인트 기준으로 시작
+- 체크포인트가 존재하지 않는 경우
+   → start_mode 기준으로 시작
+
+체크포인트 파일이 손상되었거나 읽을 수 없는 경우도
+"체크포인트가 없는 경우"로 간주한다.
+
+9. 체크포인트 관리
+
+   1. 체크포인트는 데이터 테이블별로 관리한다.
+   2. 값은 성공 응답을 받은 마지막 _rid이다.
+   3. 체크포인트는 파일로 저장한다.
+   4. 체크포인트 파일은 atomic write 방식으로 갱신한다.
+   5. 데이터 테이블 단위 단일 인스턴스 실행을 전제로 한다.
+
+10. 정합성 유지 (재시작 시)
+
+   1. 재시작 시 체크포인트부터 데이터를 다시 읽는다.
+   2. 대상 테이블에서 tag_name + time 조건으로 검색하여
+      실제 복제 시작 위치를 보정한다.
+   3. 검색은 존재 여부만 확인한다.
+   4. 테이블 type 특성상 검색이 불가능한 경우:
+      - 정합성 유지 작업을 수행하지 않고 스킵한다.
+      - 중복 발생은 허용한다.
+
+11. 장애 처리 및 재시도
+
+   1. 네트워크 오류에 대해 재시도를 수행한다.
+   2. 재시도는 점진적으로 증가하는 backoff 전략을 사용한다.
+   3. 재시도 불가 오류(설정 오류, 규칙 위반 등)는
+      해당 매핑을 실패 처리하고 스킵한다.
+
+12. 실행 단위 및 성능
+
+   1. 복제는 batch 단위로 수행한다.
+   2. batch 크기는 설정으로 지정한다.
+   3. 테이블별 데이터 유입 속도를 고려하여
+      job 단위 기본값과 source 단위 override를 지원한다.
+
+13. 정책 요약
+
+- 서버 설정은 재사용 가능해야 한다.
+- 설정 파일은 "무엇을 복제할지"만 기술한다.
+- 테이블 구조 정보는 Database 설정 테이블을 단일 진실의 원천으로 사용한다.
+- 잘못된 설정으로 인한 결과는 사용자 책임으로 간주한다.
+- 매핑 단위 실패는 전체 job 실패로 확장되지 않는다.
+- 설정 변경 시 프로세스 재시작이 필요하다. 핫 리로드는 지원하지 않는다.
+
+
+--------------------------------------------------------------------------------
+
+
+내부 설계 전제 및 배경 문서
+v2.2 (개발자 / 유지보수용)
+
+⚠️ 본 문서는 요구사항 명세가 아니다.
+   시스템 설계 시 전제로 삼은 Database 특성, 설계 의도, 의사결정의 이유를 기록한다.
+   향후 기능 변경·확장 시 "왜 이렇게 되어 있는지"를 이해하기 위한 문서이다.
+
+1. Database 구조적 전제
+1.1 논리 테이블 / 데이터 테이블 구조
+
+- Database에는 논리 테이블과 데이터 테이블 개념이 존재한다.
+- 논리 테이블은:
+   - 실제 데이터를 저장하지 않는다.
+   - 메타 정보 및 데이터 테이블 구성 정보만 가진다.
+- 실제 데이터는 데이터 테이블(부속 테이블) 에 저장된다.
+- 하나의 논리 테이블은:
+   - 1개 이상의 데이터 테이블을 가질 수 있다.
+※ 단, 테이블 유형에 따라 예외가 존재하며,
+이 구조 차이는 복제 설계에 직접적인 영향을 미친다(후술).
+
+1.2 _rid 컬럼 전제
+
+- 모든 복제 대상 데이터 테이블에는 _rid 컬럼이 존재한다.
+- _rid는:
+   - 데이터 테이블 단위로 unique
+   - 단조 증가(sequential)
+- _rid는 복제 진행 상태를 추적하기 위한 유일하고 신뢰 가능한 기준값이다.
+- 대상 테이블에는 _rid를 저장하지 않는다.
+
+1.3 트랜잭션 및 제약 사항
+
+- Database는 트랜잭션을 지원하지 않는다.
+- PK 개념이 없다.
+- Update / Delete는 특수한 방식으로만 지원되며,
+   본 복제 시스템에서는 고려 대상이 아니다.
+- 원본 Database에는 데이터가 지속적으로 입력된다.
+
+이 전제로 인해:
+- Exactly-once 복제는 보장할 수 없다.
+- 중복 발생 가능성을 허용하는 설계를 선택했다.
+
+2. 복제 대상 테이블 유형 전제 (핵심)
+
+본 Database에는 여러 테이블 유형이 존재하지만,
+복제 대상으로 고려되는 테이블은 두 가지 유형만 존재한다.
+
+이 구분은 정합성 유지 가능 여부를 결정하는 핵심 전제이다.
+
+2.1 Tag 테이블
+
+구조적 특성
+- 데이터 구조가 tag_name + time 중심으로 설계되어 있다.
+- time 컬럼은:
+   - int64
+   - Unix epoch nanoseconds (UTC)
+- tag_name + time 조합으로 논리적으로 동일한 데이터 식별이 가능하다.
+
+논리/물리 구조
+- Tag 테이블은:
+   - 논리 테이블과 데이터 테이블이 분리되어 있다.
+   - 하나의 논리 테이블에 여러 데이터 테이블이 존재할 수 있다.
+
+복제 관점 의미
+- 대상 테이블에서:
+   - tag_name + time 조건으로
+   - 데이터 존재 여부 검색이 가능하다.
+- 따라서 재시작 시
+   - 체크포인트 이후 데이터를 다시 읽고
+   - 중복 여부를 판단하여 정합성 확보가 가능하다.
+
+설계 반영
+- 정합성 유지(integrity) 로직은 Tag 테이블을 전제로 설계되었다.
+- 컬럼 규칙 검증, 존재 여부 검색은 Tag 테이블에만 적용된다.
+
+2.2 Log 테이블
+
+구조적 특성
+- 테이블 구조가 자유롭다.
+- 컬럼 구성 및 의미에 제약이 없다.
+- 원본 데이터를 논리적으로 특정할 수 있는 키가 존재하지 않는다.
+
+논리/물리 구조
+- Log 테이블은:
+   - 논리 테이블과 데이터 테이블이 동일하다.
+   - 별도의 부속 테이블 분리가 없다.
+
+복제 관점 의미
+- 대상 테이블에서:
+   - "이 데이터가 이미 복제되었는지"를
+   - 신뢰성 있게 판단할 수 없다.
+- 즉, 존재 여부 검색 자체가 불가능하다.
+
+설계 반영
+- Log 테이블에 대해서는:
+   - 체크포인트 기반 복제는 수행한다.
+   - 재시작 시 정합성 유지 로직을 적용하지 않는다.
+- 중복 발생 가능성은 의도적으로 허용한다.
+- 매핑 제한: 1:1 매핑만 허용한다. n:1 매핑은 설정 오류로 간주한다.
+
+3. 컬럼 규칙 전제
+3.1 데이터 테이블 컬럼 고정 규칙
+
+다음 컬럼 규칙은 Tag 테이블에만 적용되는 고정 전제이다.
+Tag 테이블은 tag_name + time 기반 정합성 확보가 필수이므로,
+모든 데이터 테이블은 다음 규칙을 만족해야 한다.
+   1. 1번째 컬럼: tag 컬럼
+      - 저장 값은 tag id
+   2. 2번째 컬럼: time 컬럼
+      - int64, Unix epoch ns
+이 규칙은 Database 기본 사항이며,
+설정으로 변경할 수 없다.
+
+위반 시:
+- Tag 테이블로 간주할 수 없으며
+- 해당 mapping은 실패 처리 후 스킵한다.
+
+3.2 Log 테이블 컬럼 규칙
+
+Log 테이블은
+- 컬럼 구조에 대한 제약이 없다.
+- 컬럼 규칙 검증을 수행하지 않는다.
+- 컬럼 순서/의미를 복제 시스템이 해석하지 않는다.
+
+이는 정합성 확보를 포기한 대신 구조적 자유도를 허용한 설계 선택이다.
+
+4. 체크포인트 설계 전제
+4.1 왜 _rid 기반인가
+
+- _rid는:
+   - 순차적
+   - 테이블 단위 unique
+- 트랜잭션이 없는 환경에서:
+   - "여기까지는 확실히 성공했다"를 판단할 수 있는 가장 안전한 기준이다.
+
+따라서 체크포인트는:
+- _rid 하나만 저장한다.
+- 성공 응답을 받은 시점 기준으로만 갱신한다.
+
+4.2 체크포인트 우선 규칙
+
+- 체크포인트가 존재하면:
+   - 설정의 start_mode는 무시한다.
+- 체크포인트가 없을 때만:
+   - start_mode를 적용한다.
+
+이 규칙은:
+- 재시작 시 데이터 누락을 방지하기 위한 선택이다.
+
+5. 정합성 유지 설계 배경
+5.1 왜 존재 여부만 확인하는가
+
+- 대상 테이블 스키마는 외부에서 관리된다.
+- 전체 컬럼 비교는:
+   - 구현 복잡도 증가
+   - 성능 저하
+   - 테이블 type별 분기 폭증
+
+따라서 현재는:
+- tag_name + time 기준
+- 존재 여부만 확인하는 전략을 채택했다.
+
+5.2 테이블 유형에 따른 분기
+테이블 유형	정합성 유지
+Tag 테이블	수행
+Log 테이블	수행하지 않음
+
+이 분기는 설계 의도이며 버그가 아니다.
+
+6. 실패 처리 철학
+
+- 설정 오류, 규칙 위반:
+   - 사용자 책임
+   - mapping 단위 실패 처리 후 스킵
+- 네트워크 오류:
+   - 재시도
+- 하나의 mapping 실패가:
+   - 전체 job 실패로 확장되지 않도록 설계
+
+7. 고정 옵션 전제 (설정 비노출)
+
+아래 항목들은 현재 고정값으로 구현한다:
+
+항목	값
+max_inflight_batches	1
+single_instance_per_data_table	true
+atomic_write	true
+skip_when_table_type_unsupported	true
+config_hot_reload	false (설정 변경 시 프로세스 재시작 필요)
+
+향후 필요 시 설정으로 확장 가능하도록
+코드 구조만 열어둔다.
+
+8. 설계 철학 요약
+
+- Exactly-once는 목표가 아니다.
+- 중복은 허용하되, 최대한 억제한다.
+- Database의 구조를 억지로 일반화하지 않는다.
+- Tag 테이블은 정합성, Log 테이블은 단순 전달이라는 역할 분리를 명확히 한다.
+
+
+--------------------------------------------------------------------------------
+
+
+설정 파일 가이드
+데이터베이스 테이블 복제 시스템
+설정 파일 스키마 v3 (최종)
+1. 설정 파일 전체 형식 (Format)
+version: 3
+
+# 전역 서버 레지스트리
+servers:
+  <server_alias>: "<connection_string>"
+  ...
+
+replication:
+  jobs:
+    - job_id: "<string>"
+      enabled: <bool>
+
+      checkpoint:
+        directory: "<path>"
+
+      integrity:
+        enabled: <bool>
+        mode: "existence_only"
+
+      retry:
+        enabled: <bool>
+        strategy: "exponential" | "linear"
+        initial_delay_ms: <int>
+        max_delay_ms: <int>
+        multiplier: <number>
+        jitter: <bool>
+        max_attempts: <int|null>
+
+      execution_defaults:
+        batch_size_records: <int>
+        poll_interval_ms: <int>
+
+      mappings:
+        - mapping_id: "<string>"
+
+          source:
+            server: "<server_alias>"
+            table: "<string>"
+
+            start_mode: "full" | "now" | "rid_after"
+            rid_after: <int|null>
+
+            tag_identifier:
+              mode: "prefix" | "suffix" | "none"
+              value: "<string>"
+
+            execution:
+              batch_size_records: <int>
+              poll_interval_ms: <int>
+
+          target:
+            server: "<server_alias>"
+            table: "<string>"
+
+          execution:
+            batch_size_records: <int>
+            poll_interval_ms: <int>
+
+      logging:
+        level: "debug" | "info" | "warn" | "error"
+        log_dir: "<path>"
+
+2. 설정 예시 (Example)
+version: 3
+
+servers:
+  srcA: "db-a.internal:1234"
+  srcB: "db-b.internal:1234"
+  tgtAnalytics: "db-analytics.internal:2345"
+
+replication:
+  jobs:
+    - job_id: "job_prod_001"
+      enabled: true
+
+      checkpoint:
+        directory: "/var/lib/replicator/checkpoints"
+
+      integrity:
+        enabled: true
+        mode: "existence_only"
+
+      retry:
+        enabled: true
+        strategy: "exponential"
+        initial_delay_ms: 1000
+        max_delay_ms: 600000
+        multiplier: 2.0
+        jitter: true
+        max_attempts: null
+
+      execution_defaults:
+        batch_size_records: 5000
+        poll_interval_ms: 1000
+
+      mappings:
+        - mapping_id: "map_orders_A"
+          source:
+            server: "srcA"
+            table: "orders"
+            start_mode: "full"
+            rid_after: null
+
+            tag_identifier:
+              mode: "prefix"
+              value: "A:"
+
+            execution:
+              batch_size_records: 20000
+              poll_interval_ms: 200
+
+          target:
+            server: "tgtAnalytics"
+            table: "analytics_orders"
+
+        - mapping_id: "map_orders_B"
+          source:
+            server: "srcB"
+            table: "orders"
+            start_mode: "rid_after"
+            rid_after: 120000
+
+            tag_identifier:
+              mode: "prefix"
+              value: "B:"
+
+          target:
+            server: "tgtAnalytics"
+            table: "analytics_orders"
+
+          execution:
+            batch_size_records: 2000
+            poll_interval_ms: 2000
+
+      logging:
+        level: "info"
+        log_dir: "/var/log/replicator"
+
+3. 항목별 설명
+3.1 최상위
+
+version
+
+- 설정 파일 버전
+- 현재 버전은 3 고정
+
+3.2 servers
+
+- servers
+   - 서버 접속 정보를 전역으로 정의하는 레지스트리
+   - key는 별칭(alias), value는 실제 접속 문자열
+   - 접속 문자열 형식(인증 정보 포함 방식 등)은 구현 시 편의에 맞게 결정한다.
+   - source/target에서 이 별칭을 참조한다.
+
+3.3 replication.jobs
+
+- job_id
+   - 복제 작업의 고유 식별자
+
+- enabled
+  - 해당 job 실행 여부
+
+3.4 checkpoint
+
+- directory
+   - 체크포인트 파일이 저장될 디렉토리 경로
+   - 체크포인트는 데이터 테이블별로 관리된다.
+- 체크포인트 파일은 atomic write 방식으로 갱신된다(고정 정책).
+
+3.5 integrity
+
+- enabled
+   - 재시작 시 정합성 유지 작업 수행 여부
+
+- mode
+   - 정합성 비교 방식
+   - 현재는 "existence_only" 고정
+      - tag_name + time 조건으로 대상 데이터 존재 여부만 확인
+
+테이블 type 특성상 검색이 불가능한 경우, 정합성 유지 작업은 자동으로 스킵된다(고정 정책).
+
+3.6 retry
+
+- enabled
+   - 재시도 기능 사용 여부
+
+- strategy
+   - 재시도 대기 시간 증가 방식
+   - exponential: 지수 백오프
+   - linear: 선형 증가
+
+- initial_delay_ms
+   - 최초 재시도까지 대기 시간 (ms)
+
+- max_delay_ms
+   - 재시도 대기 시간의 최대값 (ms)
+
+- multiplier
+   - 지수 백오프 시 증가 계수
+
+- jitter
+   - 재시도 대기 시간에 랜덤 변동 적용 여부
+   - 다중 재시도로 인한 부하 집중을 방지하기 위함
+
+- max_attempts
+   - 최대 재시도 횟수
+   - null인 경우 무한 재시도
+
+3.7 execution_defaults
+
+- batch_size_records
+   - 한 번에 복제 처리할 레코드 수
+
+- poll_interval_ms
+   - 새 데이터 확인을 위한 폴링 주기 (ms)
+
+실행 옵션의 우선순위:
+   1. mapping.execution
+   2. source.execution
+   3. execution_defaults
+
+3.8 mappings
+
+mapping_id
+- 매핑 단위의 고유 식별자
+
+source
+- server
+   - 원본 서버 별칭 (servers에 정의된 key)
+- table
+   - 원본 논리 테이블명
+- start_mode
+   - 최초 실행 시 복제 시작 기준
+   - full / now / rid_after
+- rid_after
+   - start_mode가 rid_after일 때 사용되는 기준 _rid
+start_mode는 체크포인트가 없는 최초 실행 시에만 적용된다.
+
+tag_identifier
+- mode
+   - tag name에 식별자를 적용하는 방식
+   - prefix / suffix / none
+- value
+   - tag name에 붙일 문자열
+   - 구분자를 포함한 문자열을 직접 지정한다.
+
+target
+- server
+   - 대상 서버 별칭
+- table
+   - 대상 테이블명 (사전 생성되어 있어야 함)
+
+3.9 logging
+
+- level
+   - 로그 레벨 (debug, info, warn, error)
+
+- log_dir
+   - 로그 파일 저장 경로
+
+4. 고정 정책 요약 (설정에 노출되지 않음)
+
+다음 항목들은 현재 고정값으로 구현되며 설정 파일에는 포함되지 않는다.
+
+- max_inflight_batches = 1
+- single_instance_per_data_table = true
+- atomic_write = true
+- skip_when_table_type_unsupported = true
+- config_hot_reload = false (설정 변경 시 프로세스 재시작 필요)
+
+향후 필요 시 설정으로 확장 가능하다.
+
+5. 오류 처리 정책 요약
+
+- 설정 오류, 컬럼 규칙 위반, 테이블 type 불일치 시
+   → 해당 mapping 실패 처리 후 스킵
+- 하나의 mapping 실패가 job 전체 실패로 확장되지는 않는다.
+- 중복 데이터 발생 가능성은 허용한다.
+
+6. JSON 설정 예시 (v3)
+{
+  "version": 3,
+  "servers": {
+    "srcA": "db-a.internal:1234",
+    "srcB": "db-b.internal:1234",
+    "tgtAnalytics": "db-analytics.internal:2345"
+  },
+  "replication": {
+    "jobs": [
+      {
+        "job_id": "job_prod_001",
+        "enabled": true,
+        "checkpoint": {
+          "directory": "/var/lib/replicator/checkpoints"
+        },
+        "integrity": {
+          "enabled": true,
+          "mode": "existence_only"
+        },
+        "retry": {
+          "enabled": true,
+          "strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 600000,
+          "multiplier": 2.0,
+          "jitter": true,
+          "max_attempts": null
+        },
+        "execution_defaults": {
+          "batch_size_records": 5000,
+          "poll_interval_ms": 1000
+        },
+        "mappings": [
+          {
+            "mapping_id": "map_orders_A",
+            "source": {
+              "server": "srcA",
+              "table": "orders",
+              "start_mode": "full",
+              "rid_after": null,
+              "tag_identifier": {
+                "mode": "prefix",
+                "value": "A:"
+              },
+              "execution": {
+                "batch_size_records": 20000,
+                "poll_interval_ms": 200
+              }
+            },
+            "target": {
+              "server": "tgtAnalytics",
+              "table": "analytics_orders"
+            }
+          },
+          {
+            "mapping_id": "map_orders_B",
+            "source": {
+              "server": "srcB",
+              "table": "orders",
+              "start_mode": "rid_after",
+              "rid_after": 120000,
+              "tag_identifier": {
+                "mode": "prefix",
+                "value": "B:"
+              }
+            },
+            "target": {
+              "server": "tgtAnalytics",
+              "table": "analytics_orders"
+            },
+            "execution": {
+              "batch_size_records": 2000,
+              "poll_interval_ms": 2000
+            }
+          }
+        ],
+        "logging": {
+          "level": "info",
+          "log_dir": "/var/log/replicator"
+        }
+      }
+    ]
+  }
+}
+
+
+--------------------------------------------------------------------------------
+
+
+체크포인트 파일 포맷 정의
+
+1. 파일 단위
+
+- 데이터 테이블(부속 테이블) 1개당 1파일
+- 파일명은 간결하고 안정적으로 유지
+
+파일명 규칙
+<job_id>__<data_table>.json
+
+예시
+job_prod_001__orders_data_0.json
+
+전제: data_table 이름에는 이미 논리 테이블명이 포함됨
+(예: orders_data_0, metrics_cpu_data_3)
+
+2. 파일 포맷 (JSON)
+Format
+{
+  "version": 1,
+  "job_id": "<string>",
+  "source": {
+    "server": "<server_alias>",
+    "table": "<logical_table>",
+    "data_table": "<data_table_name>"
+  },
+  "checkpoint": {
+    "last_success_rid": <integer>,
+    "updated_at": "<RFC3339 timestamp>"
+  }
+}
+
+Example
+{
+  "version": 1,
+  "job_id": "job_prod_001",
+  "source": {
+    "server": "srcA",
+    "table": "orders",
+    "data_table": "orders_data_0"
+  },
+  "checkpoint": {
+    "last_success_rid": 183456789,
+    "updated_at": "2026-02-04T06:12:45Z"
+  }
+}
+
+3. 필드 설명
+
+source.server
+- 필수
+- 원본 서버 별칭 (servers 설정의 key)
+- 파일명에는 포함되지 않으며, 내용으로만 식별
+
+source.table
+- 원본 논리 테이블명
+- 디버깅/운영 시 "어떤 논리 테이블의 데이터 테이블인지" 확인용
+
+source.data_table
+- 실제 데이터 테이블명
+- 파일명과 반드시 동일해야 함
+- 불일치 시 손상(corruption)으로 간주하며, 해당 체크포인트를 무효 처리한다
+
+4. 갱신 규칙
+
+- 배치 단위 성공 시에만 갱신
+- atomic write (임시 파일 → rename)
+- 재시도 중에는 갱신하지 않음
+
+5. 재시작 시 사용 규칙
+
+- 파일 존재 → 체크포인트 기준 시작
+- 파일 없음 → 최초 실행 → start_mode 적용
+- 파일 손상 → 파일 없음으로 간주 + 로그
+
+6. 충돌/확장 고려
+동일 job_id + 동일 data_table 이름 충돌 가능성
+- 같은 job 내에서 동일한 data_table 이름이 중복될 수 없다
+   (논리 테이블 기준 유도 규칙상 안전)
+
+향후 확장 여지
+- 다중 job에서 같은 data_table 이름을 쓰는 경우:
+   job_id가 파일명에 포함되어 있으므로 충돌 없음
+- 포맷 변경 시 version 증가로 대응
+
+
+--------------------------------------------------------------------------------
+
+
+데이터베이스 테이블 복제 시스템
+설계 문서 (Developer-Friendly Version)
+1. 이 시스템은 무엇을 하는가
+
+이 시스템은 다음 문제를 해결하기 위해 존재한다.
+ "원본 Database에 계속 쌓이는 데이터를 다른 서버의 테이블로 안전하게 복제하고 싶다."
+
+하지만 원본 Database에는 다음과 같은 제약이 있다.
+- 트랜잭션이 없다
+- PK가 없다
+- 데이터는 계속 들어온다
+- 중간 실패 시 어디까지 성공했는지 알기 어렵다
+
+따라서 이 시스템의 목표는:
+  완벽한 정확성(exactly-once)이 아니라
+  실용적인 안정성(at-least-once + 정합성 최대화)
+이다.
+
+2. Database 구조 한 번에 이해하기
+
+이 Database에는 복제 대상 테이블 유형이 두 가지 있다.
+
+테이블 유형	목적	정합성 가능 여부
+Tag 테이블	시계열/지표 데이터	가능
+Log 테이블	로그/이벤트 데이터	불가능
+
+이 구분이 설계 전체를 지배한다.
+
+3. Tag 테이블이란?
+3.1 구조 개념
+
+Tag 테이블의 데이터는 이런 성격을 가진다.
+- 데이터는 항상 tag + time을 기준으로 쌓인다
+- 같은 tag와 time은 같은 데이터를 의미한다
+
+예시(논리적):
+tag	time	value
+cpu	100	12
+cpu	101	13
+
+3.2 컬럼 규칙 (중요)
+
+Tag 테이블의 데이터 테이블은 반드시 다음 규칙을 따른다.
+   1. 1번째 컬럼: tag id
+   2. 2번째 컬럼: time (int64, ns)
+      이 규칙은 Database의 기본 설계이며, 설정으로 바꿀 수 없다.
+
+3.3 왜 Tag 테이블은 정합성이 가능한가
+
+- tag_name + time으로
+- "이 데이터가 이미 복제되었는지"를
+- 대상 테이블에서 검색할 수 있기 때문
+
+그래서 재시작 시에도:
+  "이미 들어간 데이터는 건너뛴다"
+가 가능하다.
+
+4. Log 테이블이란?
+4.1 구조 개념
+
+Log 테이블은 말 그대로 로그다.
+- 컬럼 구조가 자유롭다
+- 의미 있는 고정 키가 없다
+- 같은 데이터인지 판단할 방법이 없다
+
+예시:
+message	level	host	extra
+
+4.2 중요한 차이점
+
+- Log 테이블은 논리 테이블과 데이터 테이블이 동일
+- 즉, 부속 테이블 개념이 없다
+- 매핑은 1:1만 허용한다 (n:1 매핑은 설정 오류로 간주)
+
+4.3 설계 선택
+
+Log 테이블에 대해서는:
+- 복제는 한다
+- 중복 방지는 포기한다
+- 재시작 시 정합성 검색을 하지 않는다
+이건 의도된 설계다.
+
+5. 왜 _rid가 중요한가
+
+모든 복제 대상 테이블에는 _rid가 있다.
+- 테이블 단위로 unique
+- 항상 증가
+
+이 시스템은 _rid를 이렇게 사용한다.
+  "여기까지는 확실히 성공했다"
+  를 기록하는 최소 단위
+
+6. 체크포인트 설계
+6.1 체크포인트란
+
+- 데이터 테이블 1개당 1개 파일
+- 마지막으로 성공한 _rid만 기록
+예:
+{
+  "last_success_rid": 183456789
+}
+
+6.2 왜 이렇게 단순한가
+
+- 트랜잭션이 없기 때문
+- 부분 성공은 믿을 수 없기 때문
+- 보수적으로 가는 게 더 안전하기 때문
+
+7. 복제 시작 지점은 어떻게 정해지는가
+7.1 최초 실행
+
+체크포인트가 없으면 설정의 start_mode를 따른다.
+- full : _rid 0부터
+- now : 지금 이후
+- rid_after : 특정 _rid 이후
+
+7.2 재시작
+
+체크포인트가 있으면:
+  무조건 체크포인트 기준
+start_mode는 무시된다.
+
+8. 재시작 시 정합성은 어떻게 맞추는가
+8.1 Tag 테이블의 경우
+
+   1. 체크포인트 이후 데이터를 다시 읽는다
+   2. 대상 테이블에서:
+      - tag_name + time으로 검색
+   3. 이미 존재하면 건너뛴다
+→ 중복 최소화
+
+8.2 Log 테이블의 경우
+
+- 검색 자체가 불가능
+- 그냥 다시 쓴다
+→ 중복 허용
+
+9. 실패는 어떻게 처리되는가
+9.1 실패 유형별 처리
+
+상황	처리
+설정 오류	해당 mapping 스킵
+컬럼 규칙 위반	스킵
+네트워크 오류	재시도
+재시도 불가 오류	스킵
+
+9.2 중요한 철학
+
+  한 테이블 실패 때문에
+  전체 복제가 멈추지 않게 한다
+
+10. 재시도 전략
+
+- 지수 백오프
+- jitter 적용
+- 필요하면 무한 재시도
+이유는 단순하다.
+  네트워크는 언젠가 복구되기 때문이다.
+
+11. 전체 동작 흐름 (요약)
+
+   1. 설정 로드
+   2. 테이블 타입 확인 (Tag / Log)
+   3. 데이터 테이블 목록 확인
+   4. 체크포인트 확인
+   5. 복제 루프 실행
+   6. 성공 시 체크포인트 갱신
+   7. 실패 시 재시도 또는 스킵
+
+12. 이 설계의 핵심 요약
+
+- Exactly-once를 목표로 하지 않는다
+- _rid를 유일한 신뢰 기준으로 사용한다
+- Tag 테이블은 정합성을 지킨다
+- Log 테이블은 단순 전달에 집중한다
+- 실패는 국소적으로 처리한다
+
+13. 이 문서를 읽은 개발자가 얻어야 할 것
+
+이 문서를 읽고 나면:
+- 왜 중복이 생길 수 있는지 이해한다
+- 왜 어떤 테이블은 정합성을 포기했는지 이해한다
+- 어디까지가 의도이고 어디부터가 버그인지 구분할 수 있다
+- 코드를 짜다가 "왜?"라는 질문이 거의 사라진다
+
+
+================================================================================
+
+
+데이터베이스 테이블 복제 시스템 상세설계 v1.2 (FINAL)
+0. 문서 목적과 적용 범위
+
+본 문서는 트랜잭션과 PK가 없는 Database 환경에서 _rid 기반 체크포인트를 사용해 데이터를 다른 서버로 지속 복제하는 시스템의 상세 설계를 정의한다.
+
+- 목표
+   - At-least-once 복제
+   - 가능한 범위 내 정합성 최대화
+- 비목표
+   - Exactly-once 보장
+   - Update / Delete 복제
+   - 대상 테이블 생성 및 스키마 관리
+
+본 문서는 아래 문서들을 통합·정제한 구현 기준 문서이다.
+- 인수인계 문서
+- 요구사항 명세 v2.2
+- 내부 설계 전제/배경 v2.2
+- 설정 파일 스키마 v3
+- 체크포인트 파일 포맷 정의
+
+1. 핵심 전제 (불변 조건)
+1.1 복제 대상 테이블 유형
+
+복제 대상은 DB 시스템 테이블 기준으로 2가지 TYPE만 포함한다.
+
+테이블 유형	TYPE	구조 특성	정합성
+Tag 테이블	6	tag + time 고정 구조	가능
+Log 테이블	0	자유로운 구조	불가능
+
+- 이외 TYPE은 복제 대상 아님
+- TYPE 판정은 M$SYS_TABLES 기준
+- 미지원 TYPE은 mapping 단위로 실패 처리 후 스킵
+
+1.2 논리 / 데이터 테이블 구조
+
+- Tag 테이블: 논리 테이블 + 데이터 테이블(1..n), 데이터 테이블명 {{logical}}_DATA_{{index}}
+- Log 테이블: 논리 테이블 = 데이터 테이블(1개), 1:1 매핑만 허용
+
+1.3 _rid 전제
+
+- 모든 데이터 테이블에는 _rid 컬럼 존재
+- _rid는 데이터 테이블 단위 unique + 단조 증가
+- _rid는 복제 진행 상태 추적의 유일한 기준
+- 대상 테이블에는 _rid를 저장하지 않음
+
+1.4 Tag 테이블 컬럼 규칙 (고정)
+
+Tag 데이터 테이블에만 적용:
+   1. 1번째 컬럼: tag id
+   2. 2번째 컬럼: time (int64, Unix epoch ns UTC)
+- 위반 시 해당 mapping은 실패 처리 후 스킵
+- 설정으로 변경 불가
+
+2. 시스템 동작 정책 (확정 결정사항)
+2.1 체크포인트 및 배치 경계
+
+- 체크포인트는 데이터 테이블 1개당 1파일
+- 값은 last_success_rid
+- 배치 전체 성공 시에만 갱신
+- atomic write(임시 파일 → rename) 사용
+
+Skip / Drop만 발생한 배치 처리(확정)
+Tag 테이블에서 모든 row가
+- 이미 존재하여 skip 되었거나
+- 메타 미존재로 drop 된 경우라도
+  배치는 "처리 완료"로 간주하며 배치의 max _rid까지 checkpoint advance 한다.
+
+2.2 대상 write 성공 기준
+
+- 전체 성공만 성공으로 인정
+- 부분 성공은 실패로 간주(어디까지 성공인지 판단 불가)
+- 실패 시 retry 대상이면 retry, 아니면 mapping 스킵
+
+2.3 Tag 존재 여부 검색(Integrity) 정책
+
+- Tag 테이블만 정합성 유지 대상
+- index 없음 전제 → 검색 비용 발생
+
+수행 범위(확정)
+존재 여부 검색은 재시작 직후 보정 구간(STARTUP_INTEGRITY)에서만 수행한다.
+정상 추적(STEADY_REPLICATION)에서는 수행하지 않는다.
+
+중요: tag_identifier 적용
+Target 조회(존재 여부 검색) 시 사용하는 tag_name은 항상 tag_identifier(prefix/suffix/none)가 적용된 값이어야 한다.
+
+2.4 Tag 메타 정책
+
+- tag 메타는 복제 데이터와 독립적인 정보
+- 메타 동기화는 복제 루틴과 분리(별도 루틴/프로세스)
+- 메타 동기화 루틴의 설계는 1차 범위에서 보류, 추후 별도 설계 예정
+
+tag_id 처리 규칙
+- tag_id → tag_name 조회 성공 시, 즉시 tag_identifier를 적용해 target 기준 canonical tag_name' 생성
+- tag_id가 메타에 없으면 해당 row는 잘못된 데이터로 보고 drop(무시)
+   - drop된 row도 처리 완료로 보고 checkpoint advance 가능
+
+메타 조회 오류
+- not found → drop
+- 일시 오류(네트워크 등) → retry 권장(세부 분류는 1차에서 raw 기록 우선)
+
+2.5 오류 기록 / 관측성
+
+- 1차 구현에서는 에러 코드 세분 분류를 강제하지 않음
+- 대신 반드시 stage와 raw 정보(가능 범위)를 구조화해 기록한다.
+
+stage 예시:
+- catalog, checkpoint_io, read, meta_lookup, integrity_check, write
+
+checkpoint 로그 정책(확정)
+checkpoint 파일 저장 성공 시마다 다음을 로그에 포함:
+- job_id, mapping_id, data_table
+- last_success_rid
+- 배치 통계(read / written / skipped_exists / dropped_no_meta)
+- updated_at
+
+2.6 모니터링 / 관측성 방향
+
+- 1차 구현에서는 구조화 로그(structured log)로 관측성을 확보한다.
+- 향후 상태 조회 API 또는 메트릭 내보내기(Prometheus 등) 확장을 고려하여 내부 상태 모델을 설계한다.
+- 관측 필요 항목:
+   - job/mapping/worker별 현재 상태
+   - 현재 처리 중인 _rid 범위
+   - 에러/retry 카운트
+   - 마지막 체크포인트 시각
+
+3. 아키텍처 구성 요소
+
+- Config Loader (v3)
+- Catalog Client
+- Checkpoint Store
+- Source Reader
+- TagMetaProvider(조회 서비스)
+- Integrity Checker(Tag startup only)
+- Target Writer
+- Worker(data_table 단위 실행, max_inflight_batches=1 고정)
+
+4. 실행 흐름 및 상태 머신
+4.1 상태
+
+시스템 레벨:
+- INIT → DISCOVER → [Worker 실행] → STOPPED
+
+Worker 레벨 (data_table 1개당 1 Worker):
+- RESOLVE_START → (STARTUP_INTEGRITY) → STEADY_REPLICATION
+
+DISCOVER 완료 후 data_table별 Worker가 생성되며,
+각 Worker는 병렬(concurrent)로 독립 실행된다. (1 data_table = 1 Worker, 동시 실행)
+
+4.1.1 Graceful Shutdown 정책 (확정)
+
+종료 신호(SIGTERM) 수신 시 배치 경계 기반 graceful shutdown을 수행한다.
+
+시스템 레벨:
+- SIGTERM 수신 → 공유 shutdown_requested 플래그를 true로 설정
+- 모든 Worker 종료 대기 (타임아웃: 설정 가능, 기본 30초)
+- 타임아웃 초과 시 강제 종료 + 경고 로그
+
+Worker 레벨:
+- 매 배치 루프 시작 시 shutdown_requested 확인
+- true이면 새 배치를 시작하지 않고 루프 탈출
+- 현재 배치가 진행 중이면 완료 + checkpoint 저장 후 종료
+- SLEEP(poll_interval) 중에도 shutdown 신호에 반응하여 즉시 깨어남
+
+보장 사항:
+- 배치 중간에는 중단하지 않으므로 "부분 성공" 모호성이 없음
+- 종료 시점에 항상 checkpoint가 저장된 상태
+- 타임아웃 초과로 강제 종료 시 중복 발생 가능 (at-least-once 허용 범위)
+
+4.2 시작점 결정
+
+- checkpoint 존재 & 파싱 성공: start_rid = last_success_rid (start_mode 무시)
+- checkpoint 없음/손상:
+   - full: start_rid = 0
+   - now: 실행 시점 max(_rid) 이후부터
+   - rid_after: 지정 rid 이후부터
+
+4.3 STARTUP_INTEGRITY (Tag 전용)
+
+목표: 재시작 시 checkpoint 이후 구간에서 이미 복제된 데이터는 skip하고 실제 시작 위치를 보정
+
+처리:
+   1. checkpoint 이후부터 batch 읽기
+   2. row별:
+      - tag_id → tag_name
+      - tag_identifier 적용 → tag_name'
+      - exists(target, tag_name', time) 조회
+   3. 결과:
+      - 존재함 → skip
+      - 메타 없음 → drop
+      - 존재하지 않음(최초 miss) → 이 row부터 정상 복제 시작, STEADY로 전이
+   4. skip/drop만 있는 배치도 cp advance 가능
+
+4.4 STEADY_REPLICATION
+
+- _rid 기준 batch read
+- Tag:
+   - tag_id → tag_name → tag_identifier 적용
+   - 메타 없음 → drop
+- Log:
+   - 구조 해석 없이 그대로 전달
+- write:
+   - 전체 성공 → cp 갱신
+   - 실패 → retry / mapping 스킵
+
+5. 데이터 변환 규칙
+5.1 Tag 테이블
+
+Source(tag_id, time, ...) → Resolve tag_name → Apply tag_identifier → Target(tag_name', time, ...)
+
+5.2 Log 테이블
+
+- 컬럼 의미/순서 해석 없음
+- 읽은 값을 그대로 target에 write
+
+5.3 스키마 불일치 처리
+
+원본과 대상의 컬럼 수/타입이 다를 경우:
+- 원본에 있고 대상에 없는 컬럼: 해당 값 무시 (write에 포함하지 않음)
+- 대상에 있고 원본에 없는 컬럼: Null로 채움
+
+6. 설정(v3) 적용 규칙 요약
+
+- execution 옵션 우선순위:
+   1. mapping.execution
+   2. source.execution
+   3. job.execution_defaults
+- integrity.enabled:
+   - Tag + checkpoint 존재 시 STARTUP_INTEGRITY 수행
+   - Log는 스킵(중복 허용 유지)
+- retry 파라미터는 설정대로 적용
+
+7. Backlog (추후 고도화 대상 – 비범위)
+7.1 Log 테이블 _arrival_time 전달 옵션
+
+- Log 테이블에 DB 자동 기록 숨겨진 컬럼 _arrival_time(ns) 존재
+- 향후 옵션: log.include_arrival_time: bool (기본 false)
+- true 시 target write 시 _arrival_time 전달
+- 전제: target 스키마 컬럼 존재(스키마 관리는 사용자 책임)
+
+7.2 Log 테이블 tag_identifier 확장
+
+- 옵션: log.identifier_columns: [colName...]
+- 지정 문자열 컬럼에 prefix/suffix 적용
+
+7.3 Log 테이블 재시작 정합성 옵션
+
+- 옵션: log.integrity.key_columns: [colName...]
+- 지정 컬럼 조합으로 존재 여부 검색
+- 기본값은 비활성(중복 허용) 유지
+
+
+--------------------------------------------------------------------------------
+
+
+Worker 내부 의사코드 (v1.2 기준)
+
+아래 의사코드는 "모듈/인터페이스는 이미 존재한다"는 가정 하에, 상태 전이 + checkpoint 갱신 타이밍 + tag_identifier 적용 위치가 헷갈리지 않게 적어둔 거야.
+
+공통 헬퍼
+```pseudo
+function APPLY_IDENTIFIER(tag_name, tag_identifier):
+  mode = tag_identifier.mode
+  value = tag_identifier.value
+  if mode == "prefix": return value + tag_name
+  if mode == "suffix": return tag_name + value
+  return tag_name  // "none"
+
+function RESOLVE_TAG_CANONICAL(meta_provider, mapping, tag_id):
+  // returns (canonical_tag_name, status)
+  // status: "ok" | "drop_not_found" | "retry_error"
+  (tag_name, found, err) = meta_provider.ResolveTagName(
+      server=mapping.source.server,
+      logical_table=mapping.source.table,
+      tag_id=tag_id
+  )
+  if err != null:
+    return (null, "retry_error")
+  if found == false:
+    return (null, "drop_not_found")
+
+  canonical = APPLY_IDENTIFIER(tag_name, mapping.source.tag_identifier)
+  return (canonical, "ok")
+```
+
+메인: RunMapping
+```pseudo
+function RUN_MAPPING(mapping):
+
+  // 1) DISCOVER
+  (table_type, logical_table_id) = catalog.GetLogicalTableType(mapping.source.server, mapping.source.table)
+  if error: LOG(stage="catalog", ...); return SKIP_MAPPING
+
+  if table_type not in {TAG, LOG}: LOG(...); return SKIP_MAPPING
+
+  if table_type == TAG:
+    data_tables = catalog.ListTagDataTables(mapping.source.server, mapping.source.table)
+    if error: LOG(stage="catalog", ...); return SKIP_MAPPING
+    // 대표 데이터 테이블 스키마만 조회
+    cols = catalog.GetColumns(mapping.source.server, data_tables[0].table_id)
+    if error: LOG(...); return SKIP_MAPPING
+    if catalog.ValidateTagColumns(cols) fails: LOG(...); return SKIP_MAPPING
+  else:
+    // LOG: 논리=데이터
+    data_tables = [{ logical=mapping.source.table, data_table=mapping.source.table }]
+    // 컬럼 검증 없음
+
+  // 2) data_table별 worker 병렬 실행(고정 정책: 1 data_table = 1 worker, concurrent)
+  PARALLEL for each dt in data_tables:
+    RUN_DATA_TABLE_WORKER(mapping, table_type, dt.data_table)
+```
+
+data_table worker
+```pseudo
+function RUN_DATA_TABLE_WORKER(mapping, table_type, data_table):
+
+  // 3) RESOLVE_START
+  (cp, exists, cp_err) = checkpoint.Load(mapping.job_id, data_table)
+  if cp_err != null:
+    LOG(stage="checkpoint_io", ...raw=cp_err)
+    // 손상/실패는 "없음" 취급
+    exists = false
+
+  if exists:
+    start_rid = cp.last_success_rid
+  else:
+    start_rid = RESOLVE_START_RID_NO_CHECKPOINT(mapping, data_table)  // full/now/rid_after
+
+  // 4) STARTUP_INTEGRITY 조건
+  do_startup_integrity =
+      (table_type == TAG) AND (exists == true) AND (mapping.integrity.enabled == true)
+
+  if do_startup_integrity:
+    start_rid = STARTUP_INTEGRITY_PHASE(mapping, data_table, start_rid)
+    // 이후 STEADY로 진입 (존재 여부 검색 중단)
+
+  // 5) STEADY_REPLICATION
+  STEADY_REPLICATION_LOOP(mapping, table_type, data_table, start_rid)
+```
+
+checkpoint 없음일 때 start_rid
+```pseudo
+function RESOLVE_START_RID_NO_CHECKPOINT(mapping, data_table):
+
+  if mapping.source.start_mode == "full":
+    return 0
+  if mapping.source.start_mode == "now":
+    max_rid = reader.GetMaxRid(mapping.source.server, data_table)
+    if error: LOG(stage="read", ...); return SKIP_MAPPING_OR_RETRY (정책)
+    return max_rid
+  if mapping.source.start_mode == "rid_after":
+    return mapping.source.rid_after
+```
+
+STARTUP_INTEGRITY_PHASE (Tag only)
+  핵심: target exists 체크 시에도 canonical(tag_identifier 적용) tag_name 사용
+```pseudo
+function STARTUP_INTEGRITY_PHASE(mapping, data_table, start_rid):
+
+  while NOT shutdown_requested:
+
+    rows = reader.ReadAfterRid(mapping.source.server, data_table, start_rid, limit=mapping.exec.batch_size)  // rid >= start_rid
+    if error:
+      HANDLE_RETRY(stage="read", err) or return start_rid  // policy
+    if rows is empty:
+      SLEEP_OR_SHUTDOWN(mapping.exec.poll_interval_ms)  // shutdown 시 즉시 깨어남
+      continue
+
+    max_rid_in_batch = MAX(rows.rid)
+    stats = {read=len(rows), written=0, skipped_exists=0, dropped_no_meta=0}
+
+    // 이 배치에서 "최초 miss"를 찾으면, 그 rid 바로 이전을 반환해서 STEADY가 그 miss부터 처리하게 함
+    for row in rows:
+
+      tag_id = row.values[0]
+      time_ns = row.values[1]
+
+      (canonical_tag, status) = RESOLVE_TAG_CANONICAL(meta_provider, mapping, tag_id)
+
+      if status == "retry_error":
+        HANDLE_RETRY(stage="meta_lookup", err)  // retry; checkpoint 갱신 없음
+        // retry 후 동일 배치 재처리
+        goto continue_outer_loop
+
+      if status == "drop_not_found":
+        stats.dropped_no_meta++
+        continue
+
+      exists = integrity.ExistsByTagAndTime(mapping.target.server, mapping.target.table, canonical_tag, time_ns)
+      if error:
+        HANDLE_RETRY(stage="integrity_check", err)
+        goto continue_outer_loop
+
+      if exists == true:
+        stats.skipped_exists++
+        continue
+
+      // 최초 miss 발견 => 이 row부터는 STEADY에서 처리
+      // STARTUP 단계에서 이 row를 쓰지 않는다(중복 로직 최소화)
+      // 따라서 start_rid를 (row.rid - 1)로 설정하고 종료
+      // 단, STARTUP에서 지나간 skip/drop 구간은 checkpoint로 전진 가능
+      // 여기서는 "start_rid 반환"만 하고, 실제 cp 갱신은 호출부에서 하지 않게 하므로
+      // STARTUP 자체도 cp 갱신을 수행하도록 아래 정책을 적용한다.
+
+      // 정책: STARTUP도 batch 단위 성공 시 cp advance 가능
+      // 현재 row는 아직 처리 안 했으므로, cp는 (row.rid - 1)까지만 안전하게 전진
+      safe_cp_rid = row.rid - 1
+      SAVE_CHECKPOINT(mapping, data_table, safe_cp_rid, stats)
+      return safe_cp_rid
+
+    // 배치 전체가 skip/drop만으로 끝난 경우:
+    // 결정사항: 배치 max rid까지 checkpoint advance
+    SAVE_CHECKPOINT(mapping, data_table, max_rid_in_batch, stats)
+    start_rid = max_rid_in_batch
+    continue
+
+  continue_outer_loop:
+    // retry 후 재시도
+    continue
+```
+  위에서 STARTUP이 "miss row를 STEADY에서 처리"하도록 설계했기 때문에, STARTUP은 miss 이전까지만 checkpoint를 전진시킨다.
+  이 방식은 구현이 단순하고, "miss row가 쓰였다/안 쓰였다" 모호성이 없다.
+
+STEADY_REPLICATION_LOOP
+```pseudo
+function STEADY_REPLICATION_LOOP(mapping, table_type, data_table, start_rid):
+
+  while NOT shutdown_requested:
+
+    rows = reader.ReadAfterRid(mapping.source.server, data_table, start_rid, limit=mapping.exec.batch_size)  // rid >= start_rid
+    if error:
+      HANDLE_RETRY(stage="read", err) or return
+    if rows is empty:
+      SLEEP_OR_SHUTDOWN(mapping.exec.poll_interval_ms)  // shutdown 시 즉시 깨어남
+      continue
+
+    max_rid_in_batch = MAX(rows.rid)
+    stats = {read=len(rows), written=0, skipped_exists=0, dropped_no_meta=0}
+
+    out_rows = []
+
+    if table_type == TAG:
+      for row in rows:
+        tag_id = row.values[0]
+        time_ns = row.values[1]
+
+        (canonical_tag, status) = RESOLVE_TAG_CANONICAL(meta_provider, mapping, tag_id)
+
+        if status == "retry_error":
+          HANDLE_RETRY(stage="meta_lookup", err)
+          goto continue_outer_loop
+
+        if status == "drop_not_found":
+          stats.dropped_no_meta++
+          continue
+
+        // transform: replace tag_id with canonical_tag (target expects tag_name')
+        new_row = row.clone()
+        new_row.values[0] = canonical_tag
+        out_rows.append(new_row)
+
+    else: // LOG
+      out_rows = rows  // 그대로
+
+    // write
+    if out_rows is not empty:
+      err = writer.Write(mapping.target.server, mapping.target.table, out_rows)
+      if err != null:
+        HANDLE_RETRY(stage="write", err)
+        goto continue_outer_loop
+      stats.written = len(out_rows)
+
+    // out_rows가 비어도(전부 drop) 배치는 성공 처리 가능 -> cp advance
+    SAVE_CHECKPOINT(mapping, data_table, max_rid_in_batch, stats)
+    start_rid = max_rid_in_batch
+    continue
+
+  continue_outer_loop:
+    continue
+```
+
+SAVE_CHECKPOINT / 로깅(확정 정책 반영)
+```pseudo
+function SAVE_CHECKPOINT(mapping, data_table, last_success_rid, stats):
+
+  cp = {
+    version: 1,
+    job_id: mapping.job_id,
+    source: { server: mapping.source.server, table: mapping.source.table, data_table: data_table },
+    checkpoint: { last_success_rid: last_success_rid, updated_at: NOW_RFC3339() }
+  }
+
+  err = checkpoint.SaveAtomic(..., cp)
+  if err != null:
+    LOG(stage="checkpoint_io", level="error", ...raw=err)
+    // checkpoint 저장 실패 시 정책은 사용자 설정에 따른다: "계속 진행" 또는 "중단" 중 선택
+    // 기본값: "계속 진행" — error 로그를 강하게 남기고 Worker는 메모리 기준 rid로 계속 처리 (다음 재시작 시 중복 증가 가능)
+    return
+
+  // checkpoint 저장 성공 시마다 last_success_rid 포함 로그(요구 반영)
+  LOG(level="info",
+      event="checkpoint_saved",
+      job_id=mapping.job_id,
+      mapping_id=mapping.mapping_id,
+      data_table=data_table,
+      last_success_rid=last_success_rid,
+      stats=stats,
+      updated_at=cp.checkpoint.updated_at
+  )
+```
