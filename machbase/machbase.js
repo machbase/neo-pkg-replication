@@ -124,38 +124,11 @@ class MachbaseClient {
     return await this.query(sql, [`_${this.table}_META`, `_${this.table}_DATA_0`]);
   }
 
-  // === LookupDataColumns ===
-  async lookupDataColumns() {
-    const sql = `
-      SELECT c.name, c.type
-      FROM M$SYS_TABLES t, M$SYS_COLUMNS c
-      WHERE c.TABLE_ID = t.ID
-        AND t.NAME = ?
-        AND c.ID > 0 AND c.ID < 65534
-      ORDER BY c.ID ASC
-    `.trim();
-
-    return await this.query(sql, [`_${this.table}_DATA_0`]);
-  }
-
-  // === LookupMetaColumns ===
-  async lookupMetaColumns() {
-    const sql = `
-      SELECT c.name, c.type
-      FROM M$SYS_TABLES t, M$SYS_COLUMNS c
-      WHERE c.TABLE_ID = t.ID
-        AND t.NAME = ?
-        AND c.ID > 1 AND c.ID < 65534
-      ORDER BY c.ID ASC
-    `.trim();
-
-    return await this.query(sql, [`_${this.table}_META`]);
-  }
-
   async selectDataByRid(store, range, limit) {
     const sql = `
       SELECT /*+ RID_RANGE(${store.name} , ${store.rid}, ${store.rid+BigInt(range)}) */ d._RID, m.name, d.time, d.value
-      FROM ${store.name} d, _${this.table}_META m WHERE d.name = m._ID
+      FROM ${store.name} d, _${this.table}_META m 
+      WHERE d.name = m._ID
       LIMIT ?
     `.trim();
 

@@ -360,9 +360,11 @@ replication:
   jobs:
     - job_id: "<string>"
       enabled: <bool>
+      shutdown_timeout_ms: <int>
 
       checkpoint:
         directory: "<path>"
+        on_save_failure: "continue" | "abort"
 
       integrity:
         enabled: <bool>
@@ -423,9 +425,11 @@ replication:
   jobs:
     - job_id: "job_prod_001"
       enabled: true
+      shutdown_timeout_ms: 30000
 
       checkpoint:
         directory: "/var/lib/replicator/checkpoints"
+        on_save_failure: "continue"
 
       integrity:
         enabled: true
@@ -511,11 +515,19 @@ version
 - enabled
   - 해당 job 실행 여부
 
+- shutdown_timeout_ms
+   - Worker 종료 대기 타임아웃 (ms)
+   - 기본값: 30000
+
 3.4 checkpoint
 
 - directory
    - 체크포인트 파일이 저장될 디렉토리 경로
    - 체크포인트는 데이터 테이블별로 관리된다.
+- on_save_failure
+   - 체크포인트 저장 실패 시 처리 정책
+   - "continue"(기본값): error 로그를 강하게 남기고 Worker는 메모리 기준 rid로 계속 처리
+   - "abort": TODO — 세부 동작 미정의
 - 체크포인트 파일은 atomic write 방식으로 갱신된다(고정 정책).
 
 3.5 integrity
@@ -561,14 +573,17 @@ version
 
 - batch_size_records
    - 한 번에 복제 처리할 레코드 수
+   - 기본값: 5000
 
 - poll_interval_ms
    - 새 데이터 확인을 위한 폴링 주기 (ms)
 
-실행 옵션의 우선순위:
+실행 옵션의 우선순위 (필드 레벨 merge):
    1. mapping.execution
    2. source.execution
    3. execution_defaults
+각 필드별로 독립적으로 우선순위를 적용한다.
+상위 레벨에 해당 필드가 없으면 다음 레벨의 값을 사용한다.
 
 3.8 mappings
 
@@ -641,8 +656,10 @@ target
       {
         "job_id": "job_prod_001",
         "enabled": true,
+        "shutdown_timeout_ms": 30000,
         "checkpoint": {
-          "directory": "/var/lib/replicator/checkpoints"
+          "directory": "/var/lib/replicator/checkpoints",
+          "on_save_failure": "continue"
         },
         "integrity": {
           "enabled": true,
@@ -1150,7 +1167,7 @@ DISCOVER 완료 후 data_table별 Worker가 생성되며,
 
 시스템 레벨:
 - SIGTERM 수신 → 공유 shutdown_requested 플래그를 true로 설정
-- 모든 Worker 종료 대기 (타임아웃: 설정 가능, 기본 30초)
+- 모든 Worker 종료 대기 (타임아웃: shutdown_timeout_ms 설정, 기본 30000ms)
 - 타임아웃 초과 시 강제 종료 + 경고 로그
 
 Worker 레벨:
@@ -1218,10 +1235,11 @@ Source(tag_id, time, ...) → Resolve tag_name → Apply tag_identifier → Targ
 
 6. 설정(v3) 적용 규칙 요약
 
-- execution 옵션 우선순위:
+- execution 옵션 우선순위 (필드 레벨 merge):
    1. mapping.execution
    2. source.execution
    3. job.execution_defaults
+각 필드별로 독립적으로 우선순위를 적용한다.
 - integrity.enabled:
    - Tag + checkpoint 존재 시 STARTUP_INTEGRITY 수행
    - Log는 스킵(중복 허용 유지)
@@ -1406,9 +1424,9 @@ function STARTUP_INTEGRITY_PHASE(mapping, data_table, start_rid):
       return safe_cp_rid
 
     // 배치 전체가 skip/drop만으로 끝난 경우:
-    // 결정사항: 배치 max rid까지 checkpoint advance
-    SAVE_CHECKPOINT(mapping, data_table, max_rid_in_batch, stats)
-    start_rid = max_rid_in_batch
+    // 결정사항: 배치 max rid + 1까지 checkpoint advance (다음 배치는 max_rid+1부터 읽음)
+    SAVE_CHECKPOINT(mapping, data_table, max_rid_in_batch + 1n, stats)
+    start_rid = max_rid_in_batch + 1n
     continue
 
   continue_outer_loop:
@@ -1431,8 +1449,9 @@ function STEADY_REPLICATION_LOOP(mapping, table_type, data_table, start_rid):
       SLEEP_OR_SHUTDOWN(mapping.exec.poll_interval_ms)  // shutdown 시 즉시 깨어남
       continue
 
-    max_rid_in_batch = MAX(rows.rid)
+    max_rid_in_batch = MAX(rows.rid)  // all-dropped fallback용
     stats = {read=len(rows), written=0, skipped_exists=0, dropped_no_meta=0}
+    max_written_rid = 0
 
     out_rows = []
 
@@ -1465,11 +1484,14 @@ function STEADY_REPLICATION_LOOP(mapping, table_type, data_table, start_rid):
       if err != null:
         HANDLE_RETRY(stage="write", err)
         goto continue_outer_loop
+      max_written_rid = MAX(out_rows.rid)
       stats.written = len(out_rows)
 
     // out_rows가 비어도(전부 drop) 배치는 성공 처리 가능 -> cp advance
-    SAVE_CHECKPOINT(mapping, data_table, max_rid_in_batch, stats)
-    start_rid = max_rid_in_batch
+    // max_written_rid가 0이면(전부 drop) fallback으로 max_rid_in_batch 사용
+    effective_max = max_written_rid > 0 ? max_written_rid : max_rid_in_batch
+    SAVE_CHECKPOINT(mapping, data_table, effective_max + 1n, stats)
+    start_rid = effective_max + 1n
     continue
 
   continue_outer_loop:
@@ -1490,8 +1512,9 @@ function SAVE_CHECKPOINT(mapping, data_table, last_success_rid, stats):
   err = checkpoint.SaveAtomic(..., cp)
   if err != null:
     LOG(stage="checkpoint_io", level="error", ...raw=err)
-    // checkpoint 저장 실패 시 정책은 사용자 설정에 따른다: "계속 진행" 또는 "중단" 중 선택
-    // 기본값: "계속 진행" — error 로그를 강하게 남기고 Worker는 메모리 기준 rid로 계속 처리 (다음 재시작 시 중복 증가 가능)
+    // checkpoint 저장 실패 시 정책은 설정 checkpoint.on_save_failure에 따른다
+    // "continue"(기본값): error 로그를 강하게 남기고 Worker는 메모리 기준 rid로 계속 처리 (다음 재시작 시 중복 증가 가능)
+    // "abort": TODO — 세부 동작 미정의
     return
 
   // checkpoint 저장 성공 시마다 last_success_rid 포함 로그(요구 반영)
