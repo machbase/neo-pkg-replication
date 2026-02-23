@@ -330,6 +330,7 @@ single_instance_per_data_table	true
 atomic_write	true
 skip_when_table_type_unsupported	true
 config_hot_reload	false (설정 변경 시 프로세스 재시작 필요)
+connection_per_mapping	true (mapping당 소스/대상 각각 connection 1개, 동일 mapping의 Worker 간 공유)
 
 향후 필요 시 설정으로 확장 가능하도록
 코드 구조만 열어둔다.
@@ -1149,6 +1150,13 @@ checkpoint 파일 저장 성공 시마다 다음을 로그에 포함:
 - Target Writer
 - Worker(data_table 단위 실행, max_inflight_batches=1 고정)
 
+connection 관리 원칙:
+- connection은 mapping 단위로 생성한다 (소스 1개, 대상 1개).
+- 동일 mapping에서 생성된 Worker들은 mapping의 source_conn / target_conn을 공유한다.
+- 서로 다른 mapping은 같은 server alias를 참조하더라도 connection을 공유하지 않는다.
+- connection 생성: DISCOVER 완료 후 Worker 생성 전 / connection 해제: 모든 Worker 종료 후.
+- CatalogClient(JobRunner 소속)는 mapping connection과 독립된 별도 connection을 사용한다.
+
 4. 실행 흐름 및 상태 머신
 4.1 상태
 
@@ -1320,14 +1328,20 @@ function RUN_MAPPING(mapping):
     data_tables = [{ logical=mapping.source.table, data_table=mapping.source.table }]
     // 컬럼 검증 없음
 
-  // 2) data_table별 worker 병렬 실행(고정 정책: 1 data_table = 1 worker, concurrent)
+  // 2) mapping 전용 connection 생성 (동일 mapping의 모든 Worker가 공유)
+  source_conn = createConnection(config.servers[mapping.source.server])
+  target_conn = createConnection(config.servers[mapping.target.server])
+  defer: close(source_conn), close(target_conn)
+
+  // 3) data_table별 worker 병렬 실행(고정 정책: 1 data_table = 1 worker, concurrent)
   PARALLEL for each dt in data_tables:
-    RUN_DATA_TABLE_WORKER(mapping, table_type, dt.data_table)
+    RUN_DATA_TABLE_WORKER(mapping, table_type, dt.data_table, source_conn, target_conn)
 ```
 
 data_table worker
 ```pseudo
-function RUN_DATA_TABLE_WORKER(mapping, table_type, data_table):
+function RUN_DATA_TABLE_WORKER(mapping, table_type, data_table, source_conn, target_conn):
+  // source_conn, target_conn은 RUN_MAPPING에서 생성된 mapping 전용 connection (동일 mapping Worker 간 공유)
 
   // 3) RESOLVE_START
   (cp, exists, cp_err) = checkpoint.Load(mapping.job_id, data_table)

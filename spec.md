@@ -609,11 +609,14 @@ F-CONF
 **사전 조건**:
 - F-DISC 완료 후 data_table 목록이 결정된 상태
 - 모든 하위 컴포넌트(SourceReader, TagMetaProvider, IntegrityChecker, TargetWriter, CheckpointStore, RetryHandler)가 초기화된 상태
+- mapping 단위로 생성된 source_conn / target_conn이 파라미터로 전달된 상태 (고정 정책: `connection_per_mapping = true`, 동일 mapping의 Worker 간 공유)
 
 **입력**:
 - `mapping` (전체 설정)
 - `tableType` (`"TAG"` | `"LOG"`)
 - `dataTable` (string)
+- `source_conn` (mapping 단위 소스 DB connection)
+- `target_conn` (mapping 단위 대상 DB connection)
 - `shutdown_requested` (공유 플래그, bool)
 
 **처리 규칙**:
@@ -670,7 +673,7 @@ while NOT shutdown_requested:
 
 **출력 / 사후 조건**:
 - STEADY_REPLICATION 루프 탈출 시: 마지막 성공 배치의 체크포인트가 저장된 상태
-- Worker 종료 시 소스/대상 DB 연결 정리
+- Worker 종료 시 source_conn / target_conn은 Worker가 직접 해제하지 않음 (mapping 레벨에서 모든 Worker 종료 후 해제)
 
 **수용 기준 (Acceptance Criteria)**:
 - Given: 체크포인트=100, TAG 테이블, rows에 `_rid` 100~149(50개)가 존재, 전부 meta 조회 성공, write 성공 / When: 한 배치 처리 완료 / Then: 체크포인트 파일의 `last_success_rid = 150` (max_written_rid=149, 149+1=150).
@@ -702,8 +705,10 @@ while NOT shutdown_requested:
 1. `enabled == true`인 job만 처리.
 2. 각 job의 mapping에 대해 F-DISC 실행.
 3. F-DISC 실패 mapping은 스킵하고 나머지는 계속.
-4. 유효한 data_table별 Worker를 생성하고 병렬 실행 (1 data_table = 1 Worker, concurrent, 고정 정책).
-5. SIGTERM 핸들러 등록 (초기화 완료 전에 등록).
+4. F-DISC 성공 mapping에 대해 source_conn / target_conn 생성 (mapping당 각 1개, 고정 정책: `connection_per_mapping = true`).
+5. 유효한 data_table별 Worker를 생성하고 병렬 실행 (1 data_table = 1 Worker, concurrent, 고정 정책). source_conn / target_conn을 파라미터로 전달.
+6. 모든 Worker 종료 후 source_conn / target_conn 해제.
+7. SIGTERM 핸들러 등록 (초기화 완료 전에 등록).
 
 Graceful Shutdown (F-03):
 1. SIGTERM 수신 → `shutdown_requested = true` (공유 플래그, 모든 Worker가 접근).

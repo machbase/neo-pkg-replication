@@ -80,6 +80,13 @@
 └───────────────────────────────────────────────┘─────────┘
 ```
 
+**Connection 관리 원칙**
+- connection은 mapping 단위로 생성한다 (소스 1개, 대상 1개).
+- 동일 mapping의 Worker들은 mapping의 source_conn / target_conn을 공유한다.
+- 서로 다른 mapping은 같은 server alias를 참조하더라도 connection을 공유하지 않는다.
+- connection 생성: DISCOVER 완료 후 Worker 생성 전 / connection 해제: 모든 Worker 종료 후.
+- CatalogClient(JobRunner 소속)는 mapping connection과 독립된 별도 connection을 사용한다.
+
 ### 3.2 시스템 상태 머신
 
 **시스템 레벨**
