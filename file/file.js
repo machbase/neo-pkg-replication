@@ -1,6 +1,5 @@
 const fs = require('fs/promises');
 const path = require('path');
-const { randomUUID } = require('crypto');
 
 class File {
   constructor(fullPath) {
@@ -28,8 +27,9 @@ class File {
   async read() {
     const content = await fs.readFile(this.fullPath, 'utf-8');
 
-    return JSON.parse(content, (key, value) => {
-      if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const BIGINT_KEYS = new Set(['last_success_rid']);
+    return JSON.parse(content, (_key, value) => {
+      if (BIGINT_KEYS.has(_key) && typeof value === 'string' && /^\d+$/.test(value)) {
         return BigInt(value);
       }
       return value;
@@ -41,24 +41,24 @@ class File {
    * Atomic write
    * tmp 파일에 먼저 기록 후 rename
    */
-    async write(data) {
-        if (typeof data !== 'object' || data === null) {
-            throw new Error('JSONFile.write only accepts non-null object');
-        }
-
-        await this.ensureDir();
-
-        const tmpPath = `${this.fullPath}.${Date.now()}.tmp`;
-        
-        const content = JSON.stringify(
-            data,
-            (key, value) => (typeof value === 'bigint' ? value.toString() : value),
-            2
-        );
-
-        await fs.writeFile(tmpPath, content, 'utf-8');
-        await fs.rename(tmpPath, this.fullPath);
+  async write(data) {
+    if (typeof data !== 'object' || data === null) {
+      throw new Error('JSONFile.write only accepts non-null object');
     }
+
+    await this.ensureDir();
+
+    const tmpPath = `${this.fullPath}.${Date.now()}.tmp`;
+
+    const content = JSON.stringify(
+      data,
+      (key, value) => (typeof value === 'bigint' ? value.toString() : value),
+      2
+    );
+
+    await fs.writeFile(tmpPath, content, 'utf-8');
+    await fs.rename(tmpPath, this.fullPath);
+  }
 
 
   /**

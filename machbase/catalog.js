@@ -1,6 +1,8 @@
 'use strict';
 
-const { columntypeof } = require('./machbase.js');
+// M$SYS_TABLES.TYPE 값
+const TABLE_TYPE_LOG = 0;
+const TABLE_TYPE_TAG = 6;
 
 // integer 계열 타입 코드 (TAG 컬럼 첫 번째: tag_id 여야 함)
 const INTEGER_TYPE_CODES = new Set([4, 104, 8, 108, 12, 112]);
@@ -20,11 +22,11 @@ class CatalogClient {
       );
       if (!rows || rows.length === 0) return { type: 'UNSUPPORTED' };
       const typeCode = rows[0].TYPE;
-      if (typeCode === 6) return { type: 'TAG' };
-      if (typeCode === 0) return { type: 'LOG' };
+      if (typeCode === TABLE_TYPE_TAG) return { type: 'TAG' };
+      if (typeCode === TABLE_TYPE_LOG) return { type: 'LOG' };
       return { type: 'UNSUPPORTED' };
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'catalog', msg: `getLogicalTableType failed: ${err.message}` }));
+      console.error(JSON.stringify({ level: 'error', stage: 'catalog', table, msg: `getLogicalTableType DB error: ${err.message}` }));
       return { type: 'UNSUPPORTED' };
     }
   }
@@ -82,22 +84,6 @@ class CatalogClient {
     return true;
   }
 
-  /**
-   * Log 테이블 n:1 매핑 충돌 검사
-   * 동일 target.server + target.table에 다른 소스가 이미 존재하는지 확인
-   * @param {Array<{ source, target }>} mappings - 이미 등록된 mapping 목록
-   * @param {string} logicalTable - 현재 소스 테이블
-   * @param {string} targetServer
-   * @param {string} targetTable
-   * @returns {boolean} true → 충돌 있음 (스킵 대상)
-   */
-  static checkLogTableN1Conflict(mappings, logicalTable, targetServer, targetTable) {
-    return mappings.some(m =>
-      m.target.server === targetServer &&
-      m.target.table === targetTable &&
-      m.source.table !== logicalTable
-    );
-  }
 }
 
 module.exports = CatalogClient;

@@ -10,25 +10,6 @@
  */
 class IntegrityChecker {
   /**
-   * 단건 존재 여부 확인 (태그명 + 시각)
-   * 단순 이스케이프로 SQL 인젝션 방지:
-   *   - canonicalTag: 작은따옴표 → '' (Machbase SQL 표준)
-   *   - timeNs: BigInt 정수값 직접 보간
-   */
-  static async existsByTagAndTime(conn, table, canonicalTag, timeNs) {
-    const safeTag = String(canonicalTag).replace(/'/g, "''");
-    const safeTime = BigInt(timeNs);
-    const sql = `SELECT 1 FROM ${table} WHERE name = '${safeTag}' AND time = ${safeTime} LIMIT 1`;
-    try {
-      const rows = await conn.query(sql);
-      return { exists: (rows && rows.length > 0), err: null };
-    } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'integrity_checker', table, msg: err.message }));
-      return { exists: false, err };
-    }
-  }
-
-  /**
    * 배치 존재 여부 확인
    * rows: Array<{ canonical: string, time: bigint|string }>
    * 반환: { existSet: Set<string>, err: Error|null }
@@ -36,6 +17,10 @@ class IntegrityChecker {
    */
   static async batchExists(conn, table, rows) {
     if (!rows || rows.length === 0) return { existSet: new Set(), err: null };
+
+    if (rows.length > 500) {
+      console.warn(JSON.stringify({ level: 'warn', stage: 'integrity_checker', msg: `batchExists called with ${rows.length} rows (>500), query may be slow` }));
+    }
 
     // UNION ALL 방식으로 일괄 조회
     // SELECT name, time FROM table WHERE (name='...' AND time=...) OR ...
@@ -63,6 +48,7 @@ class IntegrityChecker {
    * batchExists의 key 생성 헬퍼
    */
   static existKey(canonical, timeNs) {
+    // 주의: canonical에 \x00이 포함되면 키 충돌 가능. Machbase 태그명은 \x00을 허용하지 않으므로 실용상 안전.
     return `${canonical}\x00${BigInt(timeNs)}`;
   }
 }

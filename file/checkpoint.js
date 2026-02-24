@@ -20,14 +20,13 @@ class CheckpointStore {
   async load(jobId, dataTable) {
     const file = new File(this._filePath(jobId, dataTable));
 
-    if (!await file.exists()) {
-      return { cp: null, exists: false, err: null };
-    }
-
     let data;
     try {
       data = await file.read();
     } catch (err) {
+      if (err.code === 'ENOENT') {
+        return { cp: null, exists: false, err: null };
+      }
       console.error(JSON.stringify({
         level: 'error',
         stage: 'checkpoint_io',
@@ -59,9 +58,10 @@ class CheckpointStore {
    * @param {string} dataTable
    * @param {{ last_success_rid: BigInt, source_server?: string, source_table?: string }} cp
    * @param {{ rows_read: number, rows_written: number, dropped_no_meta: number, skipped_exists: number }} stats
+   * @param {{ on_save_failure?: 'continue'|'abort' }} [opts]
    * @returns {Error|null}
    */
-  async save(jobId, dataTable, cp, stats) {
+  async save(jobId, dataTable, cp, stats, opts) {
     const file = new File(this._filePath(jobId, dataTable));
 
     const data = {
@@ -100,7 +100,7 @@ class CheckpointStore {
         data_table: dataTable,
         msg: `save failed: ${err.message}`,
       }));
-      // TODO: on_save_failure="abort" 처리 (현재는 continue와 동일)
+      if (opts?.on_save_failure === 'abort') throw err;
       return err;
     }
   }

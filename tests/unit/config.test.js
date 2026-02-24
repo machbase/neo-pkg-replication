@@ -32,6 +32,7 @@ const BASE_CONFIG = {
         shutdown_timeout_ms: 30000,
       },
       mappings: [{
+        mapping_id: 'map-1',
         source: { server: 'src', table: 'TAG' },
         target: { server: 'dst', table: 'TAG2' },
       }],

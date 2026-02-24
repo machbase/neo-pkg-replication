@@ -34,7 +34,7 @@ class TagMetaProvider {
    * tag_id → canonical 태그명 변환 (Read-through cache)
    * @param {MachbaseClient} conn
    * @param {number|bigint} tagId
-   * @param {{ type: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
+   * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
    * @returns {{ canonical: string|null, status: 'ok'|'drop_not_found'|'retry_error' }}
    */
   async resolveTagCanonical(conn, tagId, tagIdentifier) {
@@ -45,8 +45,8 @@ class TagMetaProvider {
     // 2. 캐시 miss → DB 단건 조회
     if (tagName === undefined) {
       try {
-        const sql = `SELECT name FROM _${this.logicalTable}_META WHERE _ID = ${tagId}`;
-        const rows = await conn.query(sql);
+        const sql = `SELECT name FROM _${this.logicalTable}_META WHERE _ID = ?`;
+        const rows = await conn.query(sql, [tagId]);
         if (!rows || rows.length === 0) {
           return { canonical: null, status: 'drop_not_found' };
         }
@@ -64,9 +64,9 @@ class TagMetaProvider {
   }
 
   static _applyIdentifier(tagName, tagIdentifier) {
-    if (!tagIdentifier || tagIdentifier.type === 'none') return tagName;
-    if (tagIdentifier.type === 'prefix') return (tagIdentifier.value || '') + tagName;
-    if (tagIdentifier.type === 'suffix') return tagName + (tagIdentifier.value || '');
+    if (!tagIdentifier || tagIdentifier.mode === 'none') return tagName;
+    if (tagIdentifier.mode === 'prefix') return (tagIdentifier.value || '') + tagName;
+    if (tagIdentifier.mode === 'suffix') return tagName + (tagIdentifier.value || '');
     return tagName;
   }
 }

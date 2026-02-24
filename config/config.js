@@ -42,6 +42,13 @@ class ConfigLoader {
       throw new Error('config.replication.jobs is required and must be an array');
     }
 
+    for (const [name, srv] of Object.entries(raw.servers || {})) {
+      if (!srv.host) throw new Error(`servers.${name}.host is required`);
+      if (!srv.port) throw new Error(`servers.${name}.port is required`);
+      if (!srv.user) throw new Error(`servers.${name}.user is required`);
+      if (srv.password === undefined) throw new Error(`servers.${name}.password is required`);
+    }
+
     const jobs = raw.replication.jobs.map(job =>
       ConfigLoader._processJob(job, raw.servers)
     );
@@ -54,6 +61,8 @@ class ConfigLoader {
   }
 
   static _processJob(job, servers) {
+    if (!job.id) throw new Error(`job.id is required`);
+
     const jobDefaults = ConfigLoader._mergeExecution(EXECUTION_DEFAULTS, job.execution_defaults || {});
 
     const mappings = (job.mappings || []).flatMap(mapping =>
@@ -72,6 +81,8 @@ class ConfigLoader {
   }
 
   static _processMapping(mapping, servers, jobDefaults, jobId) {
+    if (!mapping.mapping_id) throw new Error(`mapping_id is required in job '${jobId}'`);
+
     const srcServer = mapping.source?.server;
     const dstServer = mapping.target?.server;
     const logCtx = { job_id: jobId, mapping_id: mapping.mapping_id };
@@ -105,17 +116,37 @@ class ConfigLoader {
       }));
       return [];
     }
-    if (execution.start_mode === 'rid_after' && execution.rid_after === undefined) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: 'rid_after is required when start_mode is "rid_after", skipping mapping',
-      }));
-      return [];
+    if (execution.start_mode === 'rid_after') {
+      const ridVal = execution.rid_after;
+      if (ridVal === undefined || ridVal === null) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: 'rid_after is required when start_mode is "rid_after", skipping mapping',
+        }));
+        return [];
+      }
+      if (!/^\d+$/.test(String(ridVal))) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: `rid_after must be a non-negative integer, got: ${ridVal}, skipping mapping`,
+        }));
+        return [];
+      }
     }
     if (!VALID_ON_SAVE_FAILURE.has(execution.on_save_failure)) {
       console.error(JSON.stringify({
         level: 'error', stage: 'config', ...logCtx,
         msg: `Invalid on_save_failure: "${execution.on_save_failure}", skipping mapping`,
+      }));
+      return [];
+    }
+
+    const VALID_MODES = ['prefix', 'suffix', 'none'];
+    const tagId = mapping.source?.tag_identifier;
+    if (tagId && !VALID_MODES.includes(tagId.mode)) {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: `Invalid tag_identifier.mode '${tagId.mode}' in mapping '${mapping.mapping_id}', skipping mapping`,
       }));
       return [];
     }

@@ -46,9 +46,8 @@ class TargetWriter {
       }));
       this.targetColumnNames = targetColumns.map(c => c.name);
 
-      // 4. appendOpen — conn.conn이 실제 @machbase/ts-client connection
-      this.stream = await conn.conn.appendOpen(table, this.writeColumns);
-      console.debug(JSON.stringify({ level: 'debug', stage: 'target_writer', table, msg: `appendOpen: ${this.writeColumns.length} columns` }));
+      // 4. appendOpen
+      this.stream = await conn.appendOpen(table, this.writeColumns);
       return null;
     } catch (err) {
       console.error(JSON.stringify({ level: 'error', stage: 'target_writer', table, msg: `open failed: ${err.message}` }));
@@ -63,6 +62,9 @@ class TargetWriter {
    */
   async append(rows) {
     if (!rows || rows.length === 0) return null;
+    if (!this.stream) {
+      return new Error('TargetWriter.append called before open()');
+    }
     try {
       // rows를 대상 컬럼 순서에 맞는 2차원 배열로 변환
       // 원본에 없는 컬럼 → null 패딩
@@ -73,7 +75,11 @@ class TargetWriter {
           const val = row[col.name];
           if (val === null || val === undefined) return null;
           // int64 컬럼은 BigInt로 변환 (문자열/number → BigInt)
-          if (col.type === 'int64') return BigInt(val);
+          if (col.type === 'int64') {
+            if (val == null) return null;
+            const n = typeof val === 'bigint' ? val : BigInt(Math.trunc(Number(val)));
+            return n;
+          }
           return val;
         });
       });
@@ -93,7 +99,6 @@ class TargetWriter {
     if (!this.stream) return null;
     try {
       await this.stream.close();
-      console.debug(JSON.stringify({ level: 'debug', stage: 'target_writer', msg: 'stream closed' }));
       return null;
     } catch (err) {
       console.error(JSON.stringify({ level: 'error', stage: 'target_writer', msg: `close failed: ${err.message}` }));

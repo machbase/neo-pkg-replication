@@ -66,7 +66,8 @@ class RetryHandler {
     delay = Math.min(delay, this.maxDelayMs);
 
     if (this.jitter) {
-      delay = delay * Math.random();
+      // delay/2 ~ delay 범위로 jitter 적용 (0ms 방지)
+      delay = delay * (0.5 + Math.random() * 0.5);
     }
 
     return Math.floor(delay);

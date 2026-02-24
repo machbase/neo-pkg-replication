@@ -1,6 +1,6 @@
 'use strict';
 
-const { test, describe, before, beforeEach } = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs/promises');
@@ -25,70 +25,6 @@ async function makeTmpDir() {
   return dir;
 }
 
-/** 지정된 tagId→name 매핑을 반환하는 목업 TagMetaProvider */
-function makeMockTagMeta(mapping = {}) {
-  return {
-    async loadAll() {},
-    async resolveTagCanonical(conn, tagId, tagIdentifier) {
-      const name = mapping[String(tagId)];
-      if (name === undefined) return { canonical: null, status: 'drop_not_found' };
-      const canonical = tagIdentifier?.type === 'prefix'
-        ? (tagIdentifier.value || '') + name
-        : name;
-      return { canonical, status: 'ok' };
-    },
-  };
-}
-
-/** rows 배열을 순서대로 반환하는 목업 sourceConn */
-function makeMockSourceConn(batches) {
-  let callIdx = 0;
-  return {
-    async query(sql) {
-      // getMaxRid 쿼리
-      if (sql.includes('MAX(_RID)')) return [{ max_rid: 0 }];
-      // META 쿼리
-      if (sql.includes('_META')) return [];
-      return [];
-    },
-    // readAfterRid 를 직접 테스트하기 어려우므로 SourceReader를 mock할 수 없음
-    // → SourceReader를 직접 호출하는 대신 별도 mock 전략을 사용
-    _batches: batches,
-    _callIdx: 0,
-  };
-}
-
-/** appendOpen, append, close를 지원하는 목업 targetConn */
-function makeMockTargetConn(existsMap = {}) {
-  return {
-    async query(sql, params) {
-      // IntegrityChecker: SELECT 1 FROM table WHERE name=? AND time=?
-      if (sql.includes('WHERE name') && sql.includes('AND time')) {
-        const key = `${params[0]}_${params[1]}`;
-        return existsMap[key] ? [{ 1: 1 }] : [];
-      }
-      // TargetWriter: M$SYS_COLUMNS 쿼리
-      if (sql.includes('M$SYS_COLUMNS')) {
-        return [
-          { NAME: 'name', TYPE: 5 },  // varchar
-          { NAME: 'time', TYPE: 12 }, // int64
-          { NAME: 'value', TYPE: 20 }, // double
-        ];
-      }
-      return [];
-    },
-    conn: {
-      async appendOpen(table, columns) {
-        return {
-          _written: [],
-          async append(rows) { this._written.push(...rows); },
-          async close() {},
-        };
-      },
-    },
-  };
-}
-
 // ─── 테스트 헬퍼: Worker를 mock으로 실행 ─────────────────────────────────────
 // worker.js가 SourceReader, TagMetaProvider를 직접 require하므로
 // 테스트에서는 실제 DB 연결 없이 실행 가능한 시나리오만 검증
@@ -105,7 +41,7 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     const SourceReader = require('../../machbase/source_reader.js');
     const origRead = SourceReader.readAfterRid;
     const origMax = SourceReader.getMaxRid;
-    SourceReader.readAfterRid = async (conn, dataTable, startRid, limit) => {
+    SourceReader.readAfterRid = async (_conn, _dataTable, startRid, limit) => {
       readCalls.push({ startRid, limit });
       return { rows: [], err: null }; // 빈 배치 반환
     };
@@ -166,7 +102,7 @@ describe('runDataTableWorker — RESOLVE_START', () => {
 
     const SourceReader = require('../../machbase/source_reader.js');
     const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async (conn, dt, startRid) => {
+    SourceReader.readAfterRid = async (_conn, _dt, startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
     };
@@ -203,7 +139,7 @@ describe('runDataTableWorker — RESOLVE_START', () => {
       });
 
       assert.ok(readCalls.length >= 1);
-      assert.equal(readCalls[0], 1234n, '체크포인트 last_success_rid=1234n 에서 재개해야 함');
+      assert.equal(readCalls[0], 1235n, '체크포인트 last_success_rid=1234n → startRid=1235n (1234n+1n)');
     } finally {
       SourceReader.readAfterRid = origRead;
       TargetWriter.prototype.open = origOpen;
@@ -267,7 +203,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
 
     const SourceReader = require('../../machbase/source_reader.js');
     const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async (conn, dt, startRid) => {
+    SourceReader.readAfterRid = async (_conn, _dt, startRid) => {
       batchCall++;
       if (batchCall === 1) {
         // 첫 번째 배치: 3개 row
@@ -289,7 +225,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     const origLoadAll = TagMetaProvider.prototype.loadAll;
     const origResolve = TagMetaProvider.prototype.resolveTagCanonical;
     TagMetaProvider.prototype.loadAll = async function() { this.map = new Map([[1, 'tag_a'], [2, 'tag_b']]); this.logicalTable = 'TAG'; };
-    TagMetaProvider.prototype.resolveTagCanonical = async function(conn, tagId) {
+    TagMetaProvider.prototype.resolveTagCanonical = async function(_conn, tagId) {
       const name = this.map.get(Number(tagId));
       if (!name) return { canonical: null, status: 'drop_not_found' };
       return { canonical: name, status: 'ok' };
@@ -337,11 +273,11 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
         shutdownFlag,
       });
 
-      // checkpoint가 13n (maxRid=12n + 1)으로 저장되어야 함
+      // checkpoint가 12n (마지막 성공 RID = maxRid)으로 저장되어야 함
       const CheckpointStore = require('../../file/checkpoint.js');
       const store = new CheckpointStore(tmpDir);
       const { cp } = await store.load('test-job-2', '_TAG_DATA_0');
-      assert.equal(cp.last_success_rid, 13n, 'checkpoint = maxRid(12n) + 1n = 13n');
+      assert.equal(cp.last_success_rid, 12n, 'checkpoint = maxRid(12n) — 마지막 성공 RID (inclusive)');
       assert.equal(appendedRows.length, 3, '3개 row가 append되어야 함');
     } finally {
       SourceReader.readAfterRid = origRead;
@@ -424,7 +360,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
       const CheckpointStore = require('../../file/checkpoint.js');
       const store = new CheckpointStore(tmpDir);
       const { cp } = await store.load('test-alldrop', '_TAG_DATA_0');
-      assert.equal(cp.last_success_rid, 6n, 'all-drop: checkpoint = maxRidInBatch(5n) + 1n = 6n');
+      assert.equal(cp.last_success_rid, 5n, 'all-drop: checkpoint = maxRidInBatch(5n) — 마지막 성공 RID (inclusive)');
       assert.equal(appendedRows.length, 0, 'drop → append 없음');
     } finally {
       SourceReader.readAfterRid = origRead;
@@ -524,16 +460,16 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
 
     const SourceReader = require('../../machbase/source_reader.js');
     const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async (conn, dt, startRid) => {
+    SourceReader.readAfterRid = async (_conn, _dt, startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
     };
 
     const IntegrityChecker = require('../../machbase/integrity_checker.js');
-    const origExists = IntegrityChecker.existsByTagAndTime;
-    IntegrityChecker.existsByTagAndTime = async () => {
+    const origBatchExists = IntegrityChecker.batchExists;
+    IntegrityChecker.batchExists = async () => {
       integrityCheckCalls.push(true);
-      return { exists: true, err: null };
+      return { existSet: new Set(), err: null };
     };
 
     const TagMetaProvider = require('../../machbase/tag_meta_provider.js');
@@ -572,11 +508,11 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
       });
 
       assert.equal(integrityCheckCalls.length, 0, 'integrity.enabled=false → IntegrityChecker 미호출');
-      // STEADY에서 체크포인트(10n)부터 읽기 시작
-      assert.equal(readCalls[0], 10n, 'STEADY는 checkpoint(10n)부터 시작해야 함');
+      // STEADY에서 체크포인트(last_success_rid=10n) + 1n = 11n부터 읽기 시작
+      assert.equal(readCalls[0], 11n, 'STEADY는 checkpoint(10n)+1n=11n부터 시작해야 함');
     } finally {
       SourceReader.readAfterRid = origRead;
-      IntegrityChecker.existsByTagAndTime = origExists;
+      IntegrityChecker.batchExists = origBatchExists;
       TagMetaProvider.prototype.loadAll = origLoadAll;
       TargetWriter.prototype.open = origOpen;
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -600,14 +536,14 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
 
     const SourceReader = require('../../machbase/source_reader.js');
     const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async (conn, dt, startRid) => {
+    SourceReader.readAfterRid = async (_conn, _dt, startRid) => {
       if (!integrityReadDone) {
-        // STARTUP_INTEGRITY read: 100n부터 rows 반환
+        // STARTUP_INTEGRITY read: last_success_rid=100n → startRid=101n부터 읽기
         integrityReadDone = true;
         return {
           rows: [
-            { rid: 100n, tagId: 1, time: 1000n, value: 1.0 }, // 대상에 존재
-            { rid: 101n, tagId: 1, time: 2000n, value: 2.0 }, // 대상에 미존재 (first miss)
+            { rid: 101n, tagId: 1, time: 1000n, value: 1.0 }, // 대상에 존재
+            { rid: 102n, tagId: 1, time: 2000n, value: 2.0 }, // 대상에 미존재 (first miss)
           ],
           err: null,
         };
@@ -622,7 +558,7 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     const origLoadAll = TagMetaProvider.prototype.loadAll;
     const origResolve = TagMetaProvider.prototype.resolveTagCanonical;
     TagMetaProvider.prototype.loadAll = async function() { this.map = new Map([[1, 'sensor_a']]); this.logicalTable = 'TAG'; };
-    TagMetaProvider.prototype.resolveTagCanonical = async function(conn, tagId) {
+    TagMetaProvider.prototype.resolveTagCanonical = async function(_conn, tagId) {
       const name = this.map.get(Number(tagId));
       if (!name) return { canonical: null, status: 'drop_not_found' };
       return { canonical: name, status: 'ok' };
@@ -630,9 +566,8 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
 
     const IntegrityChecker = require('../../machbase/integrity_checker.js');
     const origBatchExists = IntegrityChecker.batchExists;
-    const origExistKey = IntegrityChecker.existKey;
-    // rid=100 (time=1000n) → exists, rid=101 (time=2000n) → not exists
-    IntegrityChecker.batchExists = async (conn, table, rows) => {
+    // rid=101 (time=1000n) → exists, rid=102 (time=2000n) → not exists (first miss)
+    IntegrityChecker.batchExists = async (_conn, _table, rows) => {
       const existSet = new Set();
       for (const r of rows) {
         if (r.time === 1000n) existSet.add(IntegrityChecker.existKey(r.canonical, r.time));
@@ -687,14 +622,14 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
         shutdownFlag,
       });
 
-      // safe_cp = firstMissRid - 1n = 101n - 1n = 100n
+      // safe_cp = firstMissRid - 1n = 102n - 1n = 101n (마지막 성공 RID, inclusive)
       const { cp } = await store.load('test-int2', '_TAG_DATA_0');
-      // 마지막 저장된 checkpoint: STARTUP_INTEGRITY가 safe_cp=100n 저장 후
-      // STEADY가 101n부터 시작해서 빈 배치 → shutdown (checkpoint 저장 안 됨)
-      // 따라서 최종 checkpoint = safe_cp = 100n
-      assert.equal(cp.last_success_rid, 100n, 'STARTUP_INTEGRITY: safe_cp_rid = first_miss(101n) - 1n = 100n');
-      // STEADY는 firstMissRid(101n)부터 시작해야 함
-      assert.equal(steadyReadCalls[0], 101n, 'STEADY는 firstMissRid(101n)부터 시작');
+      // 마지막 저장된 checkpoint: STARTUP_INTEGRITY가 safe_cp=101n 저장 후
+      // STEADY가 102n부터 시작해서 빈 배치 → shutdown (checkpoint 저장 안 됨)
+      // 따라서 최종 checkpoint = safe_cp = 101n
+      assert.equal(cp.last_success_rid, 101n, 'STARTUP_INTEGRITY: safe_cp_rid = first_miss(102n) - 1n = 101n');
+      // STEADY는 firstMissRid(102n)부터 시작해야 함
+      assert.equal(steadyReadCalls[0], 102n, 'STEADY는 firstMissRid(102n)부터 시작');
     } finally {
       SourceReader.readAfterRid = origRead;
       TagMetaProvider.prototype.loadAll = origLoadAll;
@@ -727,10 +662,10 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     SourceReader.readAfterRid = async () => ({ rows: [], err: null });
 
     const IntegrityChecker = require('../../machbase/integrity_checker.js');
-    const origExists = IntegrityChecker.existsByTagAndTime;
-    IntegrityChecker.existsByTagAndTime = async () => {
+    const origBatchExists = IntegrityChecker.batchExists;
+    IntegrityChecker.batchExists = async () => {
       integrityCheckCalls.push(true);
-      return { exists: true, err: null };
+      return { existSet: new Set(), err: null };
     };
 
     const TargetWriter = require('../../machbase/target_writer.js');
@@ -767,7 +702,7 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
       assert.equal(integrityCheckCalls.length, 0, 'LOG 테이블 → IntegrityChecker 미호출');
     } finally {
       SourceReader.readAfterRid = origRead;
-      IntegrityChecker.existsByTagAndTime = origExists;
+      IntegrityChecker.batchExists = origBatchExists;
       TargetWriter.prototype.open = origOpen;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }

@@ -55,18 +55,19 @@ class MachbaseClient {
 
   async connect() {
     await this.conn.connect();
-    console.debug('machbase: connected');
   }
 
   async close() {
     await this.conn.end();
-    console.debug('machbase: closed');
   }
 
   async query(sql, values) {
-    console.debug('query: ' + sql);
     const [rows] = await this.conn.query(sql, values);
     return rows || [];
+  }
+
+  async appendOpen(table, columns, options) {
+    return this.conn.appendOpen(table, columns, options);
   }
 }
 

@@ -67,37 +67,6 @@ async function _resolveCanonical(tagMeta, conn, tagId, tagIdentifier, retry, shu
 }
 
 /**
- * IntegrityChecker.existsByTagAndTime 을 retry 포함하여 호출
- * @returns {boolean}   true/false on success
- * @returns {undefined} shutdown 또는 retry exhausted — caller must return
- */
-async function _checkExists(conn, table, canonical, timeNs, retry, shutdownFlag, logCtx) {
-  let attempt = 0;
-  while (true) {
-    if (shutdownFlag.value) return undefined;
-    if (attempt > 0) {
-      if (retry.isExhausted(attempt)) {
-        console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, msg: 'integrity check retry exhausted, skipping mapping' }));
-        return undefined;
-      }
-      const delay = retry.nextDelay(attempt - 1);
-      const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
-      if (signal === 'shutdown') return undefined;
-    }
-    const { exists, err } = await IntegrityChecker.existsByTagAndTime(conn, table, canonical, timeNs);
-    if (err) {
-      if (!retry.shouldRetry(err)) {
-        console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, msg: `integrity check non-retryable: ${err.message}` }));
-        return undefined;
-      }
-      attempt++;
-      continue;
-    }
-    return exists;
-  }
-}
-
-/**
  * TargetWriter.append 을 retry 포함하여 호출
  * @returns {boolean} true on success, false on exhausted/shutdown
  */
@@ -156,7 +125,7 @@ async function runDataTableWorker({
   tableType,
   dataTable,
   sourceConn,
-  targetConn,
+  // targetConn: 미사용 — STARTUP_INTEGRITY는 dstConfig로 신규 접속 생성 (statement ID 누적 방지)
   dstConfig,
   targetWriter,
   shutdownFlag,
@@ -178,7 +147,8 @@ async function runDataTableWorker({
 
   if (cpExists && cp) {
     // 체크포인트 존재 → start_mode 무시, 체크포인트 기준으로 재개
-    startRid = cp.last_success_rid;
+    // last_success_rid = 마지막으로 성공한 RID (inclusive) → +1n부터 읽기 시작
+    startRid = cp.last_success_rid + 1n;
     console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: `resume from checkpoint, start_rid=${startRid}` }));
   } else {
     const startMode = exec.start_mode || 'full';
@@ -188,7 +158,7 @@ async function runDataTableWorker({
         console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, msg: `getMaxRid failed (start_mode=now), skipping mapping: ${err.message}` }));
         return;
       }
-      startRid = maxRid;
+      startRid = maxRid + 1n; // +1: 현재 존재하는 마지막 RID는 제외하고 그 이후부터 시작
     } else if (startMode === 'rid_after') {
       startRid = BigInt(exec.rid_after || 0);
     } else {
@@ -198,10 +168,14 @@ async function runDataTableWorker({
   }
 
   // TAG 메타 전체 로드 (Worker 시작 시 1회 — Read-through cache 기반)
+  // 실패해도 map이 빈 상태로 진행 가능하지만(단건 DB 조회로 폴백), 로그로 명시
   let tagMeta = null;
   if (tableType === 'TAG') {
     tagMeta = new TagMetaProvider();
-    await tagMeta.loadAll(sourceConn, mapping.source.table);
+    const loadErr = await tagMeta.loadAll(sourceConn, mapping.source.table);
+    if (loadErr) {
+      console.warn(JSON.stringify({ level: 'warn', stage: 'worker', ...logCtx, msg: `tagMeta.loadAll failed, falling back to per-row DB lookup: ${loadErr.message}` }));
+    }
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -223,87 +197,101 @@ async function runDataTableWorker({
       // @machbase/ts-client는 쿼리마다 statement ID를 소비하고 서버는 1024개 한도를 가짐.
       // MachbaseFacadeConnection.end() 후 재연결 불가 — 배치마다 신규 접속을 생성한다.
       const intConn = new MachbaseClient(dstConfig);
-      await intConn.connect();
+      let shouldReturn = false;
+      let shouldBreak = false;
 
-      // 소스 배치 읽기
-      const rows = await _readBatch(sourceConn, dataTable, integrityRid, integrityBatchSize, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY');
-      if (rows === null) { await intConn.close().catch(() => {}); return; } // exhausted or shutdown
+      try {
+        await intConn.connect();
 
-      if (rows.length === 0) {
-        // 소스의 모든 데이터가 대상에 존재함 → STEADY 진입
-        startRid = integrityRid;
-        await intConn.close().catch(() => {});
-        console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: 'STARTUP_INTEGRITY: all rows confirmed, entering STEADY' }));
-        break;
-      }
+        // 소스 배치 읽기
+        const rows = await _readBatch(sourceConn, dataTable, integrityRid, integrityBatchSize, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY');
+        if (rows === null) { shouldReturn = true; break; } // exhausted or shutdown
 
-      const maxRidInBatch = rows.reduce((m, r) => r.rid > m ? r.rid : m, 0n);
-      let droppedNoMeta = 0;
+        if (rows.length === 0) {
+          // 소스의 모든 데이터가 대상에 존재함 → STEADY 진입
+          startRid = integrityRid;
+          console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: 'STARTUP_INTEGRITY: all rows confirmed, entering STEADY' }));
+          shouldBreak = true;
+          break;
+        }
 
-      // 1단계: 배치 내 모든 row의 canonical 이름 해석
-      const resolved = []; // { rid, canonical, time }
-      for (const row of rows) {
-        if (shutdownFlag.value) { await intConn.close().catch(() => {}); return; }
-        const canonical = await _resolveCanonical(tagMeta, sourceConn, row.tagId, tagIdentifier, retry, shutdownFlag, logCtx);
-        if (canonical === undefined) { await intConn.close().catch(() => {}); return; }
-        if (canonical === null) { droppedNoMeta++; continue; }
-        resolved.push({ rid: row.rid, canonical, time: row.time });
-      }
-      if (shutdownFlag.value) { await intConn.close().catch(() => {}); return; }
+        const maxRidInBatch = rows.reduce((m, r) => r.rid > m ? r.rid : m, 0n);
+        let droppedNoMeta = 0;
 
-      // 2단계: 배치 일괄 EXISTS 확인 (statement 1회 소비)
-      const { existSet, err: batchErr } = await IntegrityChecker.batchExists(intConn, mapping.target.table, resolved);
-      await intConn.close().catch(() => {});
-      if (batchErr) {
-        console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, msg: `batchExists failed: ${batchErr.message}` }));
-        return;
-      }
-      if (shutdownFlag.value) return;
+        // 1단계: 배치 내 모든 row의 canonical 이름 해석
+        const resolved = []; // { rid, canonical, time }
+        for (const row of rows) {
+          if (shutdownFlag.value) { shouldReturn = true; break; }
+          const canonical = await _resolveCanonical(tagMeta, sourceConn, row.tagId, tagIdentifier, retry, shutdownFlag, logCtx);
+          if (canonical === undefined) { shouldReturn = true; break; }
+          if (canonical === null) { droppedNoMeta++; continue; }
+          resolved.push({ rid: row.rid, canonical, time: row.time });
+        }
+        if (shouldReturn) break;
+        if (shutdownFlag.value) { shouldReturn = true; break; }
+
+        // 2단계: 배치 일괄 EXISTS 확인 (statement 1회 소비)
+        const { existSet, err: batchErr } = await IntegrityChecker.batchExists(intConn, mapping.target.table, resolved);
+        if (batchErr) {
+          console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, msg: `batchExists failed: ${batchErr.message}` }));
+          shouldReturn = true;
+          break;
+        }
+        if (shutdownFlag.value) { shouldReturn = true; break; }
 
       // 3단계: 첫 번째 miss row 탐색 (rid 순서 유지)
       let firstMissRid = null;
       let skippedExists = 0;
-      for (const r of resolved) {
-        const key = IntegrityChecker.existKey(r.canonical, r.time);
-        if (!existSet.has(key)) {
-          firstMissRid = r.rid;
+        for (const r of resolved) {
+          const key = IntegrityChecker.existKey(r.canonical, r.time);
+          if (!existSet.has(key)) {
+            firstMissRid = r.rid;
+            break;
+          }
+          skippedExists++;
+        }
+        if (shutdownFlag.value) { shouldReturn = true; break; }
+
+        const batchStats = {
+          rows_read: rows.length,
+          rows_written: 0,
+          dropped_no_meta: droppedNoMeta,
+          skipped_exists: skippedExists,
+        };
+
+        if (firstMissRid !== null) {
+          // 최초 miss row 발견 → safe checkpoint 저장 후 STEADY 진입
+          // safe_cp = firstMissRid - 1n (firstMissRid 바로 이전 row가 마지막 성공 RID)
+          const safeCpRid = firstMissRid - 1n;
+          await checkpointStore.save(jobId, dataTable, {
+            last_success_rid: safeCpRid,
+            source_server: mapping.source.server,
+            source_table: mapping.source.table,
+          }, batchStats, { on_save_failure: exec.on_save_failure });
+          startRid = firstMissRid; // STEADY는 첫 번째 miss row부터 복제
+          console.log(JSON.stringify({
+            level: 'info', stage: 'worker', ...logCtx,
+            msg: `STARTUP_INTEGRITY: first_miss_rid=${firstMissRid}, safe_cp_rid=${safeCpRid}, entering STEADY`,
+          }));
+          shouldBreak = true;
           break;
         }
-        skippedExists++;
-      }
-      if (shutdownFlag.value) return;
 
-      const batchStats = {
-        rows_read: rows.length,
-        rows_written: 0,
-        dropped_no_meta: droppedNoMeta,
-        skipped_exists: skippedExists,
-      };
-
-      if (firstMissRid !== null) {
-        // 최초 miss row 발견 → safe checkpoint 저장 후 STEADY 진입
-        const safeCpRid = firstMissRid - 1n;
+        // 배치 내 모든 row가 존재하거나 drop → 다음 배치로 진행
+        // maxRidInBatch = 이 배치에서 마지막으로 확인한 RID (inclusive)
         await checkpointStore.save(jobId, dataTable, {
-          last_success_rid: safeCpRid,
+          last_success_rid: maxRidInBatch,
           source_server: mapping.source.server,
           source_table: mapping.source.table,
-        }, batchStats);
-        startRid = firstMissRid; // STEADY는 첫 번째 miss row부터 복제
-        console.log(JSON.stringify({
-          level: 'info', stage: 'worker', ...logCtx,
-          msg: `STARTUP_INTEGRITY: first_miss_rid=${firstMissRid}, safe_cp_rid=${safeCpRid}, entering STEADY`,
-        }));
-        break;
+        }, batchStats, { on_save_failure: exec.on_save_failure });
+        integrityRid = maxRidInBatch + 1n;
+        console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: `STARTUP_INTEGRITY: batch all confirmed, next_rid=${integrityRid}` }));
+      } finally {
+        await intConn.close().catch(() => {});
       }
 
-      // 배치 내 모든 row가 존재하거나 drop → 다음 배치로 진행
-      await checkpointStore.save(jobId, dataTable, {
-        last_success_rid: maxRidInBatch + 1n,
-        source_server: mapping.source.server,
-        source_table: mapping.source.table,
-      }, batchStats);
-      integrityRid = maxRidInBatch + 1n;
-      console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: `STARTUP_INTEGRITY: batch all confirmed, next_rid=${integrityRid}` }));
+      if (shouldReturn) return;
+      if (shouldBreak) break;
     }
 
     if (shutdownFlag.value) return;
@@ -361,9 +349,11 @@ async function runDataTableWorker({
     }
 
     // checkpoint 갱신
-    // effective_max: 실제로 쓴 row가 있으면 그 최대 rid, 없으면 배치 최대 rid
+    // last_success_rid = 마지막으로 성공 처리한 RID (inclusive, 설계 문서 기준)
+    // effective_max: 실제로 쓴 row가 있으면 그 최대 rid, 없으면 배치 최대 rid.
+    // outRows가 0인 경우(배치 전체가 drop_not_found)도 소스에서 해당 RID까지
+    // 읽었으므로 checkpoint를 진행해 다음 배치로 넘어간다.
     const effectiveMax = maxWrittenRid > 0n ? maxWrittenRid : maxRidInBatch;
-    const nextRid = effectiveMax + 1n;
 
     const batchStats = {
       rows_read: rows.length,
@@ -372,12 +362,12 @@ async function runDataTableWorker({
       skipped_exists: 0,
     };
     await checkpointStore.save(jobId, dataTable, {
-      last_success_rid: nextRid,
+      last_success_rid: effectiveMax,
       source_server: mapping.source.server,
       source_table: mapping.source.table,
-    }, batchStats);
+    }, batchStats, { on_save_failure: exec.on_save_failure });
 
-    startRid = nextRid;
+    startRid = effectiveMax + 1n;
   }
 }
 
