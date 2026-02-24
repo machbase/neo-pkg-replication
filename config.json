@@ -1,18 +1,51 @@
-[
-  {
-    "name": "_TAG_DATA_0",
-    "rid": "0"
+{
+  "version": 3,
+  "servers": {
+    "src": {
+      "host": "192.168.1.189",
+      "port": 5656,
+      "user": "SYS",
+      "password": "MANAGER"
+    },
+    "dst": {
+      "host": "192.168.1.189",
+      "port": 5656,
+      "user": "SYS",
+      "password": "MANAGER"
+    }
   },
-  {
-    "name": "_TAG_DATA_1",
-    "rid": "0"
-  },
-  {
-    "name": "_TAG_DATA_2",
-    "rid": "0"
-  },
-  {
-    "name": "_TAG_DATA_3",
-    "rid": "0"
+  "replication": {
+    "jobs": [
+      {
+        "id": "job-1",
+        "enabled": true,
+        "shutdown_timeout_ms": 30000,
+        "checkpoint": {
+          "directory": "./checkpoints"
+        },
+        "execution_defaults": {
+          "batch_size_records": 5000,
+          "poll_interval_ms": 1000,
+          "start_mode": "full",
+          "on_save_failure": "continue",
+          "integrity": {
+            "enabled": true
+          }
+        },
+        "mappings": [
+          {
+            "mapping_id": "tag-to-tag2",
+            "source": {
+              "server": "src",
+              "table": "TAG"
+            },
+            "target": {
+              "server": "dst",
+              "table": "TAG2"
+            }
+          }
+        ]
+      }
+    ]
   }
-]
+}

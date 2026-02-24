@@ -7,7 +7,9 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/unit/**/*.test.js",
+    "test:integration": "node --test tests/integration/**/*.test.js",
+    "test:all": "node --test tests/unit/**/*.test.js tests/integration/**/*.test.js"
   },
   "dependencies": {
     "@machbase/ts-client": "^0.9.3"

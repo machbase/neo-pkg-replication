@@ -1,46 +1,109 @@
+'use strict';
+
+const path = require('path');
 const File = require('./file.js');
 
-class Checkpoint {
-  constructor(filePath) {
-    this.file = new File(filePath);
-    this.stores = [];
+class CheckpointStore {
+  constructor(directory) {
+    if (!directory) throw new Error('directory is required');
+    this.directory = directory;
   }
 
-  async load() {
-    if (await this.file.exists()) {
-      const data = await this.file.read();
-      this.stores = Array.isArray(data) ? data : [];
-    } else {
-      this.stores = [];
+  _filePath(jobId, dataTable) {
+    return path.join(this.directory, `${jobId}__${dataTable}.json`);
+  }
+
+  /**
+   * 체크포인트 로드
+   * @returns {{ cp: object|null, exists: boolean, err: Error|null }}
+   */
+  async load(jobId, dataTable) {
+    const file = new File(this._filePath(jobId, dataTable));
+
+    if (!await file.exists()) {
+      return { cp: null, exists: false, err: null };
     }
-    return this;
-  }
 
-  async save() {
-    await this.file.write(this.stores);
-  }
-
-  getStores() {
-    return this.stores;
-  }
-
-  get(name) {
-    return this.stores.find(store => store.name === name);
-  }
-
-  updateRid(name, rid) {
-    const store = this.get(name);
-    if (store) {
-      store.rid = rid;
+    let data;
+    try {
+      data = await file.read();
+    } catch (err) {
+      console.error(JSON.stringify({
+        level: 'error',
+        stage: 'checkpoint_io',
+        job_id: jobId,
+        data_table: dataTable,
+        msg: `parse failed: ${err.message}`,
+      }));
+      return { cp: null, exists: false, err };
     }
+
+    // source.data_table 불일치 → 손상 처리
+    if (data.source?.data_table !== dataTable) {
+      console.error(JSON.stringify({
+        level: 'error',
+        stage: 'checkpoint_io',
+        job_id: jobId,
+        data_table: dataTable,
+        msg: `data_table mismatch in file (got: ${data.source?.data_table}), invalidating`,
+      }));
+      return { cp: null, exists: false, err: new Error('checkpoint data_table mismatch') };
+    }
+
+    return { cp: data.checkpoint, exists: true, err: null };
   }
 
-  initFrom(entries) {
-    this.stores = entries.map(entry => ({
-      name: entry.name,
-      rid: 0n
-    }));
+  /**
+   * 체크포인트 저장 (atomic write)
+   * @param {string} jobId
+   * @param {string} dataTable
+   * @param {{ last_success_rid: BigInt, source_server?: string, source_table?: string }} cp
+   * @param {{ rows_read: number, rows_written: number, dropped_no_meta: number, skipped_exists: number }} stats
+   * @returns {Error|null}
+   */
+  async save(jobId, dataTable, cp, stats) {
+    const file = new File(this._filePath(jobId, dataTable));
+
+    const data = {
+      version: 1,
+      job_id: jobId,
+      source: {
+        server: cp.source_server || '',
+        table: cp.source_table || '',
+        data_table: dataTable,
+      },
+      checkpoint: {
+        last_success_rid: cp.last_success_rid,
+        updated_at: new Date().toISOString(),
+      },
+    };
+
+    try {
+      await file.write(data);
+      console.log(JSON.stringify({
+        level: 'info',
+        stage: 'checkpoint_saved',
+        job_id: jobId,
+        data_table: dataTable,
+        last_success_rid: cp.last_success_rid.toString(),
+        rows_read: stats?.rows_read ?? 0,
+        rows_written: stats?.rows_written ?? 0,
+        dropped_no_meta: stats?.dropped_no_meta ?? 0,
+        skipped_exists: stats?.skipped_exists ?? 0,
+      }));
+      return null;
+    } catch (err) {
+      console.error(JSON.stringify({
+        level: 'error',
+        stage: 'checkpoint_io',
+        job_id: jobId,
+        data_table: dataTable,
+        msg: `save failed: ${err.message}`,
+      }));
+      // TODO: on_save_failure="abort" 처리 (현재는 continue와 동일)
+      return err;
+    }
   }
 }
 
-module.exports = Checkpoint;
+module.exports = CheckpointStore;
