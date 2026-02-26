@@ -52,6 +52,4 @@ coverage/
 .DS_Store
 Thumbs.db
 
-WORKFLOW.md
-
 backup_schemas

@@ -41,7 +41,7 @@ test('cleanup: 이전 테스트에서 남은 REPLI_LOGS_ 테이블 정리', asyn
     );
     for (const row of rows) {
       try {
-        await conn.conn.execute(`DROP TABLE ${row.NAME}`);
+        await conn.execute(`DROP TABLE ${row.NAME}`);
         console.log(`cleanup: dropped ${row.NAME}`);
       } catch (_) {}
     }
@@ -59,7 +59,7 @@ async function makeConn() {
 }
 
 async function execute(conn, sql) {
-  await conn.conn.execute(sql);
+  await conn.execute(sql);
 }
 
 async function dropTable(conn, name) {
@@ -132,8 +132,7 @@ async function runWorker(srcTable, dstTable, tmpDir, jobId) {
     });
   } finally {
     await writer.close();
-    await reader.conn.close();
-    await dstConn.close();
+    await reader.close();
   }
 }
 
@@ -170,10 +169,10 @@ describe('IT-LOG-SAME: 동일 스키마 LOG→LOG 복제', () => {
     try {
       const rows = await verifyConn.query(`SELECT name, value FROM ${DST} ORDER BY _RID ASC`);
       assert.equal(rows.length, 3, `3행 복제 (실제: ${rows.length})`);
-      const names = rows.map(r => r.name);
-      assert.ok(names.includes('sensor_a'));
-      assert.ok(names.includes('sensor_b'));
-      assert.ok(names.includes('sensor_c'));
+      const byName = Object.fromEntries(rows.map(r => [r.name, r.value]));
+      assert.equal(byName['sensor_a'], 1.1, 'sensor_a value 일치');
+      assert.equal(byName['sensor_b'], 2.2, 'sensor_b value 일치');
+      assert.equal(byName['sensor_c'], 3.3, 'sensor_c value 일치');
     } finally {
       await verifyConn.close();
     }
@@ -213,9 +212,10 @@ describe('IT-LOG-SRC-EXTRA: 소스에 추가 컬럼 (quality) — 대상 무시 
     try {
       const rows = await verifyConn.query(`SELECT name, value FROM ${DST} ORDER BY _RID ASC`);
       assert.equal(rows.length, 3, `3행 복제 (실제: ${rows.length})`);
-      assert.ok(rows.map(r => r.name).includes('sensor_a'));
-      assert.ok(rows.map(r => r.name).includes('sensor_b'));
-      assert.ok(rows.map(r => r.name).includes('sensor_c'));
+      const byName = Object.fromEntries(rows.map(r => [r.name, r.value]));
+      assert.equal(byName['sensor_a'], 10.0, 'sensor_a value 일치');
+      assert.equal(byName['sensor_b'], 20.0, 'sensor_b value 일치');
+      assert.equal(byName['sensor_c'], 30.0, 'sensor_c value 일치');
     } finally {
       await verifyConn.close();
     }
@@ -254,12 +254,11 @@ describe('IT-LOG-DST-EXTRA: 대상에 추가 컬럼 (status) — null 패딩 검
     try {
       const rows = await verifyConn.query(`SELECT name, value, status FROM ${DST} ORDER BY _RID ASC`);
       assert.equal(rows.length, 2, `2행 복제 (실제: ${rows.length})`);
-      for (const row of rows) {
-        // VARCHAR 컬럼 null 패딩 시 Machbase는 빈 문자열('')로 저장
-        assert.equal(row.status, '', `status는 빈 문자열이어야 함 (실제: ${row.status})`);
-      }
-      assert.ok(rows.map(r => r.name).includes('machine_a'));
-      assert.ok(rows.map(r => r.name).includes('machine_b'));
+      const byName = Object.fromEntries(rows.map(r => [r.name, { value: r.value, status: r.status }]));
+      assert.equal(byName['machine_a'].value, 100.0, 'machine_a value 일치');
+      assert.equal(byName['machine_b'].value, 200.0, 'machine_b value 일치');
+      assert.equal(byName['machine_a'].status, '', 'machine_a status는 빈 문자열');
+      assert.equal(byName['machine_b'].status, '', 'machine_b status는 빈 문자열');
     } finally {
       await verifyConn.close();
     }
@@ -267,12 +266,6 @@ describe('IT-LOG-DST-EXTRA: 대상에 추가 컬럼 (status) — null 패딩 검
 });
 
 // ─── IT-LOG-DIFF-SCHEMA: 소스/대상 서로 다른 추가 컬럼 + 타입도 다름 ─────────
-//
-// SRC: quality DOUBLE (소수 품질값)
-// DST: status VARCHAR(32) (문자열 상태값)
-// → 컬럼명도 다르고 타입도 다른 완전한 스키마 불일치 케이스
-// 소스 quality는 worker가 NAME/TIME/VALUE만 출력하므로 자동 무시,
-// 대상 status(VARCHAR)는 null 패딩(빈 문자열 '')으로 기록됨
 
 describe('IT-LOG-DIFF-SCHEMA: 소스/대상 서로 다른 추가 컬럼 + 타입 불일치', () => {
   const SRC = T('DIFF_SRC');
@@ -306,12 +299,11 @@ describe('IT-LOG-DIFF-SCHEMA: 소스/대상 서로 다른 추가 컬럼 + 타입
     try {
       const rows = await verifyConn.query(`SELECT name, value, status FROM ${DST} ORDER BY _RID ASC`);
       assert.equal(rows.length, 2, `2행 복제 (실제: ${rows.length})`);
-      for (const row of rows) {
-        // VARCHAR null 패딩 → Machbase는 빈 문자열 ''로 저장
-        assert.equal(row.status, '', `status는 빈 문자열이어야 함 (실제: '${row.status}')`);
-      }
-      assert.ok(rows.map(r => r.name).includes('pump_a'));
-      assert.ok(rows.map(r => r.name).includes('pump_b'));
+      const byName = Object.fromEntries(rows.map(r => [r.name, { value: r.value, status: r.status }]));
+      assert.equal(byName['pump_a'].value, 55.5, 'pump_a value 일치');
+      assert.equal(byName['pump_b'].value, 66.6, 'pump_b value 일치');
+      assert.equal(byName['pump_a'].status, '', 'pump_a status는 빈 문자열');
+      assert.equal(byName['pump_b'].status, '', 'pump_b status는 빈 문자열');
     } finally {
       await verifyConn.close();
     }

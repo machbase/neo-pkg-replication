@@ -11,7 +11,6 @@ const fs = require('fs/promises');
 const os = require('os');
 
 const { runDataTableWorker } = require('../../worker/worker.js');
-const Reader = require('../../machbase/reader.js');
 const CheckpointStore = require('../../file/checkpoint.js');
 
 // ─── 공통 헬퍼 ───────────────────────────────────────────────────────────────
@@ -60,7 +59,6 @@ function logMapping(overrides = {}) {
 
 /** TAG sourceReader mock */
 function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null) {
-  const mockConn = { query: async () => [] };
   return {
     tableInfo: {
       tableType: 'TAG',
@@ -78,17 +76,20 @@ function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null
       aliasMap: metaMap,
       getSelectColumnNames() { return ['time', 'value']; },
     },
-    conn: mockConn,
     dataTable: '_TAG_DATA_0',
     get aliasMap() { return this.tableInfo.aliasMap; },
     async loadAliases() { return null; },
-    async resolveTagCanonical(conn, tagId) {
+    async resolveTagCanonical(tagId) {
       const tagIdBig = BigInt(tagId);
       const name = this.tableInfo.aliasMap.get(tagIdBig) || this.tableInfo.aliasMap.get(Number(tagId));
       if (!name) return { canonical: null, status: 'drop_not_found' };
       return { canonical: name, status: 'ok' };
     },
-    replaceConnection(newConn) { this.conn = newConn; },
+    async close() {},
+    async refreshConnection(config) {},
+    async getMaxRid() {
+      return { maxRid: 0n, err: null };
+    },
     async readAfterRid(startRid, limit, rangeSize) {
       if (readFn) return readFn(startRid, limit, rangeSize);
       return { rows: [], err: null };
@@ -98,7 +99,6 @@ function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null
 
 /** LOG sourceReader mock */
 function makeLogSourceReader(readFn = null) {
-  const mockConn = { query: async () => [] };
   return {
     tableInfo: {
       tableType: 'LOG',
@@ -117,11 +117,14 @@ function makeLogSourceReader(readFn = null) {
       aliasMap: new Map(),
       getSelectColumnNames() { return ['name', 'time', 'value']; },
     },
-    conn: mockConn,
     dataTable: 'LOG_TABLE',
     get aliasMap() { return this.tableInfo.aliasMap; },
     async loadAliases() { return null; },
-    replaceConnection(newConn) { this.conn = newConn; },
+    async close() {},
+    async refreshConnection(config) {},
+    async getMaxRid() {
+      return { maxRid: 0n, err: null };
+    },
     async readAfterRid(startRid, limit, rangeSize) {
       if (readFn) return readFn(startRid, limit, rangeSize);
       return { rows: [], err: null };
@@ -656,18 +659,12 @@ describe('E2E-07: cp 파일 손상 → start_mode 기준 시작', () => {
     const logs = [];
     console.error = (...args) => { logs.push(args.join(' ')); };
 
-    let maxRidCalled = false;
-    const origMax = Reader.getMaxRid;
-    Reader.getMaxRid = async () => {
-      maxRidCalled = true;
-      return { maxRid: 777n, err: null };
-    };
-
     const readCalls = [];
     const reader = makeTagSourceReader(new Map([[1, 'sensor_a']]), (startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
     });
+    reader.getMaxRid = async () => ({ maxRid: 777n, err: null });
 
     restores.push(patchWriter(null));
 
@@ -685,14 +682,12 @@ describe('E2E-07: cp 파일 손상 → start_mode 기준 시작', () => {
         shutdownFlag,
       });
 
-      assert.ok(maxRidCalled, 'cp 손상 → start_mode=now → getMaxRid() 호출되어야 함');
       assert.ok(readCalls.length >= 1, '최소 1회 read 호출');
       assert.equal(readCalls[0], 778n, 'startRid = getMaxRid() + 1n = 778n (기존 마지막 RID 제외)');
 
       const cpIoLog = logs.find(l => l.includes('checkpoint_io'));
       assert.ok(cpIoLog !== undefined, 'stage="checkpoint_io" 오류 로그가 출력되어야 함');
     } finally {
-      Reader.getMaxRid = origMax;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });

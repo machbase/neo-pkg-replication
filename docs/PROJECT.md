@@ -2,7 +2,7 @@
 
 **프로젝트**: Machbase TAG / Log 테이블 복제 도구
 **런타임**: Node.js v22 (CommonJS)
-**최종 수정**: 2026-02-26
+**최종 수정**: 2026-02-27
 
 ---
 
@@ -70,16 +70,15 @@
 
 ```
 repli-js/
-├── app.js                      # 진입점 — JobRunner 호출
+├── app.js                      # 진입점 — ConfigLoader → JobRunner.run()
 ├── config.json                 # 설정 파일 (v3 스키마)
 ├── config/
 │   └── config.js               # M1: ConfigLoader
 ├── machbase/
-│   ├── machbase.js             # 저수준 연결/쿼리 (MachbaseClient, ColumnType)
-│   ├── catalog.js              # M2: CatalogClient
-│   ├── table_info.js           # M5: TableInfo (컬럼 메타 + alias map)
-│   ├── reader.js               # M4: Reader (RID 기반 소스 읽기)
-│   ├── writer.js               # M7: Writer (appendOpen/append/close)
+│   ├── machbase.js             # MachbaseClient, ColumnType, fixDoubleEndian()
+│   ├── table_info.js           # M5: TableInfo (컬럼 메타 + TAG alias map)
+│   ├── reader.js               # M4: Reader (RID 기반 소스 읽기, conn 소유)
+│   ├── writer.js               # M7: Writer (appendOpen/append/close, conn 소유)
 │   └── integrity_checker.js    # M6: IntegrityChecker
 ├── file/
 │   ├── file.js                 # JSON 파일 읽기/쓰기 (atomic write, BigInt 지원)
@@ -87,66 +86,69 @@ repli-js/
 ├── worker/
 │   ├── retry.js                # M8: RetryHandler
 │   └── worker.js               # M9: Worker 상태 머신
-├── job_runner.js               # M10: JobRunner
+├── job_runner.js               # JobRunner (_runMapping / _runJob / run)
 ├── tests/
 │   ├── unit/
-│   │   ├── checkpoint.test.js  # CheckpointStore 단위 테스트 (6개)
-│   │   ├── config.test.js      # Config 단위 테스트 (12개)
-│   │   ├── retry.test.js       # RetryHandler 단위 테스트 (19개)
-│   │   ├── table_info.test.js  # TableInfo 단위 테스트 (16개)
+│   │   ├── checkpoint.test.js    # CheckpointStore 단위 테스트 (6개)
+│   │   ├── config.test.js        # Config 단위 테스트 (26개)
+│   │   ├── retry.test.js         # RetryHandler 단위 테스트 (19개)
+│   │   ├── table_info.test.js    # TableInfo 단위 테스트 (16개)
 │   │   ├── target_writer.test.js # Writer 단위 테스트 (6개)
-│   │   ├── worker.test.js      # Worker 상태 머신 단위 테스트 (9개)
+│   │   ├── worker.test.js        # Worker 상태 머신 단위 테스트 (9개)
 │   │   └── e2e_scenarios.test.js # E2E 시나리오 mock 테스트 (8개)
 │   └── integration/
-│       ├── tag_table.test.js   # TAG 테이블 통합 테스트 (7개)
-│       ├── log_table.test.js   # LOG 테이블 통합 테스트 (9개)
-│       └── log_schema.test.js  # LOG 스키마 변형 통합 테스트 (4개)
+│       ├── tag_table.test.js     # TAG 테이블 통합 테스트 (8개)
+│       ├── log_table.test.js     # LOG 테이블 통합 테스트 (10개)
+│       └── log_schema.test.js    # LOG 스키마 변형 통합 테스트 (5개)
+├── docs/
+│   ├── PROJECT.md               # 본 문서
+│   ├── ENDIAN_BUG.md            # @machbase/ts-client endian 버그 상세 분석
+│   └── INTEGRATION_TESTS.md     # 통합 테스트 케이스별 결과 문서
 └── package.json
 ```
 
 ### 2.2 컴포넌트 구성
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Main Process                                           │
-│                                                         │
-│  ConfigLoader ──→ JobRunner                             │
-│                      │                                  │
-│                      ├─ CatalogClient (소스 DB)         │
-│                      ├─ TableInfo (컬럼 메타 + alias)   │
-│                      ├─ CheckpointStore (파일)          │
-│                      └─ [Worker × N] ─────────┐         │
-│                                               │         │
-│  Worker (data_table 1개당 1개, concurrent)    │         │
-│  ┌────────────────────────────────────────┐   │         │
-│  │  Reader           (소스 DB 읽기)       │   │         │
-│  │  IntegrityChecker (대상 DB 존재 확인)  │   │         │
-│  │  Writer           (대상 DB 쓰기)       │   │         │
-│  │  CheckpointStore  (파일 갱신)          │   │         │
-│  └────────────────────────────────────────┘   │         │
-└───────────────────────────────────────────────┘─────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Main Process                                                │
+│                                                              │
+│  app.js → ConfigLoader → JobRunner.run()                    │
+│                              │                               │
+│                              ├─ MachbaseClient (DISCOVER)    │
+│                              ├─ TableInfo (컬럼 메타 + alias) │
+│                              └─ [Worker × N] ──────────┐     │
+│                                                        │     │
+│  Worker (data_table 1개당 1개, Promise.all 병렬)       │     │
+│  ┌──────────────────────────────────────────────────┐  │     │
+│  │  Reader (srcConn 소유)   — 소스 DB 읽기          │  │     │
+│  │  Writer (dstConn 소유)   — 대상 DB 쓰기          │  │     │
+│  │  IntegrityChecker        — STARTUP 시 대상 확인  │  │     │
+│  │  CheckpointStore         — 파일 갱신             │  │     │
+│  └──────────────────────────────────────────────────┘  │     │
+└────────────────────────────────────────────────────────┘─────┘
 ```
 
 ### 2.3 Connection 관리 원칙 (설계 결정 B-01)
 
 > **설계 번복 사유**: 통합 테스트 중 `@machbase/ts-client`가 단일 connection에서 동시 query 또는 append 호출 시 `"Unexpected protocol N, expected M"` 오류 발생 확인.
 
-**확정 구조**: data_table(Worker)당 srcConn + dstConn + TargetWriter 각 1개 생성
+**확정 구조**: data_table(Worker)당 srcConn + dstConn 각 1개 생성
 
 ```
 mapping (소스 table → 대상 table)
-  [DISCOVER]  source_conn: 1개  ── 카탈로그 조회 후 close
+  [DISCOVER]  sourceConn: 1개  ── 타입/파티션 조회 후 close
 
-  [Worker_0]  srcConn_0 + dstConn_0 + TargetWriter_0 (appendOpen 포함)
-  [Worker_1]  srcConn_1 + dstConn_1 + TargetWriter_1 (appendOpen 포함)
+  [Worker_0]  Reader(srcConn_0) + Writer(dstConn_0)  (appendOpen 포함)
+  [Worker_1]  Reader(srcConn_1) + Writer(dstConn_1)  (appendOpen 포함)
   ...
-  [Worker_N]  srcConn_N + dstConn_N + TargetWriter_N (appendOpen 포함)
+  [Worker_N]  Reader(srcConn_N) + Writer(dstConn_N)  (appendOpen 포함)
 ```
 
-- data_table(파티션) 1개당 Worker 1개, 각 Worker는 독립된 connection 세트 보유
-- STARTUP_INTEGRITY에서 intConn(integrity 전용)은 배치마다 새로 생성 후 close
-  - `MachbaseFacadeConnection.end()` 호출 후 재연결 불가 → 재사용 금지
-  - statement ID 서버 한도(1024개/connection)를 초과하지 않도록 배치마다 신규 생성
+- Reader가 srcConn을 소유, Writer가 dstConn을 소유 (close 책임도 각자)
+- STARTUP_INTEGRITY에서 intConn(integrity 전용)은 배치마다 신규 생성 후 close
+  - `@machbase/ts-client` 연결은 `end()` 후 재연결 불가 → 재사용 금지
+  - statement ID 서버 한도(1024개/connection) 초과 방지
 
 ### 2.4 Machbase TAG 테이블 내부 구조
 
@@ -285,23 +287,20 @@ ConfigLoader.load(filePath) → Config
 
 ---
 
-### M2. CatalogClient (`machbase/catalog.js`)
+### M2. MachbaseClient 카탈로그 메서드 (`machbase/machbase.js`)
+
+CatalogClient는 삭제되었으며, 카탈로그 기능은 `MachbaseClient`에 통합되었다.
 
 ```js
-CatalogClient.getLogicalTableType(conn, table) → { type: "TAG"|"LOG"|"UNSUPPORTED" }
-CatalogClient.listTagDataTables(conn, logicalTable) → DataTable[]
-CatalogClient.getColumns(conn, tableId) → Column[]
-CatalogClient.validateTagColumns(columns) → bool
-CatalogClient.checkLogTableN1Conflict(mappings, logicalTable, targetServer, targetTable) → bool
+conn.getTableType(table) → { type: "TAG"|"LOG"|"UNSUPPORTED" }
+conn.listTagDataTables(logicalTable) → [{ data_table, table_id }]
 ```
 
 **구현 항목**
-- `M$SYS_TABLES.TYPE`: 6=TAG, 0=LOG, 그 외=UNSUPPORTED
-- `V$STORAGE_TAG_TABLES + M$SYS_TABLES` 조인으로 data_table 목록 조회
-- TAG 컬럼 규칙: 1번째 컬럼 tag id(integer 계열), 2번째 컬럼 time(int64) — 위반 시 mapping 스킵
-- Log 테이블 n:1 매핑 금지: DISCOVER 단계에서 동일 target.server+target.table에 다수 Log mapping 시 두 번째 이후 스킵
-- `getColumns` 필터: `c.ID >= 0 AND c.ID < 65534` (논리 테이블 NAME 컬럼(ID=0) 포함)
-- TAG 컬럼 타입 허용 코드: time은 `TIME_TYPE_CODES = Set([12, 6])`
+- `getTableType`: `M$SYS_TABLES.TYPE` — 6=TAG, 0=LOG, 그 외=UNSUPPORTED
+- `listTagDataTables`: `V$STORAGE_TAG_TABLES + M$SYS_TABLES` 조인으로 파티션 목록 조회
+  - `table_id`는 `Number()` 변환하여 반환 (BigInt 직렬화 오류 방지)
+- JobRunner의 DISCOVER 단계에서 호출, 결과를 기반으로 Worker 생성
 
 ---
 
@@ -326,33 +325,40 @@ CheckpointStore.save(jobId, dataTable, cp, stats) → err
 ### M4. Reader (`machbase/reader.js`)
 
 ```js
-// 인스턴스 메서드 (tableInfo 소유)
 reader = new Reader(tableInfo, conn, dataTable)
-reader.readAfterRid(startRid, limit, rangeSize) → { rows, err }
-reader.replaceConnection(newConn)
-reader.resolveTagCanonical(conn, tagId, tagIdentifier) → { canonical, status }
-reader.loadAliases(conn?) → Error|null
-reader.aliasMap → Map<bigint, string>
 
-// static 메서드
-Reader.getMaxRid(conn, dataTable) → { maxRid, err }
+// conn 관리
+reader.close()                    // 소유한 conn 닫기
+reader.refreshConnection(config)  // 새 MachbaseClient 생성 후 기존 conn 교체
+
+// TableInfo 위임
+reader.aliasMap                   // → tableInfo.aliasMap
+reader.loadAliases()              // → tableInfo.loadAliases(this.conn)
+reader.resolveTagCanonical(tagId, tagIdentifier)  // → tableInfo.resolveTagCanonical(this.conn, ...)
+
+// 읽기
+reader.readAfterRid(startRid, limit, rangeSize) → { rows, err }
+reader.getMaxRid()                // 인스턴스 메서드 (static 아님)
 ```
 
 **SQL (설계 결정 D-01)**
 ```sql
-SELECT /*+ RID_RANGE(data_table, :startRid, :endRid) */
-       _RID, name, time, value
+-- 1. endRid 결정
+SELECT MAX(_RID) as max_rid FROM data_table
+
+-- 2. 데이터 읽기
+SELECT /*+ RID_RANGE(data_table, startRid, endRid) */
+       _RID, name, time, value [, extra_cols...]
 FROM   data_table
-WHERE  _RID >= :startRid
-LIMIT  :limit
+WHERE  _RID >= startRid
+LIMIT  limit
 ```
 
-- `:endRid` = `MAX(_RID)` 실제 조회값 (RID 희소성 대응)
-- JOIN 없음 — `name` 컬럼은 정수 tag_id 그대로 반환, Reader.resolveTagCanonical()이 이름으로 변환
+- `endRid` = `MAX(_RID) + 1n` 실제 조회값 (RID 희소성 대응, 배치당 2 statement 소비)
+- `name` 컬럼은 정수 tag_id 그대로 반환 → `resolveTagCanonical()`이 이름으로 변환
 - Row 구조: `{ rid: BigInt, tagId: any, data: { TIME, VALUE, ... } }` (UPPERCASE key)
-- `getMaxRid()` 실패 시 → 호출자(Worker)에 err 반환, SKIP_MAPPING 처리
-- 빈 테이블: `getMaxRid()` → `0n` 반환
-- SELECT 컬럼은 tableInfo.getSelectColumnNames()에서 동적 결정
+- `getMaxRid()` 빈 테이블 → `0n` 반환 / 오류 → `{ maxRid: 0n, err }` 반환
+- SELECT 컬럼은 `tableInfo.getSelectColumnNames()`에서 동적 결정
 
 ---
 
@@ -433,22 +439,25 @@ IntegrityChecker.existKey(canonical, timeNs)
 
 ```js
 writer = new Writer(dstTableInfo)
-writer.open(conn, table, srcTableInfo) → Error|null
+writer.open(conn, table, srcTableInfo) → Error|null   // conn 소유권 획득
 writer.append(rows) → Error|null
-writer.close() → Error|null
+writer.close() → Error|null                           // stream.close() + conn.close()
 ```
 
 **구현 항목**
-- Worker당 1개 인스턴스 생성, dstTableInfo 소유
-- `open(conn, table, srcTableInfo)`: srcTableInfo.writeColumns와 dstTableInfo.writeColumns 비교하여 appendColumns 구성 후 `appendOpen()` 호출
-  - 소스에 있는 컬럼: `isSourceColumn=true`
-  - 소스에 없는 대상 컬럼: `isSourceColumn=false` → `ColumnType.safeNull`로 패딩
-- 대상 컬럼 기준 `appendColumns` 구성, 스키마 불일치 처리:
-  - 원본에 없는 대상 컬럼 → safeNull 패딩 (타입별: 0, 0n, 0.0, '')
-  - `int64` 타입 컬럼(datetime/long/ulong 포함) → BigInt 변환 필수
-  - null 소스 값 → safeNull로 대체
-- `append()`: rows를 appendColumns 순서의 2차원 배열로 변환 후 stream.append() 호출
-  - rows의 키는 대문자 컬럼명 (예: `{ NAME, TIME, VALUE }`)
+- Worker당 1개 인스턴스, dstTableInfo 소유
+- `open(conn, table, srcTableInfo)`:
+  - `this.conn = conn` — dstConn 소유권 이전
+  - srcTableInfo.writeColumns 기준 Set → dstTableInfo.writeColumns 순회하여 `appendColumns` 구성
+  - `isSourceColumn=true`: 소스에 있는 컬럼 → 실제 값 사용
+  - `isSourceColumn=false`: 소스에 없는 대상 컬럼 → `ColumnType.safeNull` 패딩
+  - `appendOpen()` 호출하여 `this.stream` 생성
+- `append(rows)`:
+  - rows의 키는 대문자 컬럼명 (`{ NAME, TIME, VALUE, ... }`)
+  - `int64` 타입(`datetime`/`long`/`ulong`) → `BigInt()` 변환 필수
+  - null 소스 값 → `ColumnType.safeNull` 대체
+  - 2차원 배열 변환 후 `stream.append()` 호출
+- `close()`: `stream.close()` → `conn.close()` 순서로 정리. 첫 번째 오류 반환
 
 ---
 
@@ -486,59 +495,67 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+cp존재+integrity.enabled) → STEADY
 ```
 
 **RESOLVE_START**
-- CheckpointStore.load(jobId, dataTable)
-- 체크포인트 존재 + 파싱 성공 → `start_rid = cp.last_success_rid` (start_mode 무시)
-- 체크포인트 없음/손상 → start_mode 기준: full=0n, now=getMaxRid(), rid_after=설정값
+- `checkpointStore.load(jobId, dataTable)`
+- cp 존재 → `startRid = cp.last_success_rid + 1n` (start_mode 무시)
+- cp 없음/손상 → start_mode 기준: `full`=0n, `now`=`reader.getMaxRid() + 1n`, `rid_after`=설정값
+- TAG 테이블: `reader.aliasMap.size === 0`이면 `reader.loadAliases()` 호출
 
 **STARTUP_INTEGRITY_PHASE**
-- 배치마다 신규 intConn (`new MachbaseClient(dstConfig)`) 생성 후 close
-  (statement ID 서버 한도 초과 방지, MachbaseFacadeConnection 재연결 불가 대응)
-- `IntegrityChecker.batchExists()`로 배치 단위 일괄 존재 확인 (단일 OR 쿼리)
-- 최초 miss row → `safe_cp_rid = row.rid - 1n`, 체크포인트 갱신 후 STEADY 진입
-- 전체 skip/drop → `max_rid_in_batch + 1n`으로 체크포인트 갱신, 다음 배치 계속
+- 진입 조건: `tableType === 'TAG'` && `cpExists` && `exec.integrity?.enabled !== false`
+- 배치마다 신규 `intConn = new MachbaseClient(dstConfig)` 생성 후 finally에서 close
+- `_resolveCanonical()` → `IntegrityChecker.batchExists()` (단일 OR 쿼리, statement 1회 소비)
+- 첫 번째 miss row 발견 → `safeCpRid = firstMissRid - 1n`, cp 저장, `startRid = firstMissRid`, STEADY 진입
+- 배치 전체 skip/drop → `cp.last_success_rid = maxRidInBatch`, `integrityRid = maxRidInBatch + 1n`, 다음 배치
+- 소스가 빈 배열 → `startRid = integrityRid`로 유지하고 STEADY 진입
 
 **STEADY_REPLICATION_LOOP**
 ```
+stmtCount = 0  (배치당 2 statement 소비 — MAX + SELECT)
+
 while NOT shutdown_requested:
-  rows = readAfterRid(start_rid, batch_size)
+  if stmtCount >= 900: reader.refreshConnection(srcConfig); stmtCount = 0
+
+  rows = _readBatch(reader, startRid, batchSize, ...)  [retry 포함]
+  stmtCount += 2
   if rows.empty: sleepOrShutdown(poll_interval_ms); continue
 
-  max_rid_in_batch = MAX(rows.rid)
-  max_written_rid = 0n
+  maxRidInBatch = MAX(rows.rid)
 
-  [TAG] 각 row: resolveTagCanonical → drop_not_found 시 skip, retry_error 시 retry
-        out_rows에 { NAME: canonical, TIME: row.time, VALUE: row.value } 추가
-  [LOG] out_rows에 { NAME: row.tagId, TIME: row.time, VALUE: row.value } 추가
-        (컬럼명 대문자)
+  [TAG] 각 row: _resolveCanonical() → drop 시 skip
+        outRows.push({ NAME: canonical, ...row.data })
+  [LOG] outRows.push({ NAME: row.tagId, ...row.data })
 
-  if out_rows not empty:
-    targetWriter.append(out_rows)
-    max_written_rid = MAX(out_rows.rid)
+  if outRows not empty:
+    _appendRows(writer, outRows, ...)  [retry 포함]
+    maxWrittenRid = MAX(outRids)
 
-  effective_max = max_written_rid > 0n ? max_written_rid : max_rid_in_batch
-  SAVE_CHECKPOINT(effective_max + 1n)
-  start_rid = effective_max + 1n
+  effectiveMax = maxWrittenRid > 0n ? maxWrittenRid : maxRidInBatch
+  checkpointStore.save(..., { last_success_rid: effectiveMax }, stats)
+  startRid = effectiveMax + 1n
 ```
 
 ---
 
-### M10. JobRunner (`job_runner.js`)
+### JobRunner (`job_runner.js`)
 
-**구현 항목**
-1. ConfigLoader.load() → Config 객체
-2. SIGTERM / SIGINT 핸들러 등록 → `shutdownFlag.value = true`
-3. 각 enabled job의 mapping에 대해 DISCOVER (CatalogClient) — sourceConn 1개로 수행 후 close
-4. data_table(파티션)마다 독립 srcConn + dstConn + Writer 생성
-   - TableInfo.buildTag/buildLog로 srcTableInfo, dstTableInfo 생성
-   - `new Reader(srcTableInfo, srcConn, dataTable)` + `new Writer(dstTableInfo)`
-   - `writer.open(dstConn, target.table, srcTableInfo)` 호출
-5. data_table별 Worker를 `Promise.all`로 병렬 실행
-   - 각 Worker에 `{ srcConfig, dstConfig, reader, writer, ... }` 주입
-6. 모든 Worker 종료 후 `finally` 블록에서 Worker 리소스 정리
-   - 순서: `writer.close()` → `dstConn.close()` → `srcConn.close()`
-7. Graceful Shutdown: SIGTERM 수신 → `shutdownFlag.value = true` → Worker 자연 종료 대기
-8. `shutdown_timeout_ms` 초과 → `level="warn"` 경고 로그 + `process.exit(1)`
-   - timeout handle에 `.unref()` 적용 (정상 종료 시 Node.js를 블록하지 않음)
+함수 구조: `run(config)` → `_runJob(job, servers, shutdownFlag)` → `_runMapping(job, mapping, servers, shutdownFlag)`
+
+**`_runMapping` 구현 항목**
+1. DISCOVER — sourceConn 1개 생성:
+   - `conn.getTableType()` → TAG / LOG / UNSUPPORTED
+   - TAG: `conn.listTagDataTables()` → 파티션 목록, `TableInfo.buildTag()` (srcTableInfo/dstTableInfo)
+   - LOG: `dataTables = [source.table]`, `TableInfo.buildLog()` (srcTableInfo/dstTableInfo)
+   - dstTableInfo 빌드용 tmpDstConn은 빌드 후 즉시 close
+2. sourceConn close
+3. data_table마다 `Reader(srcConn)` + `Writer(dstTableInfo)` 생성 → `writer.open(dstConn, ...)`
+4. `Promise.all`로 Worker 병렬 실행, 각 Worker에 `{ srcConfig, dstConfig, reader, writer, ... }` 주입
+5. `finally` 블록: `writer.close()` (stream + dstConn 포함) → `reader.close()` (srcConn 포함)
+   - `writer.open()` 실패 시 dstConn 소유권이 미이전 → `pendingDstConn`으로 별도 close
+
+**Graceful Shutdown**
+- SIGTERM / SIGINT → `shutdownFlag.value = true` + 타이머 시작
+- `shutdown_timeout_ms` 초과 → `level="warn"` 로그 + `process.exit(1)`
+- 정상 종료 시 `clearTimeout(timeoutHandle)` 호출 (Node.js 블록 방지)
 
 ---
 
@@ -965,49 +982,55 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
-    participant JR as JobRunner
-    participant CC as CatalogClient
+    participant JR as JobRunner (_runMapping)
+    participant MC as MachbaseClient
     participant TI as TableInfo
     participant W as Worker
     participant CP as CheckpointStore
     participant R as Reader
     participant WR as Writer
 
-    JR->>CC: listTagDataTables(source_conn, table)
-    CC-->>JR: [_TAG_DATA_0 .. _TAG_DATA_N]
-    JR->>TI: buildTag(conn, table, dataTableId)
-    TI-->>JR: srcTableInfo, dstTableInfo
+    JR->>MC: connect() [sourceConn]
+    JR->>MC: getTableType(source.table)
+    MC-->>JR: { type: 'TAG' }
+    JR->>MC: listTagDataTables(source.table)
+    MC-->>JR: [{ data_table, table_id }, ...]
+    JR->>TI: buildTag(sourceConn, table, table_id)
+    TI-->>JR: srcTableInfo
+    JR->>TI: buildTag(tmpDstConn, dstTable, dstTableId)
+    TI-->>JR: dstTableInfo
+    JR->>MC: close() [sourceConn]
 
     par Promise.all — data_table별
         JR->>R: new Reader(srcTableInfo, srcConn_0, _TAG_DATA_0)
         JR->>WR: new Writer(dstTableInfo)
-        JR->>WR: open(dstConn_0, table, srcTableInfo)
-        Note over JR,WR: Worker당 독립 appendOpen
+        JR->>WR: open(dstConn_0, dstTable, srcTableInfo)
+        Note over JR,WR: dstConn 소유권 → Writer
 
         JR->>W: runDataTableWorker({ reader, writer, ... })
         W->>CP: load(jobId, _TAG_DATA_0)
         CP-->>W: { exists: false }
-        W->>R: Reader.getMaxRid(conn, _TAG_DATA_0)
-        R-->>W: startRid (start_mode 기준)
-        W->>R: loadAliases()
+        W->>R: reader.getMaxRid() [start_mode=now 시]
+        R-->>W: { maxRid, err }
+        W->>R: reader.loadAliases()
 
         loop STEADY_REPLICATION
-            W->>R: readAfterRid(startRid, batch_size)
-            R-->>W: rows[]
-            loop 각 row
-                W->>R: resolveTagCanonical(tagId)
+            W->>R: readAfterRid(startRid, batchSize)
+            R-->>W: { rows, err }
+            loop TAG: 각 row
+                W->>R: resolveTagCanonical(tagId, tagIdentifier)
                 R-->>W: { canonical, status }
             end
-            W->>WR: append(out_rows)
-            W->>CP: save(jobId, _TAG_DATA_0, effective_max+1n, stats)
+            W->>WR: append(outRows)
+            W->>CP: save(jobId, _TAG_DATA_0, effectiveMax, stats)
         end
     and
         JR->>W: runDataTableWorker(_TAG_DATA_1, reader_1, writer_1)
-        Note over W: 독립 connection 세트 사용
+        Note over W: 독립 srcConn / dstConn 사용
     end
 
-    JR->>WR: close()
-    JR->>JR: dstConn.close() / reader.conn.close()
+    JR->>WR: writer.close() [stream + dstConn]
+    JR->>R: reader.close() [srcConn]
 ```
 
 ---
@@ -1024,8 +1047,8 @@ sequenceDiagram
 | Phase 3 | Worker 조합 | ✅ 완료 | Worker 상태 머신 |
 | Phase 4 | 오케스트레이션 | ✅ 완료 | JobRunner, app.js 진입점 |
 
-**단위 테스트: 76개 전체 통과** (pass 76 / fail 0)
-**통합 테스트: 20개 전체 통과** (tag_table 7 + log_table 9 + log_schema 4)
+**단위 테스트: 90개 전체 통과** (pass 90 / fail 0)
+**통합 테스트: 23개 전체 통과** (tag_table 8 + log_table 10 + log_schema 5)
 
 ### 11.2 마일스톤 E2E 테스트 현황
 
@@ -1038,6 +1061,8 @@ sequenceDiagram
 | E2E-05 | LOG 테이블 복제 — STARTUP_INTEGRITY 미수행 (로그 확인) | ✅ |
 | E2E-06 | 대상 DB 연결 차단 → retry 로그 → 복구 후 자동 재개 | ✅ |
 | E2E-07 | cp 파일 손상 → start_mode 기준 시작, stage="checkpoint_io" 로그 | ✅ |
+
+통합 테스트 케이스별 상세 결과는 [INTEGRATION_TESTS.md](./INTEGRATION_TESTS.md) 참고.
 
 ### 11.3 통합 테스트 중 발견된 버그 수정 이력
 
@@ -1057,19 +1082,66 @@ sequenceDiagram
 | 2026-02-25 | `machbase/writer.js` | null 패딩 시 JS null → "typecode 24" 오류 | ColumnType.safeNull 도입 (타입별: 0, 0n, 0.0, '') |
 | 2026-02-25 | `worker/worker.js` | statement ID 서버 한도(1024) 초과 | stmtCount 추적 + 900 도달 시 srcConn 재생성 |
 | 2026-02-26 | 전체 | SourceReader/TargetWriter 이름 리팩토링 | Reader/Writer로 클래스명·파일명·파라미터명 변경 |
+| 2026-02-26 | `machbase/machbase.js` | `@machbase/ts-client` double endian 버그 — TAG 파티션에 따라 BE로 저장된 FLOAT/DOUBLE 값을 라이브러리가 LE로 잘못 읽어 denormal로 손상 | `fixDoubleEndian()` 후처리 함수로 우회. 상세 내용은 [11.5 라이브러리 알려진 버그](#115-machbasets-client-알려진-버그) 및 [ENDIAN_BUG.md](./ENDIAN_BUG.md) 참고 |
 
 ### 11.4 확정 설계 결정 사항
 
 | ID | 항목 | 결정 |
 |----|------|------|
-| B-01 | target connection / stream 공유 방식 | **Worker(data_table)당 독립** srcConn + dstConn + TargetWriter 생성 |
+| B-01 | target connection / stream 공유 방식 | **Worker(data_table)당 독립** srcConn(Reader 소유) + dstConn(Writer 소유) 생성 |
 | B-02 | `on_save_failure="abort"` 동작 | 코드 상 TODO 주석으로 남김. 현재는 "continue"와 동일하게 동작 |
 | B-03 | 설정 파일 형식 | JSON 채택 |
 | D-01 | SourceReader SQL 방식 | RID_RANGE 힌트 + `_RID >= startRid` 조건 병용. endRid는 `MAX(_RID)` 실제 조회값 |
 | D-02 | TagMetaProvider 메타 로드 방식 | Read-through cache. Worker 시작 시 전체 로드, miss 시 단건 DB 조회 |
-| D-03 | `getMaxRid()` 실패 시 처리 | SKIP_MAPPING |
-| D-04 | Log 테이블 n:1 매핑 금지 검증 위치 | DISCOVER 단계 (CatalogClient) |
+| D-03 | `getMaxRid()` 실패 시 처리 | SKIP_MAPPING (worker 즉시 return) |
+| D-04 | Reader/Writer conn 소유 방식 | Reader가 srcConn 소유·close, Writer가 dstConn 소유·close. JobRunner는 open 실패 시 pendingDstConn을 별도 close |
 | — | STARTUP_INTEGRITY retry 시 배치 재처리 범위 | 배치 내 이미 처리한 row는 건너뜀, 실패 row부터 재처리 |
+| — | Statement ID 고갈 대응 (STEADY) | stmtCount 추적, 900 도달 시 `reader.refreshConnection(srcConfig)` 호출 |
+
+### 11.5 @machbase/ts-client 알려진 버그
+
+#### 버그: FLOAT/DOUBLE 쿼리 결과 endian 오류
+
+- **버전**: `@machbase/ts-client@0.9.3`
+- **위치**: `node_modules/@machbase/ts-client/dist/connection.js`, `decodeFixedField()` 함수 (1164~1167줄)
+
+**원인**
+
+`decodeFixedField()`는 쿼리 결과 행의 고정 길이 필드를 디코딩하는 standalone 함수다. 정수 계열(`INT16`~`INT64`, `UINT16`~`UINT64`, `DATETIME`)은 Big-Endian(`readInt16BE` 등)으로 읽고, 부동소수점 계열(`FLT32`, `FLT64`)은 **Little-Endian**(`readFloatLE`, `readDoubleLE`)으로 읽도록 하드코딩되어 있다.
+
+```js
+// connection.js:1164-1167 (버그 있는 원본 코드)
+case CMD_FLT32_TYPE:
+    return field.readFloatLE(0);   // ← 항상 LE
+case CMD_FLT64_TYPE:
+    return field.readDoubleLE(0);  // ← 항상 LE
+```
+
+그러나 Machbase 서버의 TAG 데이터 파티션은 **파티션 인덱스(DATA_0, DATA_1, …)에 따라 DOUBLE 값을 BE 또는 LE로 저장**한다. 서버가 BE로 저장한 값을 클라이언트가 LE로 읽으면, IEEE 754 상 지수부가 0에 가까운 극소값(denormal)으로 해석된다.
+
+**예시**
+
+| 실제 값 | BE 저장 바이트 | LE로 잘못 읽은 결과 |
+|---------|---------------|-------------------|
+| `3200.0` | `40 A9 00 00 00 00 00 00` | `2.1407e-319` |
+| `85.0`   | `40 55 40 00 00 00 00 00` | `2.083044e-317` |
+| `1.1`    | `3F F1 99 99 99 99 99 9A` | `1.1` (DATA_1: LE 저장이므로 정상) |
+
+연결 핸드셰이크에서 `serverEndian = 0`(LE)으로 기록하지만(`429~438줄`), `decodeFixedField()`는 `serverEndian`을 받는 파라미터가 없어 이 정보를 사용할 수 없다.
+
+**우회 구현**
+
+BE로 저장된 값을 LE로 잘못 읽으면 반드시 **denormal**(비정규 부동소수점, `0 < |v| < 2.2250738585072014e-308`)이 된다. 반대로 실측 센서값이 우연히 denormal 범위에 들어오는 경우는 실무상 없으므로, `machbase/machbase.js`의 `fixDoubleEndian()` 함수에서 다음과 같이 사후 보정한다.
+
+```js
+// machbase/machbase.js — fixDoubleEndian()
+if (v !== 0 && Math.abs(v) < DOUBLE_MIN_NORMAL) {
+    _fixBuf.writeDoubleLE(v, 0);
+    row[key] = _fixBuf.readDoubleBE(0);  // 바이트 순서 뒤집어 재해석
+}
+```
+
+`MachbaseClient.query()` 반환 직전에 모든 row에 대해 이 보정을 적용한다. 라이브러리를 `npm install`로 재설치해도 프로젝트 코드 내에 우회 로직이 있으므로 재발하지 않는다.
 
 ---
 

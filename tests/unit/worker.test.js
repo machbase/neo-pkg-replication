@@ -7,7 +7,6 @@ const fs = require('fs/promises');
 const os = require('os');
 
 const { runDataTableWorker } = require('../../worker/worker.js');
-const Reader = require('../../machbase/reader.js');
 
 // ─── 테스트 픽스처 ───────────────────────────────────────────────────────────
 
@@ -28,7 +27,6 @@ async function makeTmpDir() {
 
 /** TAG sourceReader mock 생성 */
 function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), readFn = null) {
-  const mockConn = { query: async () => [] };
   return {
     tableInfo: {
       tableType: 'TAG',
@@ -46,17 +44,20 @@ function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), re
       aliasMap: metaMap,
       getSelectColumnNames() { return ['time', 'value']; },
     },
-    conn: mockConn,
     dataTable: '_TAG_DATA_0',
     get aliasMap() { return this.tableInfo.aliasMap; },
     async loadAliases() { return null; },
-    async resolveTagCanonical(conn, tagId, tagIdentifier) {
+    async resolveTagCanonical(tagId, tagIdentifier) {
       const tagIdBig = BigInt(tagId);
       const name = this.tableInfo.aliasMap.get(tagIdBig) || this.tableInfo.aliasMap.get(Number(tagId));
       if (!name) return { canonical: null, status: 'drop_not_found' };
       return { canonical: name, status: 'ok' };
     },
-    replaceConnection(newConn) { this.conn = newConn; },
+    async close() {},
+    async refreshConnection(config) {},
+    async getMaxRid() {
+      return { maxRid: 0n, err: null };
+    },
     async readAfterRid(startRid, limit, rangeSize) {
       if (readFn) return readFn(startRid, limit, rangeSize);
       return { rows: [], err: null };
@@ -66,7 +67,6 @@ function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), re
 
 /** LOG sourceReader mock 생성 */
 function makeLogSourceReader(readFn = null) {
-  const mockConn = { query: async () => [] };
   return {
     tableInfo: {
       tableType: 'LOG',
@@ -85,11 +85,14 @@ function makeLogSourceReader(readFn = null) {
       aliasMap: new Map(),
       getSelectColumnNames() { return ['name', 'time', 'value']; },
     },
-    conn: mockConn,
     dataTable: '_LOG_DATA_0',
     get aliasMap() { return this.tableInfo.aliasMap; },
     async loadAliases() { return null; },
-    replaceConnection(newConn) { this.conn = newConn; },
+    async close() {},
+    async refreshConnection(config) {},
+    async getMaxRid() {
+      return { maxRid: 0n, err: null };
+    },
     async readAfterRid(startRid, limit, rangeSize) {
       if (readFn) return readFn(startRid, limit, rangeSize);
       return { rows: [], err: null };
@@ -212,10 +215,8 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
 
-    const origMax = Reader.getMaxRid;
-    Reader.getMaxRid = async () => ({ maxRid: 0n, err: new Error('DB down') });
-
     const reader = makeTagSourceReader();
+    reader.getMaxRid = async () => ({ maxRid: 0n, err: new Error('DB down') });
 
     const Writer = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
@@ -248,7 +249,6 @@ describe('runDataTableWorker — RESOLVE_START', () => {
       });
       assert.equal(shutdownFlag.value, false, 'shutdownFlag는 변경되지 않아야 함');
     } finally {
-      Reader.getMaxRid = origMax;
       Writer.prototype.open = origOpen;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }

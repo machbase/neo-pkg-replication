@@ -34,7 +34,6 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const { MachbaseClient } = require('../../machbase/machbase.js');
-const CatalogClient = require('../../machbase/catalog.js');
 const TableInfo = require('../../machbase/table_info.js');
 const Reader = require('../../machbase/reader.js');
 const Writer = require('../../machbase/writer.js');
@@ -64,7 +63,7 @@ test('cleanup: 이전 테스트에서 남은 REPLI_TAG_ 테이블 정리', async
     );
     for (const row of rows) {
       try {
-        await conn.conn.execute(`DROP TABLE ${row.NAME}`);
+        await conn.execute(`DROP TABLE ${row.NAME}`);
         console.log(`cleanup: dropped ${row.NAME}`);
       } catch (_) {}
     }
@@ -82,7 +81,7 @@ async function makeConn() {
 }
 
 async function execute(conn, sql) {
-  await conn.conn.execute(sql);
+  await conn.execute(sql);
 }
 
 async function dropTable(conn, name) {
@@ -167,7 +166,7 @@ function makeShutdownFlag(timeoutMs = 8000) {
 }
 
 async function getTagPartitions(conn, logicalTable) {
-  return CatalogClient.listTagDataTables(conn, logicalTable);
+  return conn.listTagDataTables(logicalTable);
 }
 
 function baseMapping(srcTable, dstTable, execOverrides = {}) {
@@ -241,8 +240,7 @@ async function runTagWorkerForAllPartitions(jobId, srcTable, dstTable, tmpDir, e
       });
     } finally {
       await writer.close();
-      await reader.conn.close();
-      await dstConn.close();
+      await reader.close();
     }
   }
 }
@@ -272,10 +270,10 @@ test('IT-TAG-01: 동일 스키마 TAG → TAG 복제 — 소스 TAG 3행이 대�
     try {
       const dstRows = await selectAll(verifyConn, DST);
       assert.equal(dstRows.length, 3, `3행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('sensor_a'), 'sensor_a 복제됨');
-      assert.ok(names.includes('sensor_b'), 'sensor_b 복제됨');
-      assert.ok(names.includes('sensor_c'), 'sensor_c 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['sensor_a'], 1.1, 'sensor_a value 일치');
+      assert.equal(byName['sensor_b'], 2.2, 'sensor_b value 일치');
+      assert.equal(byName['sensor_c'], 3.3, 'sensor_c value 일치');
     } finally {
       await verifyConn.close();
     }
@@ -302,12 +300,6 @@ test('IT-TAG-01: 동일 스키마 TAG → TAG 복제 — 소스 TAG 3행이 대�
 });
 
 // ─── IT-TAG-02: SRC에 additional column 존재, DST에는 없음 ──────────────────
-//
-// additional column: DATA 파티션에 함께 저장되는 시계열 측정값
-//   CREATE TAG TABLE ... (name, time, value, quality DOUBLE)
-//
-// Worker는 NAME/TIME/VALUE만 출력하므로 SRC의 quality는 자동 무시.
-// DST에 추가 컬럼이 없으므로 null 패딩 문제 없이 정상 복제됨.
 
 test('IT-TAG-02: SRC에 additional column (quality) 존재, DST에는 없음 — SRC additional column 무시, 2행 정상 복제됨', async () => {
   const SRC = T('02_SRC');
@@ -331,9 +323,9 @@ test('IT-TAG-02: SRC에 additional column (quality) 존재, DST에는 없음 —
     try {
       const dstRows = await selectAll(verifyConn, DST);
       assert.equal(dstRows.length, 2, `2행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('temp_sensor'),  'temp_sensor 복제됨');
-      assert.ok(names.includes('press_sensor'), 'press_sensor 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['temp_sensor'],  25.5, 'temp_sensor value 일치');
+      assert.equal(byName['press_sensor'], 101.3, 'press_sensor value 일치');
     } finally {
       await verifyConn.close();
     }
@@ -346,11 +338,6 @@ test('IT-TAG-02: SRC에 additional column (quality) 존재, DST에는 없음 —
 });
 
 // ─── IT-TAG-03: DST에 additional column 존재, SRC에는 없음 ──────────────────
-//
-// KNOWN BUG: DST additional column(DOUBLE)에 null 패딩 시
-// ColumnType.DOUBLE.nullValue = DBL_MAX(1.7976e+308)를
-// ts-client가 BigInt로 변환 → int64 범위 초과 오류 발생.
-// → 복제 0행 (append retry exhausted)
 
 test('IT-TAG-03: DST에 additional column (temperature DOUBLE) 존재, SRC에는 없음 — DOUBLE 기본값 패딩, 2행 정상 복제됨', async () => {
   const SRC = T('03_SRC');
@@ -376,9 +363,12 @@ test('IT-TAG-03: DST에 additional column (temperature DOUBLE) 존재, SRC에는
         `SELECT name, time, value, temperature FROM ${DST} ORDER BY time ASC`
       );
       assert.equal(dstRows.length, 2, `2행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('motor_rpm'),  'motor_rpm 복제됨');
-      assert.ok(names.includes('motor_temp'), 'motor_temp 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['motor_rpm'],  3200.0, 'motor_rpm value 일치');
+      assert.equal(byName['motor_temp'], 85.0,   'motor_temp value 일치');
+      const tempByName = Object.fromEntries(dstRows.map(r => [r.name, r.temperature]));
+      assert.equal(tempByName['motor_rpm'],  0, 'motor_rpm temperature = 0 (safeNull)');
+      assert.equal(tempByName['motor_temp'], 0, 'motor_temp temperature = 0 (safeNull)');
     } finally {
       await verifyConn.close();
     }
@@ -391,14 +381,6 @@ test('IT-TAG-03: DST에 additional column (temperature DOUBLE) 존재, SRC에는
 });
 
 // ─── IT-TAG-04: additional column이 양쪽에 있으나 컬럼명+타입 모두 다름 ─────
-//
-// SRC: additional column quality DOUBLE
-// DST: additional column status VARCHAR(32)
-// → 컬럼명도 다르고 타입도 다른 완전한 스키마 불일치
-//
-// KNOWN BUG: DST additional column(VARCHAR)에 null 패딩 시
-// JS null을 ts-client에 전달 → "Bind data type unknown (typecode is 24)" 오류.
-// → 복제 0행 (append retry exhausted)
 
 test('IT-TAG-04: additional column 양쪽 다름 (quality DOUBLE vs status VARCHAR) — VARCHAR 기본값 패딩, 2행 정상 복제됨', async () => {
   const SRC = T('04_SRC');
@@ -424,9 +406,12 @@ test('IT-TAG-04: additional column 양쪽 다름 (quality DOUBLE vs status VARCH
         `SELECT name, time, value, status FROM ${DST} ORDER BY time ASC`
       );
       assert.equal(dstRows.length, 2, `2행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('valve_pos'),  'valve_pos 복제됨');
-      assert.ok(names.includes('flow_rate'), 'flow_rate 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['valve_pos'],  45.0,  'valve_pos value 일치');
+      assert.equal(byName['flow_rate'], 120.5,  'flow_rate value 일치');
+      const statusByName = Object.fromEntries(dstRows.map(r => [r.name, r.status]));
+      assert.equal(statusByName['valve_pos'],  '', 'valve_pos status = "" (safeNull)');
+      assert.equal(statusByName['flow_rate'],  '', 'flow_rate status = "" (safeNull)');
     } finally {
       await verifyConn.close();
     }
@@ -439,14 +424,6 @@ test('IT-TAG-04: additional column 양쪽 다름 (quality DOUBLE vs status VARCH
 });
 
 // ─── IT-TAG-05: SRC에 metadata column 존재, DST에는 없음 ────────────────────
-//
-// metadata column: _TAG_META 테이블에 저장되는 센서별 정적 설명 정보
-//   CREATE TAG TABLE ... (...) METADATA (location VARCHAR(50))
-//   INSERT INTO table METADATA VALUES ('tag_name', 'Building A')
-//
-// Worker는 _TAG_META에서 tag_id → canonical name을 조회할 뿐,
-// metadata column 값은 읽지 않으므로 복제에 영향 없음.
-// DST에 metadata column이 없으므로 정상 복제됨.
 
 test('IT-TAG-05: SRC에 metadata column (location) 존재, DST에는 없음 — SRC metadata column은 복제에 영향 없음, 2행 정상 복제됨', async () => {
   const SRC = T('05_SRC');
@@ -476,9 +453,9 @@ test('IT-TAG-05: SRC에 metadata column (location) 존재, DST에는 없음 — 
     try {
       const dstRows = await selectAll(verifyConn, DST);
       assert.equal(dstRows.length, 2, `2행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('building_temp'), 'building_temp 복제됨');
-      assert.ok(names.includes('outdoor_temp'),  'outdoor_temp 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['building_temp'], 22.5, 'building_temp value 일치');
+      assert.equal(byName['outdoor_temp'],  18.3, 'outdoor_temp value 일치');
     } finally {
       await verifyConn.close();
     }
@@ -491,15 +468,6 @@ test('IT-TAG-05: SRC에 metadata column (location) 존재, DST에는 없음 — 
 });
 
 // ─── IT-TAG-06: DST에 metadata column 존재, SRC에는 없음 ────────────────────
-//
-// SRC: 기본 TAG 테이블 (metadata 없음)
-// DST: metadata column sensor_type VARCHAR(20) 포함
-//
-// KNOWN BUG: Machbase TAG의 metadata column도 M$SYS_COLUMNS에 일반 컬럼으로 등록됨.
-// Writer.open()이 이를 조회해 appendStream 컬럼에 포함시키고,
-// SRC에 없으므로 null 패딩 대상이 됨.
-// VARCHAR null 패딩 시 JS null → "Bind data type unknown (typecode is 24)" 오류.
-// → 복제 0행 (append retry exhausted)
 
 test('IT-TAG-06: DST에 metadata column (sensor_type VARCHAR) 존재, SRC에는 없음 — VARCHAR 기본값 패딩, 2행 정상 복제됨', async () => {
   const SRC = T('06_SRC');
@@ -524,9 +492,9 @@ test('IT-TAG-06: DST에 metadata column (sensor_type VARCHAR) 존재, SRC에는 
     try {
       const dstRows = await selectAll(verifyConn, DST);
       assert.equal(dstRows.length, 2, `2행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('vibration_1'), 'vibration_1 복제됨');
-      assert.ok(names.includes('vibration_2'), 'vibration_2 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['vibration_1'], 0.42, 'vibration_1 value 일치');
+      assert.equal(byName['vibration_2'], 0.37, 'vibration_2 value 일치');
     } finally {
       await verifyConn.close();
     }
@@ -539,13 +507,6 @@ test('IT-TAG-06: DST에 metadata column (sensor_type VARCHAR) 존재, SRC에는 
 });
 
 // ─── IT-TAG-07: metadata column이 양쪽에 있으나 타입 불일치 ─────────────────
-//
-// SRC: METADATA (location VARCHAR(50))
-// DST: METADATA (location INTEGER)  ← 동일 컬럼명, 타입 불일치
-//
-// metadata column은 _TAG_META에 저장되므로 appendStream(시계열 복제)에는
-// 영향을 주지 않음. 복제는 정상적으로 수행됨.
-// (단, DST의 _TAG_META에 location INTEGER로 자동 등록되므로 metadata 값은 손실)
 
 test('IT-TAG-07: metadata column 양쪽에 있으나 타입 불일치 (VARCHAR vs INTEGER) — metadata 타입 불일치는 appendStream에 영향 없음, 2행 정상 복제됨', async () => {
   const SRC = T('07_SRC');
@@ -574,9 +535,9 @@ test('IT-TAG-07: metadata column 양쪽에 있으나 타입 불일치 (VARCHAR v
     try {
       const dstRows = await selectAll(verifyConn, DST);
       assert.equal(dstRows.length, 2, `2행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('pump_a'), 'pump_a 복제됨');
-      assert.ok(names.includes('pump_b'), 'pump_b 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['pump_a'], 55.5, 'pump_a value 일치');
+      assert.equal(byName['pump_b'], 66.6, 'pump_b value 일치');
     } finally {
       await verifyConn.close();
     }

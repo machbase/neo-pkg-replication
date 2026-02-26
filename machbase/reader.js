@@ -1,9 +1,11 @@
 'use strict';
 
+const { MachbaseClient } = require('./machbase.js');
+
 class Reader {
   /**
    * @param {TableInfo} tableInfo - srcTableInfo (owned)
-   * @param {MachbaseClient} conn - 소스 DB 연결
+   * @param {MachbaseClient} conn - 소스 DB 연결 (owned)
    * @param {string} dataTable - 파티션 테이블명 (예: _TAG_DATA_0)
    */
   constructor(tableInfo, conn, dataTable) {
@@ -13,19 +15,34 @@ class Reader {
   }
 
   /**
-   * 연결 교체 (statement ID 고갈 시)
-   * @param {MachbaseClient} newConn
+   * 소유한 연결 닫기
    */
-  replaceConnection(newConn) { this.conn = newConn; }
+  async close() {
+    if (this.conn) {
+      await this.conn.close();
+      this.conn = null;
+    }
+  }
+
+  /**
+   * 연결 재생성 (statement ID 고갈 시)
+   * @param {object} config - MachbaseClient 접속 설정
+   */
+  async refreshConnection(config) {
+    const newConn = new MachbaseClient(config);
+    await newConn.connect();
+    if (this.conn) await this.conn.close().catch(() => {});
+    this.conn = newConn;
+  }
 
   // ── TableInfo 위임 ──────────────────────────────────────────────────────────
 
   get aliasMap() { return this.tableInfo.aliasMap; }
 
-  async loadAliases(conn) { return this.tableInfo.loadAliases(conn || this.conn); }
+  async loadAliases() { return this.tableInfo.loadAliases(this.conn); }
 
-  async resolveTagCanonical(conn, tagId, tagIdentifier) {
-    return this.tableInfo.resolveTagCanonical(conn || this.conn, tagId, tagIdentifier);
+  async resolveTagCanonical(tagId, tagIdentifier) {
+    return this.tableInfo.resolveTagCanonical(this.conn, tagId, tagIdentifier);
   }
 
   // ── 인스턴스 메서드 ─────────────────────────────────────────────────────────
@@ -89,24 +106,20 @@ class Reader {
     }
   }
 
-  // ── static 메서드 (tableInfo 불필요) ────────────────────────────────────────
-
   /**
-   * 파티션의 최대 RID 조회
-   * @param {MachbaseClient} conn
-   * @param {string} dataTable
+   * 파티션의 최대 RID 조회 (인스턴스 메서드)
    * @returns {{ maxRid: BigInt, err: Error|null }}
    */
-  static async getMaxRid(conn, dataTable) {
-    const sql = `SELECT MAX(_RID) as max_rid FROM ${dataTable}`;
+  async getMaxRid() {
+    const sql = `SELECT MAX(_RID) as max_rid FROM ${this.dataTable}`;
     try {
-      const rows = await conn.query(sql);
+      const rows = await this.conn.query(sql);
       const raw = rows?.[0]?.max_rid;
       // 빈 테이블: MAX() → null
       if (raw === null || raw === undefined) return { maxRid: 0n, err: null };
       return { maxRid: BigInt(raw), err: null };
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'reader', data_table: dataTable, msg: `getMaxRid failed: ${err.message}` }));
+      console.error(JSON.stringify({ level: 'error', stage: 'reader', data_table: this.dataTable, msg: `getMaxRid failed: ${err.message}` }));
       return { maxRid: 0n, err };
     }
   }

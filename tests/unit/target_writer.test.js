@@ -31,6 +31,7 @@ test('Scenario A: columns only in target get safeNull padding', async () => {
       append: async (matrix) => { captured.push(...matrix); },
       close: async () => {},
     }),
+    close: async () => {},
   };
 
   const err = await writer.open(mockConn, 'TAG2', srcInfo);
@@ -64,6 +65,7 @@ test('Scenario B: columns only in source are ignored', async () => {
       append: async (matrix) => { captured.push(...matrix); },
       close: async () => {},
     }),
+    close: async () => {},
   };
 
   await writer.open(mockConn, 'TAG2', srcInfo);
@@ -92,6 +94,7 @@ test('Scenario C: int64 columns convert number to BigInt', async () => {
       append: async (matrix) => { captured.push(...matrix); },
       close: async () => {},
     }),
+    close: async () => {},
   };
 
   await writer.open(mockConn, 'TAG2', srcInfo);
@@ -124,6 +127,7 @@ test('Scenario D: target-only columns of various types get safeNull', async () =
       append: async (matrix) => { captured.push(...matrix); },
       close: async () => {},
     }),
+    close: async () => {},
   };
 
   await writer.open(mockConn, 'TAG2', srcInfo);
@@ -153,6 +157,7 @@ test('Scenario E: metadata columns get safeNull padding (TAG table)', async () =
       append: async (matrix) => { captured.push(...matrix); },
       close: async () => {},
     }),
+    close: async () => {},
   };
 
   await writer.open(mockConn, 'TAG2', srcInfo);
@@ -181,6 +186,7 @@ test('Scenario F: null source value gets safeNull instead of null', async () => 
       append: async (matrix) => { captured.push(...matrix); },
       close: async () => {},
     }),
+    close: async () => {},
   };
 
   await writer.open(mockConn, 'TAG2', srcInfo);

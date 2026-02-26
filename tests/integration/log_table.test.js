@@ -22,7 +22,6 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const { MachbaseClient } = require('../../machbase/machbase.js');
-const CatalogClient = require('../../machbase/catalog.js');
 const TableInfo = require('../../machbase/table_info.js');
 const Reader = require('../../machbase/reader.js');
 const Writer = require('../../machbase/writer.js');
@@ -53,7 +52,7 @@ test('cleanup: 이전 테스트에서 남은 REPLI_LOG_ 테이블 정리', async
     );
     for (const row of rows) {
       try {
-        await conn.conn.execute(`DROP TABLE ${row.NAME}`);
+        await conn.execute(`DROP TABLE ${row.NAME}`);
         console.log(`cleanup: dropped ${row.NAME}`);
       } catch (_) {}
     }
@@ -71,7 +70,7 @@ async function makeConn() {
 }
 
 async function execute(conn, sql) {
-  await conn.conn.execute(sql);
+  await conn.execute(sql);
 }
 
 async function createLogTable(conn, name) {
@@ -176,8 +175,8 @@ describe('IT-LOG-01: LOG 테이블 생성 및 Reader 읽기', () => {
     assert.equal(rows[0].TYPE, 0, 'LOG 테이블 TYPE 코드는 0');
   });
 
-  test('CatalogClient.getLogicalTableType → LOG 반환', async () => {
-    const { type } = await CatalogClient.getLogicalTableType(conn, SRC);
+  test('conn.getTableType → LOG 반환', async () => {
+    const { type } = await conn.getTableType(SRC);
     assert.equal(type, 'LOG');
   });
 
@@ -202,8 +201,10 @@ describe('IT-LOG-01: LOG 테이블 생성 및 Reader 읽기', () => {
     assert.ok(r.data.VALUE !== undefined, 'data.VALUE 필드 존재');
   });
 
-  test('Reader.getMaxRid → 삽입한 최대 RID 반환', async () => {
-    const { maxRid, err } = await Reader.getMaxRid(conn, SRC);
+  test('reader.getMaxRid → 삽입한 최대 RID 반환', async () => {
+    const srcTableInfo = await TableInfo.buildLog(conn, SRC);
+    const reader = new Reader(srcTableInfo, conn, SRC);
+    const { maxRid, err } = await reader.getMaxRid();
     assert.equal(err, null);
     assert.ok(maxRid >= 2n, `3행 삽입 후 maxRid >= 2 (실제: ${maxRid})`);
   });
@@ -263,8 +264,7 @@ describe('IT-LOG-02: LOG → LOG 복제 (runDataTableWorker)', () => {
       });
     } finally {
       await writer.close();
-      await reader.conn.close();
-      await dstConn.close();
+      await reader.close();
     }
 
     // 대상 테이블 검증
@@ -272,10 +272,10 @@ describe('IT-LOG-02: LOG → LOG 복제 (runDataTableWorker)', () => {
     try {
       const dstRows = await selectAll(verifyConn, DST);
       assert.equal(dstRows.length, 3, `3행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('machine_temp'));
-      assert.ok(names.includes('machine_rpm'));
-      assert.ok(names.includes('machine_vibr'));
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['machine_temp'], 72.5, 'machine_temp value 일치');
+      assert.equal(byName['machine_rpm'],  3200.0, 'machine_rpm value 일치');
+      assert.equal(byName['machine_vibr'], 0.42, 'machine_vibr value 일치');
     } finally {
       await verifyConn.close();
     }
@@ -322,8 +322,7 @@ describe('IT-LOG-02: LOG → LOG 복제 (runDataTableWorker)', () => {
     } finally {
       console.log = origLog;
       await writer.close();
-      await reader.conn.close();
-      await dstConn.close();
+      await reader.close();
     }
 
     const integrityLog = logs.find(l => l.includes('STARTUP_INTEGRITY'));
@@ -384,17 +383,16 @@ describe('IT-LOG-03: start_mode=full — RID 0부터 전체 복제', () => {
       });
     } finally {
       await writer.close();
-      await reader.conn.close();
-      await dstConn.close();
+      await reader.close();
     }
 
     const verifyConn = await makeConn();
     try {
       const dstRows = await selectAll(verifyConn, DST);
       assert.equal(dstRows.length, 2, `2행 복제되어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('full_a'), 'full_a 복제됨');
-      assert.ok(names.includes('full_b'), 'full_b 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['full_a'], 10.0, 'full_a value 일치');
+      assert.equal(byName['full_b'], 20.0, 'full_b value 일치');
     } finally {
       await verifyConn.close();
     }
@@ -454,8 +452,7 @@ describe('IT-LOG-04: start_mode=now — 기존 데이터 복제 안 함', () => 
       });
     } finally {
       await writer.close();
-      await reader.conn.close();
-      await dstConn.close();
+      await reader.close();
     }
 
     const verifyConn = await makeConn();
@@ -533,8 +530,7 @@ describe('IT-LOG-05: cp 존재 재시작 — cp 이후 데이터만 복제', () 
         });
       } finally {
         await writer.close();
-        await reader.conn.close();
-        await dstConn.close();
+        await reader.close();
       }
     }
 
@@ -568,8 +564,7 @@ describe('IT-LOG-05: cp 존재 재시작 — cp 이후 데이터만 복제', () 
         });
       } finally {
         await writer.close();
-        await reader.conn.close();
-        await dstConn.close();
+        await reader.close();
       }
     }
 
@@ -578,10 +573,10 @@ describe('IT-LOG-05: cp 존재 재시작 — cp 이후 데이터만 복제', () 
     try {
       const dstRows = await selectAll(verifyConn, DST);
       assert.equal(dstRows.length, 3, `총 3행이 대상에 있어야 함 (실제: ${dstRows.length})`);
-      const names = dstRows.map(r => r.name);
-      assert.ok(names.includes('batch1_a'), 'batch1_a 복제됨');
-      assert.ok(names.includes('batch1_b'), 'batch1_b 복제됨');
-      assert.ok(names.includes('batch2_a'), '재시작 후 batch2_a 추가 복제됨');
+      const byName = Object.fromEntries(dstRows.map(r => [r.name, r.value]));
+      assert.equal(byName['batch1_a'], 1.0, 'batch1_a value 일치');
+      assert.equal(byName['batch1_b'], 2.0, 'batch1_b value 일치');
+      assert.equal(byName['batch2_a'], 3.0, '재시작 후 batch2_a value 일치');
     } finally {
       await verifyConn.close();
     }

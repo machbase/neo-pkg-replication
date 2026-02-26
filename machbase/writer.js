@@ -8,6 +8,7 @@ class Writer {
    */
   constructor(dstTableInfo) {
     this.dstTableInfo = dstTableInfo;
+    this.conn = null;
     this.stream = null;
     /** @type {Array<{ name: string, columnType: ColumnType, isSourceColumn: boolean }>} */
     this.appendColumns = [];
@@ -23,6 +24,8 @@ class Writer {
    */
   async open(conn, table, srcTableInfo) {
     try {
+      this.conn = conn;
+
       // 소스 writeColumns에서 컬럼명 Set 구성
       const srcNames = new Set(srcTableInfo.writeColumns.map(c => c.name));
 
@@ -34,7 +37,7 @@ class Writer {
       }));
 
       // appendOpen에 전체 컬럼 전달 (소스에 없는 컬럼은 safeNull로 패딩)
-      this.stream = await conn.appendOpen(
+      this.stream = await this.conn.appendOpen(
         table,
         this.appendColumns.map(c => ({ name: c.name, type: c.columnType.type }))
       );
@@ -81,14 +84,26 @@ class Writer {
    * @returns {Error|null}
    */
   async close() {
-    if (!this.stream) return null;
-    try {
-      await this.stream.close();
-      return null;
-    } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'writer', msg: `close failed: ${err.message}` }));
-      return err;
+    let firstErr = null;
+    if (this.stream) {
+      try {
+        await this.stream.close();
+      } catch (err) {
+        console.error(JSON.stringify({ level: 'error', stage: 'writer', msg: `stream close failed: ${err.message}` }));
+        firstErr = err;
+      }
+      this.stream = null;
     }
+    if (this.conn) {
+      try {
+        await this.conn.close();
+      } catch (err) {
+        console.error(JSON.stringify({ level: 'error', stage: 'writer', msg: `conn close failed: ${err.message}` }));
+        if (!firstErr) firstErr = err;
+      }
+      this.conn = null;
+    }
+    return firstErr;
   }
 }
 

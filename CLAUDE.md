@@ -44,8 +44,8 @@ repli-js/
 │       ├── tag_table.test.js     # TAG 테이블 통합 테스트 (7개)
 │       ├── log_table.test.js     # LOG 테이블 통합 테스트 (9개)
 │       └── log_schema.test.js    # LOG 스키마 변형 통합 테스트 (4개)
-├── PROJECT.md                    # 상세 설계 문서 (아키텍처, UML, 결정 이력)
-├── WORKFLOW.md                   # 작업 절차 가이드
+├── docs/
+│   └── PROJECT.md                # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 └── package.json
 ```
 

@@ -92,7 +92,7 @@ npm install
 
 | 항목 | 기본값 | 설명 |
 |------|--------|------|
-| `source.tag_identifier` | `{ mode: "none" }` | TAG 이름 변환 규칙. 기본값은 변환 없음 |
+| `source.tag_identifier` | `{ mode: "none" }` | TAG 이름 변환 규칙. `prefix`/`suffix`/`none` |
 
 ## 실행
 
@@ -116,12 +116,12 @@ _TAG_DATA_2  ──┤
 _TAG_DATA_3  ──┘
 ```
 
-각 데이터 파티션(`_TAG_DATA_N`)마다 독립적인 Worker가 실행된다.
+각 데이터 파티션(`_TAG_DATA_N`)마다 독립적인 Worker가 실행된다. Worker는 각자 독립된 소스/대상 DB 연결을 보유한다.
 
 **Worker 상태 전이:**
 
 1. **RESOLVE_START** — 체크포인트 파일을 읽어 시작 RID를 결정한다. 파일이 없거나 손상된 경우 `start_mode` 기준으로 폴백한다.
-2. **STARTUP_INTEGRITY** — TAG 테이블 재시작 시, 이미 대상 DB에 기록된 행을 확인해 중복 없이 안전한 재개 지점을 산출한다.
+2. **STARTUP_INTEGRITY** — TAG 테이블 재시작 시(`integrity.enabled=true`), 이미 대상 DB에 기록된 행을 확인해 중복 없이 안전한 재개 지점을 산출한다. LOG 테이블은 수행하지 않는다.
 3. **STEADY_REPLICATION** — `readAfterRid → append → checkpoint 저장 → sleep` 루프를 반복한다.
 
 체크포인트 파일은 `checkpoints/{job_id}__{data_table}.json`에 저장된다.
@@ -129,10 +129,16 @@ _TAG_DATA_3  ──┘
 ## 테스트
 
 ```bash
-npm test
+# 전체 단위 테스트 (90개)
+node --test tests/unit/*.test.js
+
+# 통합 테스트 (실 DB 연결 필요 — 192.168.1.189:5656)
+node --test tests/integration/tag_table.test.js
+node --test tests/integration/log_table.test.js
+node --test tests/integration/log_schema.test.js
 ```
 
-현재 52개 단위 테스트 전체 통과 (worker 상태 머신, 체크포인트, 설정, retry, E2E 시나리오).
+현재 90개 단위 테스트 + 20개 통합 테스트 전체 통과.
 
 ## 로그 형식
 
@@ -143,6 +149,16 @@ npm test
 {"level":"info","stage":"checkpoint_saved","job_id":"job-1","data_table":"_TAG_DATA_0","last_success_rid":"4999","rows_read":5000,"rows_written":5000,"dropped_no_meta":0,"skipped_exists":0}
 {"level":"error","stage":"checkpoint_io","job_id":"job-1","data_table":"_TAG_DATA_0","msg":"parse failed: Unexpected token"}
 ```
+
+## 알려진 제약
+
+### @machbase/ts-client FLOAT/DOUBLE endian 버그
+
+`@machbase/ts-client@0.9.3`의 쿼리 결과 디코더(`decodeFixedField`)가 `FLT32`/`FLT64` 타입을 항상 Little-Endian으로 읽지만, Machbase TAG 파티션에 따라 서버가 Big-Endian으로 저장하는 경우가 있어 값이 손상된다.
+
+`machbase/machbase.js`의 `fixDoubleEndian()` 함수가 `MachbaseClient.query()` 반환 직후 자동으로 보정한다. denormal(비정규 부동소수점) 판별로 손상 여부를 감지한 뒤 바이트 순서를 뒤집어 재해석한다. 라이브러리 재설치 후에도 프로젝트 코드 내에서 보정이 적용된다.
+
+상세 분석은 [`docs/ENDIAN_BUG.md`](docs/ENDIAN_BUG.md)를 참고한다.
 
 ## 디렉토리 구조
 
@@ -155,14 +171,20 @@ repli-js/
 │   ├── worker.js        # Worker 상태 머신
 │   └── retry.js         # 재시도 유틸리티
 ├── machbase/
-│   ├── source_reader.js     # 소스 DB 읽기
-│   ├── target_writer.js     # 대상 DB 쓰기
-│   ├── tag_meta_provider.js # TAG 메타 조회
-│   ├── integrity_checker.js # 중복 검사
-│   └── catalog.js           # 테이블/컬럼 카탈로그
+│   ├── machbase.js      # MachbaseClient, ColumnType (endian 우회 포함)
+│   ├── table_info.js    # 컬럼 메타 + TAG alias map
+│   ├── reader.js        # 소스 DB 읽기 (conn 소유)
+│   ├── writer.js        # 대상 DB 쓰기 (conn 소유)
+│   └── integrity_checker.js # 재시작 정합성 검사
 ├── file/
-│   ├── file.js          # JSON 파일 I/O
+│   ├── file.js          # JSON 파일 I/O (atomic write, BigInt 지원)
 │   └── checkpoint.js    # 체크포인트 관리
+├── docs/
+│   ├── PROJECT.md           # 상세 설계 문서 (아키텍처, UML, 결정 이력)
+│   ├── ENDIAN_BUG.md        # @machbase/ts-client endian 버그 상세 분석
+│   └── INTEGRATION_TESTS.md # 통합 테스트 케이스별 결과 문서
 ├── checkpoints/         # 런타임 생성 — cp 파일 저장 위치
-└── tests/unit/          # 단위 테스트
+└── tests/
+    ├── unit/            # 단위 테스트 (90개)
+    └── integration/     # 통합 테스트 (20개, 실 DB 필요)
 ```
