@@ -1,8 +1,7 @@
 'use strict';
 
 const CheckpointStore = require('../file/checkpoint.js');
-const SourceReader = require('../machbase/source_reader.js');
-const TagMetaProvider = require('../machbase/tag_meta_provider.js');
+const Reader = require('../machbase/reader.js');
 const IntegrityChecker = require('../machbase/integrity_checker.js');
 const RetryHandler = require('./retry.js');
 const { MachbaseClient } = require('../machbase/machbase.js');
@@ -10,10 +9,10 @@ const { MachbaseClient } = require('../machbase/machbase.js');
 // ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
 
 /**
- * SourceReader.readAfterRid 를 retry 포함하여 호출
+ * reader.readAfterRid 를 retry 포함하여 호출
  * @returns {Array|null} rows on success, null on shutdown/exhausted (caller must return)
  */
-async function _readBatch(conn, dataTable, startRid, limit, retry, shutdownFlag, logCtx, phase) {
+async function _readBatch(reader, startRid, limit, rangeSize, retry, shutdownFlag, logCtx, phase) {
   let attempt = 0;
   while (true) {
     if (shutdownFlag.value) return null;
@@ -27,7 +26,7 @@ async function _readBatch(conn, dataTable, startRid, limit, retry, shutdownFlag,
       const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
       if (signal === 'shutdown') return null;
     }
-    const { rows, err } = await SourceReader.readAfterRid(conn, dataTable, startRid, limit);
+    const { rows, err } = await reader.readAfterRid(startRid, limit, rangeSize);
     if (err) {
       if (!retry.shouldRetry(err)) {
         console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, phase, msg: `non-retryable read error: ${err.message}` }));
@@ -41,12 +40,12 @@ async function _readBatch(conn, dataTable, startRid, limit, retry, shutdownFlag,
 }
 
 /**
- * TagMetaProvider.resolveTagCanonical 을 retry 포함하여 호출 (retry scope B 지원)
+ * reader.resolveTagCanonical 을 retry 포함하여 호출 (retry scope B 지원)
  * @returns {string}    ok — canonical tag name
  * @returns {null}      drop_not_found — 이 row를 drop
  * @returns {undefined} shutdown 또는 retry exhausted — caller must return
  */
-async function _resolveCanonical(tagMeta, conn, tagId, tagIdentifier, retry, shutdownFlag, logCtx) {
+async function _resolveCanonical(reader, conn, tagId, tagIdentifier, retry, shutdownFlag, logCtx) {
   let attempt = 0;
   while (true) {
     if (shutdownFlag.value) return undefined;
@@ -59,7 +58,7 @@ async function _resolveCanonical(tagMeta, conn, tagId, tagIdentifier, retry, shu
       const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
       if (signal === 'shutdown') return undefined;
     }
-    const { canonical, status } = await tagMeta.resolveTagCanonical(conn, tagId, tagIdentifier);
+    const { canonical, status } = await reader.resolveTagCanonical(conn, tagId, tagIdentifier);
     if (status === 'drop_not_found') return null;
     if (status === 'retry_error') { attempt++; continue; }
     return canonical; // 'ok'
@@ -67,10 +66,10 @@ async function _resolveCanonical(tagMeta, conn, tagId, tagIdentifier, retry, shu
 }
 
 /**
- * TargetWriter.append 을 retry 포함하여 호출
+ * Writer.append 을 retry 포함하여 호출
  * @returns {boolean} true on success, false on exhausted/shutdown
  */
-async function _appendRows(targetWriter, outRows, retry, shutdownFlag, logCtx) {
+async function _appendRows(writer, outRows, retry, shutdownFlag, logCtx) {
   let attempt = 0;
   while (true) {
     if (shutdownFlag.value) return false;
@@ -84,7 +83,7 @@ async function _appendRows(targetWriter, outRows, retry, shutdownFlag, logCtx) {
       const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
       if (signal === 'shutdown') return false;
     }
-    const err = await targetWriter.append(outRows);
+    const err = await writer.append(outRows);
     if (err) {
       if (!retry.shouldRetry(err)) {
         console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, msg: `non-retryable append error: ${err.message}` }));
@@ -113,9 +112,8 @@ async function _appendRows(targetWriter, outRows, retry, shutdownFlag, logCtx) {
  * @param {object}   params.checkpoint     - { directory } 체크포인트 디렉토리
  * @param {string}   params.tableType      - 'TAG' | 'LOG'
  * @param {string}   params.dataTable      - '_TAG_DATA_0' 등 파티션 테이블명
- * @param {object}   params.sourceConn     - MachbaseClient (소스 DB)
- * @param {object}   params.targetConn     - MachbaseClient (대상 DB — STARTUP_INTEGRITY 전용)
- * @param {object}   params.targetWriter   - TargetWriter (mapping 레벨 공유 stream)
+ * @param {object}   params.reader   - Reader 인스턴스 (소스 DB 연결 + TableInfo 소유)
+ * @param {object}   params.writer   - Writer (mapping 레벨 공유 stream)
  * @param {{ value: boolean }} params.shutdownFlag
  */
 async function runDataTableWorker({
@@ -124,14 +122,16 @@ async function runDataTableWorker({
   checkpoint,
   tableType,
   dataTable,
-  sourceConn,
+  srcConfig,
   // targetConn: 미사용 — STARTUP_INTEGRITY는 dstConfig로 신규 접속 생성 (statement ID 누적 방지)
   dstConfig,
-  targetWriter,
+  reader,
+  writer,
   shutdownFlag,
 }) {
   const exec = mapping.execution;
-  const batchSize = exec.batch_size_records || 5000;
+  const batchSize = exec.query_limit || 5000;
+  const ridRangeSize = exec.rid_range_size || 50000;
   const pollIntervalMs = exec.poll_interval_ms || 1000;
   const tagIdentifier = mapping.source.tag_identifier || { mode: 'none', value: '' };
   const retry = new RetryHandler(exec.retry || {});
@@ -153,7 +153,7 @@ async function runDataTableWorker({
   } else {
     const startMode = exec.start_mode || 'full';
     if (startMode === 'now') {
-      const { maxRid, err } = await SourceReader.getMaxRid(sourceConn, dataTable);
+      const { maxRid, err } = await Reader.getMaxRid(reader.conn, dataTable);
       if (err) {
         console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, msg: `getMaxRid failed (start_mode=now), skipping mapping: ${err.message}` }));
         return;
@@ -167,14 +167,13 @@ async function runDataTableWorker({
     console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: `start_mode=${startMode}, start_rid=${startRid}` }));
   }
 
-  // TAG 메타 전체 로드 (Worker 시작 시 1회 — Read-through cache 기반)
-  // 실패해도 map이 빈 상태로 진행 가능하지만(단건 DB 조회로 폴백), 로그로 명시
-  let tagMeta = null;
+  // TAG alias map 로드 확인 (job_runner에서 이미 로드되었을 수 있지만, 로그로 명시)
   if (tableType === 'TAG') {
-    tagMeta = new TagMetaProvider();
-    const loadErr = await tagMeta.loadAll(sourceConn, mapping.source.table);
-    if (loadErr) {
-      console.warn(JSON.stringify({ level: 'warn', stage: 'worker', ...logCtx, msg: `tagMeta.loadAll failed, falling back to per-row DB lookup: ${loadErr.message}` }));
+    if (reader.aliasMap.size === 0) {
+      const loadErr = await reader.loadAliases();
+      if (loadErr) {
+        console.warn(JSON.stringify({ level: 'warn', stage: 'worker', ...logCtx, msg: `reader.loadAliases failed, falling back to per-row DB lookup: ${loadErr.message}` }));
+      }
     }
   }
 
@@ -204,7 +203,7 @@ async function runDataTableWorker({
         await intConn.connect();
 
         // 소스 배치 읽기
-        const rows = await _readBatch(sourceConn, dataTable, integrityRid, integrityBatchSize, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY');
+        const rows = await _readBatch(reader, integrityRid, integrityBatchSize, ridRangeSize, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY');
         if (rows === null) { shouldReturn = true; break; } // exhausted or shutdown
 
         if (rows.length === 0) {
@@ -215,17 +214,17 @@ async function runDataTableWorker({
           break;
         }
 
-        const maxRidInBatch = rows.reduce((m, r) => r.rid > m ? r.rid : m, 0n);
+        const maxRidInBatch = rows.reduce((maxAcc, row) => row.rid > maxAcc ? row.rid : maxAcc, 0n);
         let droppedNoMeta = 0;
 
         // 1단계: 배치 내 모든 row의 canonical 이름 해석
         const resolved = []; // { rid, canonical, time }
         for (const row of rows) {
           if (shutdownFlag.value) { shouldReturn = true; break; }
-          const canonical = await _resolveCanonical(tagMeta, sourceConn, row.tagId, tagIdentifier, retry, shutdownFlag, logCtx);
+          const canonical = await _resolveCanonical(reader, reader.conn, row.tagId, tagIdentifier, retry, shutdownFlag, logCtx);
           if (canonical === undefined) { shouldReturn = true; break; }
           if (canonical === null) { droppedNoMeta++; continue; }
-          resolved.push({ rid: row.rid, canonical, time: row.time });
+          resolved.push({ rid: row.rid, canonical, time: row.data.TIME });
         }
         if (shouldReturn) break;
         if (shutdownFlag.value) { shouldReturn = true; break; }
@@ -242,10 +241,10 @@ async function runDataTableWorker({
       // 3단계: 첫 번째 miss row 탐색 (rid 순서 유지)
       let firstMissRid = null;
       let skippedExists = 0;
-        for (const r of resolved) {
-          const key = IntegrityChecker.existKey(r.canonical, r.time);
+        for (const row of resolved) {
+          const key = IntegrityChecker.existKey(row.canonical, row.time);
           if (!existSet.has(key)) {
-            firstMissRid = r.rid;
+            firstMissRid = row.rid;
             break;
           }
           skippedExists++;
@@ -303,56 +302,95 @@ async function runDataTableWorker({
 
   console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: `STEADY_REPLICATION start, start_rid=${startRid}` }));
 
+  // Statement ID 고갈 방지: ts-client는 쿼리마다 statement ID를 소비하고 서버 한도는 1024.
+  // readAfterRid는 배치당 2개 쿼리(MAX + SELECT)를 사용하므로 900에 도달하면 연결을 재생성한다.
+  const STMT_REFRESH_THRESHOLD = 900;
+  let stmtCount = 0;
+  const originalConn = reader.conn;
+
   while (!shutdownFlag.value) {
+    // Statement ID 한도 체크 — srcConfig가 있을 때만 재생성 가능
+    if (srcConfig && stmtCount >= STMT_REFRESH_THRESHOLD) {
+      try {
+        const newConn = new MachbaseClient(srcConfig);
+        await newConn.connect();
+        await reader.conn.close().catch(() => {});
+        reader.replaceConnection(newConn);
+        stmtCount = 0;
+        console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: 'sourceConn refreshed (statement ID threshold)' }));
+      } catch (refreshErr) {
+        console.error(JSON.stringify({ level: 'error', stage: 'worker', ...logCtx, msg: `sourceConn refresh failed: ${refreshErr.message}` }));
+        return;
+      }
+    }
+
     // 소스 배치 읽기
-    const rows = await _readBatch(sourceConn, dataTable, startRid, batchSize, retry, shutdownFlag, logCtx, 'STEADY');
-    if (rows === null) return; // exhausted or shutdown
+    const rows = await _readBatch(reader, startRid, batchSize, ridRangeSize, retry, shutdownFlag, logCtx, 'STEADY');
+    if (rows === null) { // exhausted or shutdown
+      // Worker 내부에서 재생성한 연결은 Worker가 직접 정리
+      if (reader.conn !== originalConn) await reader.conn.close().catch(() => {});
+      return;
+    }
+
+    // readAfterRid는 MAX(_RID) + SELECT = 2개 쿼리 소비
+    stmtCount += 2;
 
     if (rows.length === 0) {
       // 새 데이터 없음 → poll 대기
       const signal = await retry.sleepOrShutdown(pollIntervalMs, shutdownFlag);
-      if (signal === 'shutdown') return;
+      if (signal === 'shutdown') {
+        if (reader.conn !== originalConn) await reader.conn.close().catch(() => {});
+        return;
+      }
       continue;
     }
 
-    const maxRidInBatch = rows.reduce((m, r) => r.rid > m ? r.rid : m, 0n);
+    const maxRidInBatch = rows.reduce((maxAcc, row) => row.rid > maxAcc ? row.rid : maxAcc, 0n);
     const outRows = [];
     const outRids = [];
     let droppedNoMeta = 0;
 
     // 각 row 처리 (retry scope B: 실패한 row부터 retry, 이전 row는 skip)
     for (const row of rows) {
-      if (shutdownFlag.value) return;
+      if (shutdownFlag.value) {
+        if (reader.conn !== originalConn) await reader.conn.close().catch(() => {});
+        return;
+      }
 
       if (tableType === 'TAG') {
         // tag_id → canonical 이름 변환
-        const canonical = await _resolveCanonical(tagMeta, sourceConn, row.tagId, tagIdentifier, retry, shutdownFlag, logCtx);
-        if (canonical === undefined) return; // shutdown or exhausted
+        const canonical = await _resolveCanonical(reader, reader.conn, row.tagId, tagIdentifier, retry, shutdownFlag, logCtx);
+        if (canonical === undefined) {
+          if (reader.conn !== originalConn) await reader.conn.close().catch(() => {});
+          return; // shutdown or exhausted
+        }
         if (canonical === null) { droppedNoMeta++; continue; } // drop_not_found
 
-        outRows.push({ NAME: canonical, TIME: row.time, VALUE: row.value });
+        outRows.push({ NAME: canonical, ...row.data });
       } else {
         // LOG: tag_id 변환 없이 그대로
-        outRows.push({ NAME: row.tagId, TIME: row.time, VALUE: row.value });
+        outRows.push({ NAME: row.tagId, ...row.data });
       }
       outRids.push(row.rid);
     }
 
-    if (shutdownFlag.value) return;
+    if (shutdownFlag.value) {
+      if (reader.conn !== originalConn) await reader.conn.close().catch(() => {});
+      return;
+    }
 
     let maxWrittenRid = 0n;
 
     if (outRows.length > 0) {
-      const ok = await _appendRows(targetWriter, outRows, retry, shutdownFlag, logCtx);
-      if (!ok) return; // exhausted or shutdown
-      maxWrittenRid = outRids.reduce((m, r) => r > m ? r : m, 0n);
+      const ok = await _appendRows(writer, outRows, retry, shutdownFlag, logCtx);
+      if (!ok) {
+        if (reader.conn !== originalConn) await reader.conn.close().catch(() => {});
+        return; // exhausted or shutdown
+      }
+      maxWrittenRid = outRids.reduce((maxAcc, rid) => rid > maxAcc ? rid : maxAcc, 0n);
     }
 
     // checkpoint 갱신
-    // last_success_rid = 마지막으로 성공 처리한 RID (inclusive, 설계 문서 기준)
-    // effective_max: 실제로 쓴 row가 있으면 그 최대 rid, 없으면 배치 최대 rid.
-    // outRows가 0인 경우(배치 전체가 drop_not_found)도 소스에서 해당 RID까지
-    // 읽었으므로 checkpoint를 진행해 다음 배치로 넘어간다.
     const effectiveMax = maxWrittenRid > 0n ? maxWrittenRid : maxRidInBatch;
 
     const batchStats = {
@@ -369,6 +407,9 @@ async function runDataTableWorker({
 
     startRid = effectiveMax + 1n;
   }
+
+  // 정상 루프 종료 시 (shutdownFlag) 재생성된 연결 정리
+  if (reader.conn !== originalConn) await reader.conn.close().catch(() => {});
 }
 
 module.exports = { runDataTableWorker };

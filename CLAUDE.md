@@ -18,27 +18,32 @@ repli-js/
 ├── config/
 │   └── config.js                 # 설정 파일 로드/검증 (M1)
 ├── worker/
-│   ├── worker.js                 # Worker 상태 머신 (M6): RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
-│   └── retry.js                  # retryWithBackoff 유틸리티
+│   ├── worker.js                 # Worker 상태 머신 (M9): RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
+│   └── retry.js                  # RetryHandler 유틸리티 (M8)
 ├── machbase/
-│   ├── machbase.js               # MachbaseClient, MachbaseStream 클래스 (레거시)
-│   ├── source_reader.js          # readAfterRid(), getMaxRid() (M4)
-│   ├── target_writer.js          # TargetWriter — appendOpen/append/close 래퍼 (M5)
-│   ├── tag_meta_provider.js      # TagMetaProvider — _TAG_META 로드/조회 (M3)
-│   ├── integrity_checker.js      # IntegrityChecker — batchExists() (M7)
-│   └── catalog.js                # lookupDataTables(), lookupColumns() (M2)
+│   ├── machbase.js               # MachbaseClient, ColumnType 클래스
+│   ├── catalog.js                # CatalogClient — 테이블 타입/파티션 조회 (M2)
+│   ├── table_info.js             # TableInfo — 컬럼 메타 + alias map (M5)
+│   ├── reader.js                 # Reader — RID 기반 소스 읽기 (M4)
+│   ├── writer.js                 # Writer — appendOpen/append/close 래퍼 (M7)
+│   └── integrity_checker.js      # IntegrityChecker — batchExists() (M6)
 ├── file/
-│   ├── file.js                   # File — JSON atomic read/write (BigInt 지원) (M8)
-│   └── checkpoint.js             # CheckpointStore — cp 파일 load/save (M9)
+│   ├── file.js                   # File — JSON atomic read/write (BigInt 지원)
+│   └── checkpoint.js             # CheckpointStore — cp 파일 load/save (M3)
 ├── checkpoints/                  # 런타임 생성 — job별 파티션 cp 파일 저장 디렉토리
 ├── tests/
 │   ├── unit/
-│   │   ├── checkpoint.test.js    # CheckpointStore 단위 테스트
-│   │   ├── config.test.js        # Config 단위 테스트
-│   │   ├── retry.test.js         # retryWithBackoff 단위 테스트
-│   │   ├── worker.test.js        # Worker 상태 머신 단위 테스트 (44개)
+│   │   ├── checkpoint.test.js    # CheckpointStore 단위 테스트 (6개)
+│   │   ├── config.test.js        # Config 단위 테스트 (26개)
+│   │   ├── retry.test.js         # RetryHandler 단위 테스트 (19개)
+│   │   ├── table_info.test.js    # TableInfo 단위 테스트 (16개)
+│   │   ├── target_writer.test.js # Writer 단위 테스트 (6개)
+│   │   ├── worker.test.js        # Worker 상태 머신 단위 테스트 (9개)
 │   │   └── e2e_scenarios.test.js # E2E 시나리오 mock 테스트 (8개)
-│   └── integration/              # 실 DB 연결 통합 테스트 (미구현)
+│   └── integration/
+│       ├── tag_table.test.js     # TAG 테이블 통합 테스트 (7개)
+│       ├── log_table.test.js     # LOG 테이블 통합 테스트 (9개)
+│       └── log_schema.test.js    # LOG 스키마 변형 통합 테스트 (4개)
 ├── PROJECT.md                    # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 ├── WORKFLOW.md                   # 작업 절차 가이드
 └── package.json
@@ -58,29 +63,38 @@ repli-js/
 
 ### worker/worker.js — Worker 상태 머신
 
-`runDataTableWorker(opts)` 함수. 3단계 상태 전이:
+`runDataTableWorker({ jobId, mapping, checkpoint, tableType, dataTable, srcConfig, dstConfig, reader, writer, shutdownFlag })` 함수. 3단계 상태 전이:
 
 1. **RESOLVE_START**: cp 파일 로드 → `startRid` 결정
    - cp 존재 → `last_success_rid + 1n`
-   - cp 없음/손상 → `start_mode` 기준 (`full`=0n, `now`=getMaxRid())
+   - cp 없음/손상 → `start_mode` 기준 (`full`=0n, `now`=Reader.getMaxRid())
 2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 시만): `startRid` 부터 한 배치 읽어 대상 DB에 이미 존재하는 행 확인 → `safe_cp_rid` 산출 후 STEADY 진입
-3. **STEADY_REPLICATION**: 루프 — readAfterRid → tagMeta 조회 → append → cp 저장 → sleep(poll_interval_ms) → shutdown 체크
+3. **STEADY_REPLICATION**: 루프 — reader.readAfterRid → reader.resolveTagCanonical → writer.append → cp 저장 → sleep(poll_interval_ms) → shutdown 체크
+   - statement ID 고갈 방지: stmtCount 추적, 900 도달 시 srcConn 재생성
 
-### machbase/source_reader.js — M4
+### machbase/table_info.js — M5
 
-- `readAfterRid(conn, dataTable, startRid, limit?)` → `{ rows, err }`
-- `getMaxRid(conn, dataTable)` → `{ maxRid, err }`
+- `TableInfo` 클래스: 컬럼 메타 + alias map 통합
+- `TableInfo.buildTag(conn, table, dataTableId)` → TAG 테이블 컬럼 분석 + alias 로드
+- `TableInfo.buildLog(conn, table)` → LOG 테이블 컬럼 분석
+- `resolveTagCanonical(conn, tagId, tagIdentifier)` → Read-through cache로 tag_id → canonical name 변환
+- `getSelectColumnNames()` → Reader SELECT용 lowercase 컬럼명 배열
+
+### machbase/reader.js — M4
+
+- `Reader` 클래스: TableInfo 소유, 소스 DB 읽기 담당
+- `new Reader(tableInfo, conn, dataTable)` → 인스턴스 생성
+- `readAfterRid(startRid, limit, rangeSize)` → `{ rows, err }` (인스턴스 메서드)
+- `Reader.getMaxRid(conn, dataTable)` → `{ maxRid, err }` (static)
+- `replaceConnection(newConn)` → statement ID 고갈 시 연결 교체
 - 내부적으로 `RID_RANGE` 힌트 SQL 사용
 
-### machbase/target_writer.js — M5
+### machbase/writer.js — M7
 
-- `TargetWriter` 클래스: `open(conn, table, columns)` / `append(rows)` / `close()`
-- `appendOpen()` + `AppendStreamSession` 래퍼
-
-### machbase/tag_meta_provider.js — M3
-
-- `TagMetaProvider` 클래스: `load(conn, metaTable)` / `resolve(tagId)` → name
-- `_TAG_META`에서 `_ID → name` 맵 구성
+- `Writer` 클래스: dstTableInfo 소유, 대상 DB 쓰기 담당
+- `new Writer(dstTableInfo)` → 인스턴스 생성
+- `open(conn, table, srcTableInfo)` → appendOpen 스트림 초기화, safeNull 패딩 설정
+- `append(rows)` / `close()` → AppendStreamSession 래퍼
 
 ### machbase/integrity_checker.js — M7
 
@@ -201,20 +215,30 @@ LIMIT 1000
 ## 테스트 실행
 
 ```bash
-# 전체 단위 테스트 (52개)
-node --test tests/unit/checkpoint.test.js tests/unit/config.test.js tests/unit/retry.test.js tests/unit/worker.test.js tests/unit/e2e_scenarios.test.js
+# 전체 단위 테스트 (90개)
+node --test tests/unit/*.test.js
 
 # 개별 파일
 node --test tests/unit/worker.test.js
 node --test tests/unit/e2e_scenarios.test.js
+
+# 통합 테스트 (실 DB 연결 필요 — 192.168.1.189:5656)
+node --test tests/integration/tag_table.test.js
+node --test tests/integration/log_table.test.js
+node --test tests/integration/log_schema.test.js
 ```
 
-현재 테스트 현황: **52 pass / 0 fail**
-- checkpoint.test.js: CheckpointStore load/save/mismatch
-- config.test.js: 설정 검증
-- retry.test.js: retryWithBackoff 백오프 로직
-- worker.test.js: Worker 상태 머신 44개
-- e2e_scenarios.test.js: E2E 시나리오 8개 (E2E-02, 03, 05, 06, 07)
+현재 테스트 현황: **90 단위 + 20 통합 = 110 pass / 0 fail**
+- checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
+- config.test.js: 설정 검증 (26개)
+- retry.test.js: RetryHandler 백오프 로직 (19개)
+- table_info.test.js: TableInfo 빌드/조회 (16개)
+- target_writer.test.js: Writer safeNull 패딩 (6개)
+- worker.test.js: Worker 상태 머신 (9개)
+- e2e_scenarios.test.js: E2E 시나리오 (8개)
+- tag_table.test.js: TAG 통합 테스트 (7개)
+- log_table.test.js: LOG 통합 테스트 (9개)
+- log_schema.test.js: LOG 스키마 변형 통합 테스트 (4개)
 
 ## 실행 방법
 
@@ -224,6 +248,4 @@ node app.js
 
 ## 알려진 한계 / TODO
 
-1. 통합 테스트(`tests/integration/`) 미구현 — 실 DB 연결 테스트 없음
-2. `config.json` 스키마 검증 불완전 — 일부 필드 누락 시 런타임 오류
-3. `catalog.js` `lookupDataTables()` — 파티션 수 동적 조회 미사용 (app.js에서 하드코딩)
+1. `on_save_failure="abort"` 미구현 — 현재 "continue"와 동일하게 동작

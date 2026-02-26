@@ -8,7 +8,7 @@
  *   - SYS/MANAGER 계정으로 접속 가능해야 함
  *
  * 테스트 시나리오:
- *   IT-LOG-01: LOG 테이블 생성 확인 + SourceReader 읽기
+ *   IT-LOG-01: LOG 테이블 생성 확인 + Reader 읽기
  *   IT-LOG-02: LOG → LOG 복제 (runDataTableWorker, tableType='LOG')
  *   IT-LOG-03: start_mode=full — cp 없을 때 RID 0부터 전체 복제
  *   IT-LOG-04: start_mode=now  — 기존 데이터 복제 안 함
@@ -23,8 +23,9 @@ const path = require('path');
 
 const { MachbaseClient } = require('../../machbase/machbase.js');
 const CatalogClient = require('../../machbase/catalog.js');
-const SourceReader = require('../../machbase/source_reader.js');
-const TargetWriter = require('../../machbase/target_writer.js');
+const TableInfo = require('../../machbase/table_info.js');
+const Reader = require('../../machbase/reader.js');
+const Writer = require('../../machbase/writer.js');
 const CheckpointStore = require('../../file/checkpoint.js');
 const { runDataTableWorker } = require('../../worker/worker.js');
 
@@ -40,6 +41,26 @@ const DB_CONFIG = {
 // 테스트별 고유 테이블명 (타임스탬프 포함)
 const TS = Date.now();
 const T = (suffix) => `REPLI_LOG_${suffix}_${TS}`;
+
+// ─── 잔여 테스트 테이블 정리 ──────────────────────────────────────────────────
+
+test('cleanup: 이전 테스트에서 남은 REPLI_LOG_ 테이블 정리', async () => {
+  const conn = new MachbaseClient(DB_CONFIG);
+  await conn.connect();
+  try {
+    const rows = await conn.query(
+      `SELECT NAME FROM M$SYS_TABLES WHERE NAME LIKE 'REPLI_LOG_%' ORDER BY NAME`
+    );
+    for (const row of rows) {
+      try {
+        await conn.conn.execute(`DROP TABLE ${row.NAME}`);
+        console.log(`cleanup: dropped ${row.NAME}`);
+      } catch (_) {}
+    }
+  } finally {
+    await conn.close();
+  }
+});
 
 // ─── 헬퍼 ────────────────────────────────────────────────────────────────────
 
@@ -94,7 +115,7 @@ function baseMapping(srcTable, dstTable, execOverrides = {}) {
     target: { server: 'dst', table: dstTable },
     execution: {
       start_mode: 'full',
-      batch_size_records: 100,
+      query_limit: 100,
       poll_interval_ms: 100,
       on_save_failure: 'continue',
       integrity: { enabled: false },
@@ -105,18 +126,29 @@ function baseMapping(srcTable, dstTable, execOverrides = {}) {
 }
 
 /**
- * LOG 테이블의 sourceColumns 구성 (TargetWriter에서 NAME/TIME/VALUE 컬럼을 null 패딩 없이 기록하기 위함)
- * worker의 outRows 키: { NAME, TIME, VALUE } — 대상 컬럼명과 일치해야 함
+ * LOG 테이블에 대한 srcTableInfo/dstTableInfo를 빌드하는 헬퍼
  */
-const LOG_SOURCE_COLUMNS = [
-  { name: 'NAME', type: 5 },   // varchar
-  { name: 'TIME', type: 6 },   // datetime
-  { name: 'VALUE', type: 20 }, // double
-];
+async function buildLogTableInfoPair(srcTable, dstTable) {
+  const srcConn = await makeConn();
+  let srcTableInfo;
+  try {
+    srcTableInfo = await TableInfo.buildLog(srcConn, srcTable);
+  } finally {
+    await srcConn.close();
+  }
+  const dstConn = await makeConn();
+  let dstTableInfo;
+  try {
+    dstTableInfo = await TableInfo.buildLog(dstConn, dstTable);
+  } finally {
+    await dstConn.close();
+  }
+  return { srcTableInfo, dstTableInfo };
+}
 
-// ─── IT-LOG-01: LOG 테이블 생성 확인 + SourceReader 읽기 ─────────────────────
+// ─── IT-LOG-01: LOG 테이블 생성 확인 + Reader 읽기 ─────────────────────
 
-describe('IT-LOG-01: LOG 테이블 생성 및 SourceReader 읽기', () => {
+describe('IT-LOG-01: LOG 테이블 생성 및 Reader 읽기', () => {
   const SRC = T('01_SRC');
   let conn;
 
@@ -149,8 +181,10 @@ describe('IT-LOG-01: LOG 테이블 생성 및 SourceReader 읽기', () => {
     assert.equal(type, 'LOG');
   });
 
-  test('SourceReader.readAfterRid로 삽입한 3행 읽기', async () => {
-    const { rows, err } = await SourceReader.readAfterRid(conn, SRC, 0n, 100);
+  test('Reader.readAfterRid로 삽입한 3행 읽기', async () => {
+    const srcTableInfo = await TableInfo.buildLog(conn, SRC);
+    const reader = new Reader(srcTableInfo, conn, SRC);
+    const { rows, err } = await reader.readAfterRid(0n, 100);
     assert.equal(err, null, 'readAfterRid 오류 없어야 함');
     assert.equal(rows.length, 3, '3행이 읽혀야 함');
 
@@ -159,16 +193,17 @@ describe('IT-LOG-01: LOG 테이블 생성 및 SourceReader 읽기', () => {
     assert.ok(names.includes('sensor_b'));
     assert.ok(names.includes('sensor_c'));
 
-    // row 구조 확인
+    // row 구조 확인 (새로운 형식: { rid, tagId, data: { TIME, VALUE } })
     const r = rows[0];
     assert.equal(typeof r.rid, 'bigint', 'rid는 BigInt');
     assert.ok(r.tagId !== undefined, 'tagId 필드 존재');
-    assert.ok(r.time !== undefined, 'time 필드 존재');
-    assert.ok(r.value !== undefined, 'value 필드 존재');
+    assert.ok(r.data !== undefined, 'data 필드 존재');
+    assert.ok(r.data.TIME !== undefined, 'data.TIME 필드 존재');
+    assert.ok(r.data.VALUE !== undefined, 'data.VALUE 필드 존재');
   });
 
-  test('SourceReader.getMaxRid → 삽입한 최대 RID 반환', async () => {
-    const { maxRid, err } = await SourceReader.getMaxRid(conn, SRC);
+  test('Reader.getMaxRid → 삽입한 최대 RID 반환', async () => {
+    const { maxRid, err } = await Reader.getMaxRid(conn, SRC);
     assert.equal(err, null);
     assert.ok(maxRid >= 2n, `3행 삽입 후 maxRid >= 2 (실제: ${maxRid})`);
   });
@@ -205,11 +240,13 @@ describe('IT-LOG-02: LOG → LOG 복제 (runDataTableWorker)', () => {
 
   test('소스 LOG 3행이 대상에 그대로 복제되고 cp가 저장됨', async () => {
     const jobId = `it-log-02-${TS}`;
+    const { srcTableInfo, dstTableInfo } = await buildLogTableInfoPair(SRC, DST);
     const srcConn = await makeConn();
     const dstConn = await makeConn();
-    const writer = new TargetWriter();
-    const openErr = await writer.open(dstConn, DST, LOG_SOURCE_COLUMNS);
-    assert.equal(openErr, null, 'TargetWriter.open 성공');
+    const reader = new Reader(srcTableInfo, srcConn, SRC);
+    const writer = new Writer(dstTableInfo);
+    const openErr = await writer.open(dstConn, DST, srcTableInfo);
+    assert.equal(openErr, null, 'Writer.open 성공');
 
     try {
       await runDataTableWorker({
@@ -218,15 +255,15 @@ describe('IT-LOG-02: LOG → LOG 복제 (runDataTableWorker)', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'LOG',
         dataTable: SRC,
-        sourceConn: srcConn,
-        targetConn: dstConn,
+        srcConfig: DB_CONFIG,
         dstConfig: DB_CONFIG,
-        targetWriter: writer,
+        reader: reader,
+        writer: writer,
         shutdownFlag: makeShutdownFlag(5000),
       });
     } finally {
       await writer.close();
-      await srcConn.close();
+      await reader.conn.close();
       await dstConn.close();
     }
 
@@ -262,10 +299,12 @@ describe('IT-LOG-02: LOG → LOG 복제 (runDataTableWorker)', () => {
       origLog(...args);
     };
 
+    const { srcTableInfo: srcTI2, dstTableInfo: dstTI2 } = await buildLogTableInfoPair(SRC, DST);
     const srcConn = await makeConn();
     const dstConn = await makeConn();
-    const writer = new TargetWriter();
-    await writer.open(dstConn, DST, LOG_SOURCE_COLUMNS);
+    const reader = new Reader(srcTI2, srcConn, SRC);
+    const writer = new Writer(dstTI2);
+    await writer.open(dstConn, DST, srcTI2);
 
     try {
       await runDataTableWorker({
@@ -274,16 +313,16 @@ describe('IT-LOG-02: LOG → LOG 복제 (runDataTableWorker)', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'LOG',
         dataTable: SRC,
-        sourceConn: srcConn,
-        targetConn: dstConn,
+        srcConfig: DB_CONFIG,
         dstConfig: DB_CONFIG,
-        targetWriter: writer,
+        reader: reader,
+        writer: writer,
         shutdownFlag: makeShutdownFlag(3000),
       });
     } finally {
       console.log = origLog;
       await writer.close();
-      await srcConn.close();
+      await reader.conn.close();
       await dstConn.close();
     }
 
@@ -323,10 +362,12 @@ describe('IT-LOG-03: start_mode=full — RID 0부터 전체 복제', () => {
 
   test('cp 없음 + start_mode=full → RID 0부터 전체 2행 복제', async () => {
     const jobId = `it-log-03-${TS}`;
+    const { srcTableInfo, dstTableInfo } = await buildLogTableInfoPair(SRC, DST);
     const srcConn = await makeConn();
     const dstConn = await makeConn();
-    const writer = new TargetWriter();
-    await writer.open(dstConn, DST, LOG_SOURCE_COLUMNS);
+    const reader = new Reader(srcTableInfo, srcConn, SRC);
+    const writer = new Writer(dstTableInfo);
+    await writer.open(dstConn, DST, srcTableInfo);
 
     try {
       await runDataTableWorker({
@@ -335,15 +376,15 @@ describe('IT-LOG-03: start_mode=full — RID 0부터 전체 복제', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'LOG',
         dataTable: SRC,
-        sourceConn: srcConn,
-        targetConn: dstConn,
+        srcConfig: DB_CONFIG,
         dstConfig: DB_CONFIG,
-        targetWriter: writer,
+        reader: reader,
+        writer: writer,
         shutdownFlag: makeShutdownFlag(5000),
       });
     } finally {
       await writer.close();
-      await srcConn.close();
+      await reader.conn.close();
       await dstConn.close();
     }
 
@@ -391,10 +432,12 @@ describe('IT-LOG-04: start_mode=now — 기존 데이터 복제 안 함', () => 
 
   test('cp 없음 + start_mode=now → 기존 2행 복제 안 함, cp 저장됨', async () => {
     const jobId = `it-log-04-${TS}`;
+    const { srcTableInfo, dstTableInfo } = await buildLogTableInfoPair(SRC, DST);
     const srcConn = await makeConn();
     const dstConn = await makeConn();
-    const writer = new TargetWriter();
-    await writer.open(dstConn, DST, LOG_SOURCE_COLUMNS);
+    const reader = new Reader(srcTableInfo, srcConn, SRC);
+    const writer = new Writer(dstTableInfo);
+    await writer.open(dstConn, DST, srcTableInfo);
 
     try {
       await runDataTableWorker({
@@ -403,15 +446,15 @@ describe('IT-LOG-04: start_mode=now — 기존 데이터 복제 안 함', () => 
         checkpoint: { directory: tmpDir },
         tableType: 'LOG',
         dataTable: SRC,
-        sourceConn: srcConn,
-        targetConn: dstConn,
+        srcConfig: DB_CONFIG,
         dstConfig: DB_CONFIG,
-        targetWriter: writer,
+        reader: reader,
+        writer: writer,
         shutdownFlag: makeShutdownFlag(5000),
       });
     } finally {
       await writer.close();
-      await srcConn.close();
+      await reader.conn.close();
       await dstConn.close();
     }
 
@@ -469,10 +512,12 @@ describe('IT-LOG-05: cp 존재 재시작 — cp 이후 데이터만 복제', () 
     ]);
 
     {
+      const { srcTableInfo, dstTableInfo } = await buildLogTableInfoPair(SRC, DST);
       const srcConn = await makeConn();
       const dstConn = await makeConn();
-      const writer = new TargetWriter();
-      await writer.open(dstConn, DST, LOG_SOURCE_COLUMNS);
+      const reader = new Reader(srcTableInfo, srcConn, SRC);
+      const writer = new Writer(dstTableInfo);
+      await writer.open(dstConn, DST, srcTableInfo);
       try {
         await runDataTableWorker({
           jobId,
@@ -480,15 +525,15 @@ describe('IT-LOG-05: cp 존재 재시작 — cp 이후 데이터만 복제', () 
           checkpoint: { directory: tmpDir },
           tableType: 'LOG',
           dataTable: SRC,
-          sourceConn: srcConn,
-          targetConn: dstConn,
+          srcConfig: DB_CONFIG,
           dstConfig: DB_CONFIG,
-          targetWriter: writer,
+          reader: reader,
+          writer: writer,
           shutdownFlag: makeShutdownFlag(3000),
         });
       } finally {
         await writer.close();
-        await srcConn.close();
+        await reader.conn.close();
         await dstConn.close();
       }
     }
@@ -502,10 +547,12 @@ describe('IT-LOG-05: cp 존재 재시작 — cp 이후 데이터만 복제', () 
     ]);
 
     {
+      const { srcTableInfo: srcTI2, dstTableInfo: dstTI2 } = await buildLogTableInfoPair(SRC, DST);
       const srcConn = await makeConn();
       const dstConn = await makeConn();
-      const writer = new TargetWriter();
-      await writer.open(dstConn, DST, LOG_SOURCE_COLUMNS);
+      const reader = new Reader(srcTI2, srcConn, SRC);
+      const writer = new Writer(dstTI2);
+      await writer.open(dstConn, DST, srcTI2);
       try {
         await runDataTableWorker({
           jobId,
@@ -513,15 +560,15 @@ describe('IT-LOG-05: cp 존재 재시작 — cp 이후 데이터만 복제', () 
           checkpoint: { directory: tmpDir },
           tableType: 'LOG',
           dataTable: SRC,
-          sourceConn: srcConn,
-          targetConn: dstConn,
+          srcConfig: DB_CONFIG,
           dstConfig: DB_CONFIG,
-          targetWriter: writer,
+          reader: reader,
+          writer: writer,
           shutdownFlag: makeShutdownFlag(3000),
         });
       } finally {
         await writer.close();
-        await srcConn.close();
+        await reader.conn.close();
         await dstConn.close();
       }
     }

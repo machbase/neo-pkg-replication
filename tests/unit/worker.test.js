@@ -7,6 +7,7 @@ const fs = require('fs/promises');
 const os = require('os');
 
 const { runDataTableWorker } = require('../../worker/worker.js');
+const Reader = require('../../machbase/reader.js');
 
 // ─── 테스트 픽스처 ───────────────────────────────────────────────────────────
 
@@ -25,31 +26,99 @@ async function makeTmpDir() {
   return dir;
 }
 
+/** TAG sourceReader mock 생성 */
+function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), readFn = null) {
+  const mockConn = { query: async () => [] };
+  return {
+    tableInfo: {
+      tableType: 'TAG',
+      logicalTable: 'TAG',
+      dataColumns: [
+        { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
+        { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
+      ],
+      metadataColumns: [],
+      writeColumns: [
+        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'key' },
+        { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
+        { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
+      ],
+      aliasMap: metaMap,
+      getSelectColumnNames() { return ['time', 'value']; },
+    },
+    conn: mockConn,
+    dataTable: '_TAG_DATA_0',
+    get aliasMap() { return this.tableInfo.aliasMap; },
+    async loadAliases() { return null; },
+    async resolveTagCanonical(conn, tagId, tagIdentifier) {
+      const tagIdBig = BigInt(tagId);
+      const name = this.tableInfo.aliasMap.get(tagIdBig) || this.tableInfo.aliasMap.get(Number(tagId));
+      if (!name) return { canonical: null, status: 'drop_not_found' };
+      return { canonical: name, status: 'ok' };
+    },
+    replaceConnection(newConn) { this.conn = newConn; },
+    async readAfterRid(startRid, limit, rangeSize) {
+      if (readFn) return readFn(startRid, limit, rangeSize);
+      return { rows: [], err: null };
+    },
+  };
+}
+
+/** LOG sourceReader mock 생성 */
+function makeLogSourceReader(readFn = null) {
+  const mockConn = { query: async () => [] };
+  return {
+    tableInfo: {
+      tableType: 'LOG',
+      logicalTable: 'LOG',
+      dataColumns: [
+        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'data' },
+        { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
+        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
+      ],
+      metadataColumns: [],
+      writeColumns: [
+        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'data' },
+        { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
+        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
+      ],
+      aliasMap: new Map(),
+      getSelectColumnNames() { return ['name', 'time', 'value']; },
+    },
+    conn: mockConn,
+    dataTable: '_LOG_DATA_0',
+    get aliasMap() { return this.tableInfo.aliasMap; },
+    async loadAliases() { return null; },
+    replaceConnection(newConn) { this.conn = newConn; },
+    async readAfterRid(startRid, limit, rangeSize) {
+      if (readFn) return readFn(startRid, limit, rangeSize);
+      return { rows: [], err: null };
+    },
+  };
+}
+
 // ─── 테스트 헬퍼: Worker를 mock으로 실행 ─────────────────────────────────────
-// worker.js가 SourceReader, TagMetaProvider를 직접 require하므로
-// 테스트에서는 실제 DB 연결 없이 실행 가능한 시나리오만 검증
 
 describe('runDataTableWorker — RESOLVE_START', () => {
   test('체크포인트 없음 + start_mode=full → startRid=0n 으로 시작 후 빈 배치 대기 후 shutdown', async () => {
     const tmpDir = await makeTmpDir();
-    const shutdownFlag = makeShutdownFlag(50); // 50ms 후 shutdown
+    const shutdownFlag = makeShutdownFlag(50);
 
     const readCalls = [];
     const appendedRows = [];
 
-    // SourceReader를 mock하기 위해 require 캐시를 이용한 원숭이 패치
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origRead = SourceReader.readAfterRid;
-    const origMax = SourceReader.getMaxRid;
-    SourceReader.readAfterRid = async (_conn, _dataTable, startRid, limit) => {
+    const reader = makeTagSourceReader(new Map([[1, 'tag_a'], [2, 'tag_b']]), (startRid, limit) => {
       readCalls.push({ startRid, limit });
-      return { rows: [], err: null }; // 빈 배치 반환
-    };
-    SourceReader.getMaxRid = async () => ({ maxRid: 0n, err: null });
+      return { rows: [], err: null };
+    });
 
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    TargetWriter.prototype.open = async function() { this.writeColumns = []; this.targetColumnNames = []; this.sourceColumnSet = new Set(); this.stream = { append: async (m) => appendedRows.push(...m), close: async () => {} }; return null; };
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
+      this.stream = { append: async (m) => appendedRows.push(...m), close: async () => {} };
+      return null;
+    };
 
     try {
       await runDataTableWorker({
@@ -58,7 +127,7 @@ describe('runDataTableWorker — RESOLVE_START', () => {
           source: { server: 'src', table: 'TAG' },
           target: { server: 'dst', table: 'TAG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 20,
             start_mode: 'full',
             on_save_failure: 'continue',
@@ -68,9 +137,8 @@ describe('runDataTableWorker — RESOLVE_START', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
-        targetWriter: new TargetWriter(),
+        reader: reader,
+        writer: new Writer(),
         shutdownFlag,
       });
 
@@ -78,9 +146,7 @@ describe('runDataTableWorker — RESOLVE_START', () => {
       assert.equal(readCalls[0].startRid, 0n, 'start_mode=full → startRid=0n');
       assert.equal(appendedRows.length, 0, '빈 배치 → append 없음');
     } finally {
-      SourceReader.readAfterRid = origRead;
-      SourceReader.getMaxRid = origMax;
-      TargetWriter.prototype.open = origOpen;
+      Writer.prototype.open = origOpen;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -90,7 +156,6 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     const CheckpointStore = require('../../file/checkpoint.js');
     const store = new CheckpointStore(tmpDir);
 
-    // 사전 체크포인트 저장
     await store.save('test-job', '_TAG_DATA_0', {
       last_success_rid: 1234n,
       source_server: 'src',
@@ -100,17 +165,15 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];
 
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async (_conn, _dt, startRid) => {
+    const reader = makeTagSourceReader(new Map([[1, 'tag_a'], [2, 'tag_b']]), (startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
-    };
+    });
 
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    TargetWriter.prototype.open = async function() {
-      this.writeColumns = []; this.targetColumnNames = []; this.sourceColumnSet = new Set();
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -122,9 +185,9 @@ describe('runDataTableWorker — RESOLVE_START', () => {
           source: { server: 'src', table: 'TAG' },
           target: { server: 'dst', table: 'TAG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 20,
-            start_mode: 'full', // 무시되어야 함
+            start_mode: 'full',
             on_save_failure: 'continue',
             integrity: { enabled: false },
           },
@@ -132,17 +195,15 @@ describe('runDataTableWorker — RESOLVE_START', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
-        targetWriter: new TargetWriter(),
+        reader: reader,
+        writer: new Writer(),
         shutdownFlag,
       });
 
       assert.ok(readCalls.length >= 1);
       assert.equal(readCalls[0], 1235n, '체크포인트 last_success_rid=1234n → startRid=1235n (1234n+1n)');
     } finally {
-      SourceReader.readAfterRid = origRead;
-      TargetWriter.prototype.open = origOpen;
+      Writer.prototype.open = origOpen;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -151,14 +212,15 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
 
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origMax = SourceReader.getMaxRid;
-    SourceReader.getMaxRid = async () => ({ maxRid: 0n, err: new Error('DB down') });
+    const origMax = Reader.getMaxRid;
+    Reader.getMaxRid = async () => ({ maxRid: 0n, err: new Error('DB down') });
 
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    TargetWriter.prototype.open = async function() {
-      this.writeColumns = []; this.targetColumnNames = []; this.sourceColumnSet = new Set();
+    const reader = makeTagSourceReader();
+
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -170,7 +232,7 @@ describe('runDataTableWorker — RESOLVE_START', () => {
           source: { server: 'src', table: 'TAG' },
           target: { server: 'dst', table: 'TAG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 1000,
             start_mode: 'now',
             on_save_failure: 'continue',
@@ -180,16 +242,14 @@ describe('runDataTableWorker — RESOLVE_START', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
-        targetWriter: new TargetWriter(),
+        reader: reader,
+        writer: new Writer(),
         shutdownFlag,
       });
-      // shutdown 없이 정상 return되어야 함 (skip)
       assert.equal(shutdownFlag.value, false, 'shutdownFlag는 변경되지 않아야 함');
     } finally {
-      SourceReader.getMaxRid = origMax;
-      TargetWriter.prototype.open = origOpen;
+      Reader.getMaxRid = origMax;
+      Writer.prototype.open = origOpen;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -201,51 +261,35 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     const shutdownFlag = { value: false };
     let batchCall = 0;
 
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async (_conn, _dt, startRid) => {
+    const reader = makeTagSourceReader(new Map([[1, 'tag_a'], [2, 'tag_b']]), (startRid) => {
       batchCall++;
       if (batchCall === 1) {
-        // 첫 번째 배치: 3개 row
         return {
           rows: [
-            { rid: 10n, tagId: 1, time: 1000n, value: 1.1 },
-            { rid: 11n, tagId: 2, time: 2000n, value: 2.2 },
-            { rid: 12n, tagId: 1, time: 3000n, value: 3.3 },
+            { rid: 10n, tagId: 1, data: { TIME: 1000n, VALUE: 1.1 } },
+            { rid: 11n, tagId: 2, data: { TIME: 2000n, VALUE: 2.2 } },
+            { rid: 12n, tagId: 1, data: { TIME: 3000n, VALUE: 3.3 } },
           ],
           err: null,
         };
       }
-      // 이후 shutdown
       shutdownFlag.value = true;
       return { rows: [], err: null };
-    };
-
-    const TagMetaProvider = require('../../machbase/tag_meta_provider.js');
-    const origLoadAll = TagMetaProvider.prototype.loadAll;
-    const origResolve = TagMetaProvider.prototype.resolveTagCanonical;
-    TagMetaProvider.prototype.loadAll = async function() { this.map = new Map([[1, 'tag_a'], [2, 'tag_b']]); this.logicalTable = 'TAG'; };
-    TagMetaProvider.prototype.resolveTagCanonical = async function(_conn, tagId) {
-      const name = this.map.get(Number(tagId));
-      if (!name) return { canonical: null, status: 'drop_not_found' };
-      return { canonical: name, status: 'ok' };
-    };
+    });
 
     const appendedRows = [];
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    const origAppend = TargetWriter.prototype.append;
-    TargetWriter.prototype.open = async function() {
-      this.writeColumns = [];
-      this.targetColumnNames = ['name', 'time', 'value'];
-      this.sourceColumnSet = new Set(['name', 'time', 'value']);
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    const origAppend = Writer.prototype.append;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
       this.stream = {
         append: async (matrix) => { appendedRows.push(...matrix); },
         close: async () => {},
       };
       return null;
     };
-    TargetWriter.prototype.append = async function(rows) {
+    Writer.prototype.append = async function(rows) {
       appendedRows.push(...rows);
       return null;
     };
@@ -257,7 +301,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
           source: { server: 'src', table: 'TAG' },
           target: { server: 'dst', table: 'TAG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 1000,
             start_mode: 'full',
             on_save_failure: 'continue',
@@ -267,24 +311,19 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
-        targetWriter: new TargetWriter(),
+        reader: reader,
+        writer: new Writer(),
         shutdownFlag,
       });
 
-      // checkpoint가 12n (마지막 성공 RID = maxRid)으로 저장되어야 함
       const CheckpointStore = require('../../file/checkpoint.js');
       const store = new CheckpointStore(tmpDir);
       const { cp } = await store.load('test-job-2', '_TAG_DATA_0');
       assert.equal(cp.last_success_rid, 12n, 'checkpoint = maxRid(12n) — 마지막 성공 RID (inclusive)');
       assert.equal(appendedRows.length, 3, '3개 row가 append되어야 함');
     } finally {
-      SourceReader.readAfterRid = origRead;
-      TagMetaProvider.prototype.loadAll = origLoadAll;
-      TagMetaProvider.prototype.resolveTagCanonical = origResolve;
-      TargetWriter.prototype.open = origOpen;
-      TargetWriter.prototype.append = origAppend;
+      Writer.prototype.open = origOpen;
+      Writer.prototype.append = origAppend;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -294,42 +333,30 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     const shutdownFlag = { value: false };
     let batchCall = 0;
 
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async () => {
+    const reader = makeTagSourceReader(new Map(), (startRid) => {
       batchCall++;
       if (batchCall === 1) {
         return {
           rows: [
-            { rid: 5n, tagId: 999, time: 1000n, value: 0.0 }, // unknown tagId
+            { rid: 5n, tagId: 999, data: { TIME: 1000n, VALUE: 0.0 } },
           ],
           err: null,
         };
       }
       shutdownFlag.value = true;
       return { rows: [], err: null };
-    };
-
-    const TagMetaProvider = require('../../machbase/tag_meta_provider.js');
-    const origLoadAll = TagMetaProvider.prototype.loadAll;
-    const origResolve = TagMetaProvider.prototype.resolveTagCanonical;
-    TagMetaProvider.prototype.loadAll = async function() { this.map = new Map(); this.logicalTable = 'TAG'; };
-    TagMetaProvider.prototype.resolveTagCanonical = async function() {
-      return { canonical: null, status: 'drop_not_found' };
-    };
+    });
 
     const appendedRows = [];
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    const origAppend = TargetWriter.prototype.append;
-    TargetWriter.prototype.open = async function() {
-      this.writeColumns = [];
-      this.targetColumnNames = ['name', 'time', 'value'];
-      this.sourceColumnSet = new Set(['name', 'time', 'value']);
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    const origAppend = Writer.prototype.append;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
-    TargetWriter.prototype.append = async function(rows) {
+    Writer.prototype.append = async function(rows) {
       appendedRows.push(...rows);
       return null;
     };
@@ -341,7 +368,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
           source: { server: 'src', table: 'TAG' },
           target: { server: 'dst', table: 'TAG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 1000,
             start_mode: 'full',
             on_save_failure: 'continue',
@@ -351,9 +378,8 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
-        targetWriter: new TargetWriter(),
+        reader: reader,
+        writer: new Writer(),
         shutdownFlag,
       });
 
@@ -363,11 +389,8 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
       assert.equal(cp.last_success_rid, 5n, 'all-drop: checkpoint = maxRidInBatch(5n) — 마지막 성공 RID (inclusive)');
       assert.equal(appendedRows.length, 0, 'drop → append 없음');
     } finally {
-      SourceReader.readAfterRid = origRead;
-      TagMetaProvider.prototype.loadAll = origLoadAll;
-      TagMetaProvider.prototype.resolveTagCanonical = origResolve;
-      TargetWriter.prototype.open = origOpen;
-      TargetWriter.prototype.append = origAppend;
+      Writer.prototype.open = origOpen;
+      Writer.prototype.append = origAppend;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -377,32 +400,28 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     const shutdownFlag = { value: false };
     let batchCall = 0;
 
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async () => {
+    const reader = makeLogSourceReader((startRid) => {
       batchCall++;
       if (batchCall === 1) {
         return {
-          rows: [{ rid: 20n, tagId: 'raw_name', time: 5000n, value: 9.9 }],
+          rows: [{ rid: 20n, tagId: 'raw_name', data: { TIME: 5000n, VALUE: 9.9 } }],
           err: null,
         };
       }
       shutdownFlag.value = true;
       return { rows: [], err: null };
-    };
+    });
 
     const appendedRows = [];
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    const origAppend = TargetWriter.prototype.append;
-    TargetWriter.prototype.open = async function() {
-      this.writeColumns = [];
-      this.targetColumnNames = ['name', 'time', 'value'];
-      this.sourceColumnSet = new Set(['name', 'time', 'value']);
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    const origAppend = Writer.prototype.append;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
-    TargetWriter.prototype.append = async function(rows) {
+    Writer.prototype.append = async function(rows) {
       appendedRows.push(...rows);
       return null;
     };
@@ -414,7 +433,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
           source: { server: 'src', table: 'LOG' },
           target: { server: 'dst', table: 'LOG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 1000,
             start_mode: 'full',
             on_save_failure: 'continue',
@@ -424,18 +443,16 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'LOG',
         dataTable: '_LOG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
-        targetWriter: new TargetWriter(),
+        reader: reader,
+        writer: new Writer(),
         shutdownFlag,
       });
 
       assert.equal(appendedRows.length, 1);
       assert.equal(appendedRows[0].NAME, 'raw_name', 'LOG: tagId → NAME 그대로 사용');
     } finally {
-      SourceReader.readAfterRid = origRead;
-      TargetWriter.prototype.open = origOpen;
-      TargetWriter.prototype.append = origAppend;
+      Writer.prototype.open = origOpen;
+      Writer.prototype.append = origAppend;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -445,7 +462,6 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
   test('integrity.enabled=false → STARTUP_INTEGRITY 미실행, 즉시 STEADY 진입', async () => {
     const tmpDir = await makeTmpDir();
 
-    // 사전 checkpoint 저장
     const CheckpointStore = require('../../file/checkpoint.js');
     const store = new CheckpointStore(tmpDir);
     await store.save('test-int', '_TAG_DATA_0', {
@@ -458,12 +474,10 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     const readCalls = [];
     const integrityCheckCalls = [];
 
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async (_conn, _dt, startRid) => {
+    const reader = makeTagSourceReader(new Map([[1, 'tag_a'], [2, 'tag_b']]), (startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
-    };
+    });
 
     const IntegrityChecker = require('../../machbase/integrity_checker.js');
     const origBatchExists = IntegrityChecker.batchExists;
@@ -472,14 +486,10 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
       return { existSet: new Set(), err: null };
     };
 
-    const TagMetaProvider = require('../../machbase/tag_meta_provider.js');
-    const origLoadAll = TagMetaProvider.prototype.loadAll;
-    TagMetaProvider.prototype.loadAll = async function() { this.map = new Map(); this.logicalTable = 'TAG'; };
-
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    TargetWriter.prototype.open = async function() {
-      this.writeColumns = []; this.targetColumnNames = []; this.sourceColumnSet = new Set();
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -491,30 +501,26 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
           source: { server: 'src', table: 'TAG' },
           target: { server: 'dst', table: 'TAG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 20,
             start_mode: 'full',
             on_save_failure: 'continue',
-            integrity: { enabled: false }, // ← 비활성화
+            integrity: { enabled: false },
           },
         },
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
-        targetWriter: new TargetWriter(),
+        reader: reader,
+        writer: new Writer(),
         shutdownFlag,
       });
 
       assert.equal(integrityCheckCalls.length, 0, 'integrity.enabled=false → IntegrityChecker 미호출');
-      // STEADY에서 체크포인트(last_success_rid=10n) + 1n = 11n부터 읽기 시작
       assert.equal(readCalls[0], 11n, 'STEADY는 checkpoint(10n)+1n=11n부터 시작해야 함');
     } finally {
-      SourceReader.readAfterRid = origRead;
       IntegrityChecker.batchExists = origBatchExists;
-      TagMetaProvider.prototype.loadAll = origLoadAll;
-      TargetWriter.prototype.open = origOpen;
+      Writer.prototype.open = origOpen;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -534,39 +540,24 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     let steadyReadCalls = [];
     let integrityReadDone = false;
 
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async (_conn, _dt, startRid) => {
+    const reader = makeTagSourceReader(new Map([[1, 'sensor_a']]), (startRid) => {
       if (!integrityReadDone) {
-        // STARTUP_INTEGRITY read: last_success_rid=100n → startRid=101n부터 읽기
         integrityReadDone = true;
         return {
           rows: [
-            { rid: 101n, tagId: 1, time: 1000n, value: 1.0 }, // 대상에 존재
-            { rid: 102n, tagId: 1, time: 2000n, value: 2.0 }, // 대상에 미존재 (first miss)
+            { rid: 101n, tagId: 1, data: { TIME: 1000n, VALUE: 1.0 } },
+            { rid: 102n, tagId: 1, data: { TIME: 2000n, VALUE: 2.0 } },
           ],
           err: null,
         };
       }
-      // STEADY read
       steadyReadCalls.push(startRid);
       shutdownFlag.value = true;
       return { rows: [], err: null };
-    };
-
-    const TagMetaProvider = require('../../machbase/tag_meta_provider.js');
-    const origLoadAll = TagMetaProvider.prototype.loadAll;
-    const origResolve = TagMetaProvider.prototype.resolveTagCanonical;
-    TagMetaProvider.prototype.loadAll = async function() { this.map = new Map([[1, 'sensor_a']]); this.logicalTable = 'TAG'; };
-    TagMetaProvider.prototype.resolveTagCanonical = async function(_conn, tagId) {
-      const name = this.map.get(Number(tagId));
-      if (!name) return { canonical: null, status: 'drop_not_found' };
-      return { canonical: name, status: 'ok' };
-    };
+    });
 
     const IntegrityChecker = require('../../machbase/integrity_checker.js');
     const origBatchExists = IntegrityChecker.batchExists;
-    // rid=101 (time=1000n) → exists, rid=102 (time=2000n) → not exists (first miss)
     IntegrityChecker.batchExists = async (_conn, _table, rows) => {
       const existSet = new Set();
       for (const r of rows) {
@@ -575,7 +566,6 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
       return { existSet, err: null };
     };
 
-    // MachbaseClient mock: connect/close는 no-op
     const machbaseMod = require('../../machbase/machbase.js');
     const origConnect = machbaseMod.MachbaseClient.prototype.connect;
     const origClose = machbaseMod.MachbaseClient.prototype.close;
@@ -583,17 +573,15 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     machbaseMod.MachbaseClient.prototype.close = async function() {};
 
     const appendedRows = [];
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    const origAppend = TargetWriter.prototype.append;
-    TargetWriter.prototype.open = async function() {
-      this.writeColumns = [];
-      this.targetColumnNames = ['name', 'time', 'value'];
-      this.sourceColumnSet = new Set(['name', 'time', 'value']);
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    const origAppend = Writer.prototype.append;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
-    TargetWriter.prototype.append = async function(rows) {
+    Writer.prototype.append = async function(rows) {
       appendedRows.push(...rows);
       return null;
     };
@@ -605,7 +593,7 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
           source: { server: 'src', table: 'TAG' },
           target: { server: 'dst', table: 'TAG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 20,
             start_mode: 'full',
             on_save_failure: 'continue',
@@ -615,30 +603,21 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
+        reader: reader,
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        targetWriter: new TargetWriter(),
+        writer: new Writer(),
         shutdownFlag,
       });
 
-      // safe_cp = firstMissRid - 1n = 102n - 1n = 101n (마지막 성공 RID, inclusive)
       const { cp } = await store.load('test-int2', '_TAG_DATA_0');
-      // 마지막 저장된 checkpoint: STARTUP_INTEGRITY가 safe_cp=101n 저장 후
-      // STEADY가 102n부터 시작해서 빈 배치 → shutdown (checkpoint 저장 안 됨)
-      // 따라서 최종 checkpoint = safe_cp = 101n
       assert.equal(cp.last_success_rid, 101n, 'STARTUP_INTEGRITY: safe_cp_rid = first_miss(102n) - 1n = 101n');
-      // STEADY는 firstMissRid(102n)부터 시작해야 함
       assert.equal(steadyReadCalls[0], 102n, 'STEADY는 firstMissRid(102n)부터 시작');
     } finally {
-      SourceReader.readAfterRid = origRead;
-      TagMetaProvider.prototype.loadAll = origLoadAll;
-      TagMetaProvider.prototype.resolveTagCanonical = origResolve;
       IntegrityChecker.batchExists = origBatchExists;
       machbaseMod.MachbaseClient.prototype.connect = origConnect;
       machbaseMod.MachbaseClient.prototype.close = origClose;
-      TargetWriter.prototype.open = origOpen;
-      TargetWriter.prototype.append = origAppend;
+      Writer.prototype.open = origOpen;
+      Writer.prototype.append = origAppend;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -657,9 +636,7 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     const shutdownFlag = makeShutdownFlag(30);
     const integrityCheckCalls = [];
 
-    const SourceReader = require('../../machbase/source_reader.js');
-    const origRead = SourceReader.readAfterRid;
-    SourceReader.readAfterRid = async () => ({ rows: [], err: null });
+    const reader = makeLogSourceReader(() => ({ rows: [], err: null }));
 
     const IntegrityChecker = require('../../machbase/integrity_checker.js');
     const origBatchExists = IntegrityChecker.batchExists;
@@ -668,10 +645,10 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
       return { existSet: new Set(), err: null };
     };
 
-    const TargetWriter = require('../../machbase/target_writer.js');
-    const origOpen = TargetWriter.prototype.open;
-    TargetWriter.prototype.open = async function() {
-      this.writeColumns = []; this.targetColumnNames = []; this.sourceColumnSet = new Set();
+    const Writer = require('../../machbase/writer.js');
+    const origOpen = Writer.prototype.open;
+    Writer.prototype.open = async function() {
+      this.appendColumns = [];
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -683,27 +660,25 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
           source: { server: 'src', table: 'LOG' },
           target: { server: 'dst', table: 'LOG2' },
           execution: {
-            batch_size_records: 100,
+            query_limit: 100,
             poll_interval_ms: 20,
             start_mode: 'full',
             on_save_failure: 'continue',
-            integrity: { enabled: true }, // enabled이지만 LOG라서 미수행
+            integrity: { enabled: true },
           },
         },
         checkpoint: { directory: tmpDir },
-        tableType: 'LOG', // ← LOG 테이블
+        tableType: 'LOG',
         dataTable: '_LOG_DATA_0',
-        sourceConn: { query: async () => [] },
-        targetConn: { query: async () => [] },
-        targetWriter: new TargetWriter(),
+        reader: reader,
+        writer: new Writer(),
         shutdownFlag,
       });
 
       assert.equal(integrityCheckCalls.length, 0, 'LOG 테이블 → IntegrityChecker 미호출');
     } finally {
-      SourceReader.readAfterRid = origRead;
       IntegrityChecker.batchExists = origBatchExists;
-      TargetWriter.prototype.open = origOpen;
+      Writer.prototype.open = origOpen;
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });

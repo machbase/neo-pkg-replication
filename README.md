@@ -34,7 +34,7 @@ npm install
         "shutdown_timeout_ms": 30000,
         "checkpoint": { "directory": "./checkpoints" },
         "execution_defaults": {
-          "batch_size_records": 5000,
+          "query_limit": 5000,
           "poll_interval_ms": 1000,
           "start_mode": "full",
           "on_save_failure": "continue",
@@ -80,7 +80,7 @@ npm install
 |------|--------|------|
 | `start_mode` | `"full"` | 체크포인트 없을 때 시작 기준. `full`=RID 0, `now`=현재 최대 RID, `rid_after`=지정 RID |
 | `rid_after` | — | `start_mode=rid_after`일 때 시작 RID 값 (필수) |
-| `batch_size_records` | `5000` | 1회 읽기 최대 행 수 |
+| `query_limit` | `5000` | 1회 읽기 최대 행 수 |
 | `poll_interval_ms` | `1000` | 새 데이터 없을 때 대기 시간 (ms) |
 | `on_save_failure` | `"continue"` | 체크포인트 저장 실패 시 동작. `continue` 또는 `abort` |
 | `integrity.enabled` | `true` | TAG 테이블 재시작 시 중복 검사(STARTUP_INTEGRITY) 수행 여부 |

@@ -24,7 +24,7 @@
           "directory": "./checkpoints"
         },
         "execution_defaults": {
-          "batch_size_records": 5000,
+          "query_limit": 1000,
           "poll_interval_ms": 1000,
           "start_mode": "full",
           "on_save_failure": "continue",
@@ -41,7 +41,7 @@
             },
             "target": {
               "server": "dst",
-              "table": "TAG2"
+              "table": "HDCAR"
             }
           }
         ]

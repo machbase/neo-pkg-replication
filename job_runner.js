@@ -2,7 +2,9 @@
 
 const { MachbaseClient } = require('./machbase/machbase.js');
 const CatalogClient = require('./machbase/catalog.js');
-const TargetWriter = require('./machbase/target_writer.js');
+const TableInfo = require('./machbase/table_info.js');
+const Reader = require('./machbase/reader.js');
+const Writer = require('./machbase/writer.js');
 const { runDataTableWorker } = require('./worker/worker.js');
 
 /**
@@ -32,7 +34,8 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
 
   let tableType;
   let dataTables;
-  let sourceColumns;
+  let srcTableInfo;
+  let dstTableInfo;
 
   try {
     const result = await CatalogClient.getLogicalTableType(sourceConn, mapping.source.table);
@@ -53,18 +56,37 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
       }
       dataTables = tables.map(t => t.data_table);
 
-      // TAG 컬럼 규칙 검증 (첫 번째 파티션 기준)
-      const columns = await CatalogClient.getColumns(sourceConn, tables[0].table_id);
-      if (!CatalogClient.validateTagColumns(columns)) {
-        console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `TAG column validation failed, skipping mapping` }));
-        await sourceConn.close().catch(() => {});
-        return;
+      // 소스 TableInfo 생성 (첫 번째 파티션 기준)
+      srcTableInfo = await TableInfo.buildTag(sourceConn, mapping.source.table, tables[0].table_id);
+
+      // 대상 TableInfo 생성
+      const tmpDstConn = new MachbaseClient(dstConfig);
+      try {
+        await tmpDstConn.connect();
+        const dstTables = await CatalogClient.listTagDataTables(tmpDstConn, mapping.target.table);
+        if (dstTables.length === 0) {
+          console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `no target data partitions found, skipping mapping` }));
+          await sourceConn.close().catch(() => {});
+          return;
+        }
+        dstTableInfo = await TableInfo.buildTag(tmpDstConn, mapping.target.table, dstTables[0].table_id);
+      } finally {
+        await tmpDstConn.close().catch(() => {});
       }
-      sourceColumns = columns;
     } else {
       // LOG: 논리 테이블을 data_table로 사용
       dataTables = [mapping.source.table];
-      sourceColumns = [];
+
+      srcTableInfo = await TableInfo.buildLog(sourceConn, mapping.source.table);
+
+      // 대상 TableInfo 생성
+      const tmpDstConn = new MachbaseClient(dstConfig);
+      try {
+        await tmpDstConn.connect();
+        dstTableInfo = await TableInfo.buildLog(tmpDstConn, mapping.target.table);
+      } finally {
+        await tmpDstConn.close().catch(() => {});
+      }
     }
   } catch (err) {
     console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `discover failed: ${err.message}` }));
@@ -81,23 +103,24 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
 
   // ── Workers 병렬 실행 ─────────────────────────────────────────
   // @machbase/ts-client는 단일 connection/stream에서 동시 호출을 지원하지 않으므로
-  // Worker(data_table)당 별도 sourceConn, targetConn, TargetWriter를 생성한다.
+  // Worker(data_table)당 별도 sourceConn, targetConn, Writer를 생성한다.
 
-  const workerResources = []; // { srcConn, dstConn, writer, srcConnected, dstConnected }
+  const workerResources = []; // { reader, dstConn, writer, srcConnected, dstConnected }
   try {
     const workerPromises = dataTables.map(async dataTable => {
       const wSrcConn = new MachbaseClient(srcConfig);
       const wDstConn = new MachbaseClient(dstConfig);
-      const wWriter = new TargetWriter();
-      const res = { srcConn: wSrcConn, dstConn: wDstConn, writer: wWriter, srcConnected: false, dstConnected: false };
+      const wReader = new Reader(srcTableInfo, wSrcConn, dataTable);
+      const wWriter = new Writer(dstTableInfo);
+      const res = { reader: wReader, dstConn: wDstConn, writer: wWriter, srcConnected: false, dstConnected: false };
       workerResources.push(res);
 
       try {
         await wSrcConn.connect(); res.srcConnected = true;
         await wDstConn.connect(); res.dstConnected = true;
-        const openErr = await wWriter.open(wDstConn, mapping.target.table, sourceColumns);
+        const openErr = await wWriter.open(wDstConn, mapping.target.table, srcTableInfo);
         if (openErr) {
-          console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, data_table: dataTable, msg: `worker TargetWriter.open failed: ${openErr.message}` }));
+          console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, data_table: dataTable, msg: `worker Writer.open failed: ${openErr.message}` }));
           return;
         }
       } catch (err) {
@@ -111,10 +134,10 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
         checkpoint: job.checkpoint,
         tableType,
         dataTable,
-        sourceConn: wSrcConn,
-        targetConn: wDstConn,
+        srcConfig,
         dstConfig,
-        targetWriter: wWriter,
+        reader: wReader,
+        writer: wWriter,
         shutdownFlag,
       }).catch(err => {
         console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, data_table: dataTable, msg: `worker crashed: ${err.message}` }));
@@ -124,15 +147,15 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
     await Promise.all(workerPromises);
     console.log(JSON.stringify({ level: 'info', stage: 'job_runner', ...logCtx, msg: 'all workers finished' }));
   } finally {
-    // 정리: Worker 리소스 (stream → dstConn → srcConn) 순서, 연결된 것만 close
-    await Promise.all(workerResources.map(async r => {
-      await r.writer.close().catch(err =>
+    // 정리: Worker 리소스 (stream → dstConn → reader.conn) 순서, 연결된 것만 close
+    await Promise.all(workerResources.map(async res => {
+      await res.writer.close().catch(err =>
         console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `workerWriter.close failed: ${err.message}` }))
       );
-      if (r.dstConnected) await r.dstConn.close().catch(err =>
+      if (res.dstConnected) await res.dstConn.close().catch(err =>
         console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `workerDstConn.close failed: ${err.message}` }))
       );
-      if (r.srcConnected) await r.srcConn.close().catch(err =>
+      if (res.srcConnected) await res.reader.conn.close().catch(err =>
         console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `workerSrcConn.close failed: ${err.message}` }))
       );
     }));

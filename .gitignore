@@ -53,3 +53,5 @@ coverage/
 Thumbs.db
 
 WORKFLOW.md
+
+backup_schemas

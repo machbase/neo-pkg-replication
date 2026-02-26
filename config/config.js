@@ -3,14 +3,16 @@
 const fs = require('fs/promises');
 
 const EXECUTION_DEFAULTS = {
-  batch_size_records: 5000,
+  query_limit: 5000,
+  rid_range_size: 50000,
   poll_interval_ms: 1000,
   start_mode: 'full',
   on_save_failure: 'continue',
 };
 
 const EXECUTION_FIELDS = [
-  'batch_size_records',
+  'query_limit',
+  'rid_range_size',
   'poll_interval_ms',
   'start_mode',
   'rid_after',
@@ -63,6 +65,25 @@ class ConfigLoader {
   static _processJob(job, servers) {
     if (!job.id) throw new Error(`job.id is required`);
 
+    let shutdownTimeout = 30000;
+    if (job.shutdown_timeout_ms !== undefined) {
+      if (!Number.isInteger(job.shutdown_timeout_ms) || job.shutdown_timeout_ms < 1) {
+        console.warn(JSON.stringify({
+          level: 'warn', stage: 'config', job_id: job.id,
+          msg: `shutdown_timeout_ms must be a positive integer, got: ${job.shutdown_timeout_ms}, using default 30000`,
+        }));
+      } else {
+        shutdownTimeout = job.shutdown_timeout_ms;
+      }
+    }
+
+    const checkpoint = job.checkpoint || { directory: './checkpoints' };
+    if (job.checkpoint) {
+      if (typeof checkpoint.directory !== 'string' || checkpoint.directory === '') {
+        throw new Error(`checkpoint.directory must be a non-empty string in job '${job.id}'`);
+      }
+    }
+
     const jobDefaults = ConfigLoader._mergeExecution(EXECUTION_DEFAULTS, job.execution_defaults || {});
 
     const mappings = (job.mappings || []).flatMap(mapping =>
@@ -72,8 +93,8 @@ class ConfigLoader {
     return {
       id: job.id,
       enabled: job.enabled !== false,
-      shutdown_timeout_ms: job.shutdown_timeout_ms ?? 30000,
-      checkpoint: job.checkpoint || { directory: './checkpoints' },
+      shutdown_timeout_ms: shutdownTimeout,
+      checkpoint,
       integrity: job.integrity,
       retry: job.retry,
       mappings,
@@ -83,9 +104,40 @@ class ConfigLoader {
   static _processMapping(mapping, servers, jobDefaults, jobId) {
     if (!mapping.mapping_id) throw new Error(`mapping_id is required in job '${jobId}'`);
 
-    const srcServer = mapping.source?.server;
-    const dstServer = mapping.target?.server;
     const logCtx = { job_id: jobId, mapping_id: mapping.mapping_id };
+
+    // source/target 구조 검증
+    if (!mapping.source || typeof mapping.source !== 'object') {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: 'mapping.source is required and must be an object, skipping mapping',
+      }));
+      return [];
+    }
+    if (!mapping.target || typeof mapping.target !== 'object') {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: 'mapping.target is required and must be an object, skipping mapping',
+      }));
+      return [];
+    }
+    if (!mapping.source.table || typeof mapping.source.table !== 'string') {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: 'mapping.source.table is required and must be a non-empty string, skipping mapping',
+      }));
+      return [];
+    }
+    if (!mapping.target.table || typeof mapping.target.table !== 'string') {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: 'mapping.target.table is required and must be a non-empty string, skipping mapping',
+      }));
+      return [];
+    }
+
+    const srcServer = mapping.source.server;
+    const dstServer = mapping.target.server;
 
     if (!servers[srcServer]) {
       console.error(JSON.stringify({
@@ -108,6 +160,24 @@ class ConfigLoader {
       mapping.source?.execution || {},
       mapping.execution || {},
     );
+
+    // query_limit 검증
+    if (!Number.isInteger(execution.query_limit) || execution.query_limit < 1) {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: `query_limit must be a positive integer, got: ${execution.query_limit}, skipping mapping`,
+      }));
+      return [];
+    }
+
+    // poll_interval_ms 검증
+    if (!Number.isInteger(execution.poll_interval_ms) || execution.poll_interval_ms < 1) {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: `poll_interval_ms must be a positive integer, got: ${execution.poll_interval_ms}, skipping mapping`,
+      }));
+      return [];
+    }
 
     if (!VALID_START_MODES.has(execution.start_mode)) {
       console.error(JSON.stringify({
@@ -141,12 +211,103 @@ class ConfigLoader {
       return [];
     }
 
+    const rrs = execution.rid_range_size;
+    if (!Number.isInteger(rrs) || rrs < 1) {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: `rid_range_size must be a positive integer, got: ${rrs}, skipping mapping`,
+      }));
+      return [];
+    }
+
+    // retry 구조 검증
+    if (execution.retry !== undefined) {
+      if (typeof execution.retry !== 'object' || execution.retry === null || Array.isArray(execution.retry)) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: 'retry must be an object, skipping mapping',
+        }));
+        return [];
+      }
+      const r = execution.retry;
+      const VALID_STRATEGIES = ['exponential', 'linear'];
+      if (r.strategy !== undefined && !VALID_STRATEGIES.includes(r.strategy)) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: `retry.strategy must be 'exponential' or 'linear', got: "${r.strategy}", skipping mapping`,
+        }));
+        return [];
+      }
+      if (r.max_attempts !== undefined && r.max_attempts !== null) {
+        if (!Number.isInteger(r.max_attempts) || r.max_attempts < 1) {
+          console.error(JSON.stringify({
+            level: 'error', stage: 'config', ...logCtx,
+            msg: `retry.max_attempts must be a positive integer or null, got: ${r.max_attempts}, skipping mapping`,
+          }));
+          return [];
+        }
+      }
+      if (r.initial_delay_ms !== undefined) {
+        if (!Number.isInteger(r.initial_delay_ms) || r.initial_delay_ms < 0) {
+          console.error(JSON.stringify({
+            level: 'error', stage: 'config', ...logCtx,
+            msg: `retry.initial_delay_ms must be a non-negative integer, got: ${r.initial_delay_ms}, skipping mapping`,
+          }));
+          return [];
+        }
+      }
+      if (r.max_delay_ms !== undefined) {
+        if (!Number.isInteger(r.max_delay_ms) || r.max_delay_ms < 0) {
+          console.error(JSON.stringify({
+            level: 'error', stage: 'config', ...logCtx,
+            msg: `retry.max_delay_ms must be a non-negative integer, got: ${r.max_delay_ms}, skipping mapping`,
+          }));
+          return [];
+        }
+      }
+      if (r.multiplier !== undefined) {
+        if (typeof r.multiplier !== 'number' || r.multiplier <= 0) {
+          console.error(JSON.stringify({
+            level: 'error', stage: 'config', ...logCtx,
+            msg: `retry.multiplier must be a positive number, got: ${r.multiplier}, skipping mapping`,
+          }));
+          return [];
+        }
+      }
+    }
+
+    // integrity 구조 검증
+    if (execution.integrity !== undefined) {
+      if (typeof execution.integrity !== 'object' || execution.integrity === null || Array.isArray(execution.integrity)) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: 'integrity must be an object, skipping mapping',
+        }));
+        return [];
+      }
+      if (execution.integrity.enabled !== undefined && typeof execution.integrity.enabled !== 'boolean') {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: `integrity.enabled must be a boolean, got: ${typeof execution.integrity.enabled}, skipping mapping`,
+        }));
+        return [];
+      }
+    }
+
+    // tag_identifier 검증
     const VALID_MODES = ['prefix', 'suffix', 'none'];
-    const tagId = mapping.source?.tag_identifier;
+    const tagId = mapping.source.tag_identifier;
     if (tagId && !VALID_MODES.includes(tagId.mode)) {
       console.error(JSON.stringify({
         level: 'error', stage: 'config', ...logCtx,
         msg: `Invalid tag_identifier.mode '${tagId.mode}' in mapping '${mapping.mapping_id}', skipping mapping`,
+      }));
+      return [];
+    }
+    if (tagId && tagId.value !== undefined && typeof tagId.value !== 'string') {
+      console.error(JSON.stringify({
+        level: 'error', stage: 'config', ...logCtx,
+        msg: `tag_identifier.value must be a string, got: ${typeof tagId.value}, skipping mapping`,
       }));
       return [];
     }

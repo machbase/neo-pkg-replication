@@ -381,7 +381,7 @@ replication:
         max_attempts: <int|null>
 
       execution_defaults:
-        batch_size_records: <int>
+        query_limit: <int>
         poll_interval_ms: <int>
 
       mappings:
@@ -399,7 +399,7 @@ replication:
               value: "<string>"
 
             execution:
-              batch_size_records: <int>
+              query_limit: <int>
               poll_interval_ms: <int>
 
           target:
@@ -407,7 +407,7 @@ replication:
             table: "<string>"
 
           execution:
-            batch_size_records: <int>
+            query_limit: <int>
             poll_interval_ms: <int>
 
       logging:
@@ -446,7 +446,7 @@ replication:
         max_attempts: null
 
       execution_defaults:
-        batch_size_records: 5000
+        query_limit: 5000
         poll_interval_ms: 1000
 
       mappings:
@@ -462,7 +462,7 @@ replication:
               value: "A:"
 
             execution:
-              batch_size_records: 20000
+              query_limit: 20000
               poll_interval_ms: 200
 
           target:
@@ -485,7 +485,7 @@ replication:
             table: "analytics_orders"
 
           execution:
-            batch_size_records: 2000
+            query_limit: 2000
             poll_interval_ms: 2000
 
       logging:
@@ -572,7 +572,7 @@ version
 
 3.7 execution_defaults
 
-- batch_size_records
+- query_limit
    - 한 번에 복제 처리할 레코드 수
    - 기본값: 5000
 
@@ -676,7 +676,7 @@ target
           "max_attempts": null
         },
         "execution_defaults": {
-          "batch_size_records": 5000,
+          "query_limit": 5000,
           "poll_interval_ms": 1000
         },
         "mappings": [
@@ -692,7 +692,7 @@ target
                 "value": "A:"
               },
               "execution": {
-                "batch_size_records": 20000,
+                "query_limit": 20000,
                 "poll_interval_ms": 200
               }
             },
@@ -718,7 +718,7 @@ target
               "table": "analytics_orders"
             },
             "execution": {
-              "batch_size_records": 2000,
+              "query_limit": 2000,
               "poll_interval_ms": 2000
             }
           }
