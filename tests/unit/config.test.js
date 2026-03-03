@@ -259,3 +259,19 @@ test('checkpoint.directory 빈 문자열 → 오류', async () => {
   const filePath = await writeConfig(config);
   await assert.rejects(() => ConfigLoader.load(filePath), /checkpoint\.directory/);
 });
+
+test('checkpoint = {} (directory 없음) → 오류', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].checkpoint = {};
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => ConfigLoader.load(filePath), /checkpoint\.directory/);
+});
+
+test('JSON 파싱 실패 → 파일 경로 포함 에러', async () => {
+  const filePath = path.join(os.tmpdir(), `config_test_invalid_${Date.now()}.json`);
+  await fs.writeFile(filePath, 'NOT_VALID_JSON');
+  await assert.rejects(() => ConfigLoader.load(filePath), err => {
+    assert.ok(err.message.includes(filePath), `Expected filePath in error: ${err.message}`);
+    return true;
+  });
+});

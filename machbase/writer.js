@@ -26,7 +26,7 @@ class Writer {
     try {
       this.conn = conn;
 
-      // 소스 writeColumns에서 컬럼명 Set 구성
+      // 소스 writeColumns에서 컬럼명 Set 구성 (컬럼명은 UPPERCASE — M$SYS_COLUMNS 기준)
       const srcNames = new Set(srcTableInfo.writeColumns.map(c => c.name));
 
       // 대상 writeColumns 순회하며 appendColumns 구성
@@ -55,6 +55,7 @@ class Writer {
    */
   async append(rows) {
     if (!rows || rows.length === 0) return null;
+    // 불변식: open() 성공 후 stream/conn 모두 non-null, close() 후 둘 다 null
     if (!this.stream) {
       return new Error('Writer.append called before open()');
     }
@@ -66,7 +67,12 @@ class Writer {
           const val = row[col.name];
           if (val == null) return col.columnType.safeNull;
           if (col.columnType.type === 'int64') {
-            return typeof val === 'bigint' ? val : BigInt(Math.trunc(Number(val)));
+            if (typeof val === 'bigint') return val;
+            if (typeof val === 'number' && !Number.isInteger(val)) {
+              console.warn(JSON.stringify({ level: 'warn', stage: 'writer', msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` }));
+              return BigInt(Math.trunc(val));
+            }
+            return BigInt(val);
           }
           return val;
         });

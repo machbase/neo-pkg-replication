@@ -25,10 +25,10 @@ async function makeTmpDir() {
   return dir;
 }
 
-/** TAG sourceReader mock 생성 */
+/** TAG Reader mock 생성 */
 function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), readFn = null) {
   return {
-    tableInfo: {
+    schema: {
       tableType: 'TAG',
       logicalTable: 'TAG',
       dataColumns: [
@@ -41,15 +41,15 @@ function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), re
         { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
         { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
       ],
-      aliasMap: metaMap,
       getSelectColumnNames() { return ['time', 'value']; },
     },
+    aliasCache: { _map: metaMap, get size() { return metaMap.size; } },
     dataTable: '_TAG_DATA_0',
-    get aliasMap() { return this.tableInfo.aliasMap; },
+    get aliasSize() { return metaMap.size; },
     async loadAliases() { return null; },
     async resolveTagCanonical(tagId, tagIdentifier) {
       const tagIdBig = BigInt(tagId);
-      const name = this.tableInfo.aliasMap.get(tagIdBig) || this.tableInfo.aliasMap.get(Number(tagId));
+      const name = metaMap.get(tagIdBig) || metaMap.get(Number(tagId));
       if (!name) return { canonical: null, status: 'drop_not_found' };
       return { canonical: name, status: 'ok' };
     },
@@ -65,10 +65,10 @@ function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), re
   };
 }
 
-/** LOG sourceReader mock 생성 */
+/** LOG Reader mock 생성 */
 function makeLogSourceReader(readFn = null) {
   return {
-    tableInfo: {
+    schema: {
       tableType: 'LOG',
       logicalTable: 'LOG',
       dataColumns: [
@@ -82,11 +82,11 @@ function makeLogSourceReader(readFn = null) {
         { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
         { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
       ],
-      aliasMap: new Map(),
       getSelectColumnNames() { return ['name', 'time', 'value']; },
     },
+    aliasCache: null,
     dataTable: '_LOG_DATA_0',
-    get aliasMap() { return this.tableInfo.aliasMap; },
+    get aliasSize() { return 0; },
     async loadAliases() { return null; },
     async close() {},
     async refreshConnection(config) {},
@@ -216,7 +216,7 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     const shutdownFlag = { value: false };
 
     const reader = makeTagSourceReader();
-    reader.getMaxRid = async () => ({ maxRid: 0n, err: new Error('DB down') });
+    reader.getMaxRid = async () => ({ maxRid: null, err: new Error('DB down') });
 
     const Writer = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;

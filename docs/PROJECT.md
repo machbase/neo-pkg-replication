@@ -522,7 +522,8 @@ while NOT shutdown_requested:
   maxRidInBatch = MAX(rows.rid)
 
   [TAG] 각 row: _resolveCanonical() → drop 시 skip
-        outRows.push({ NAME: canonical, ...row.data })
+        const { NAME: _drop, ...restData } = row.data  // 방어적 NAME 제거
+        outRows.push({ NAME: canonical, ...restData })
   [LOG] outRows.push({ NAME: row.tagId, ...row.data })
 
   if outRows not empty:
@@ -548,9 +549,11 @@ while NOT shutdown_requested:
    - dstTableInfo 빌드용 tmpDstConn은 빌드 후 즉시 close
 2. sourceConn close
 3. data_table마다 `Reader(srcConn)` + `Writer(dstTableInfo)` 생성 → `writer.open(dstConn, ...)`
+   - setup(connect + open) 성공 시에만 `workerResources`에 push
+   - setup 실패 시 해당 경로에서 `wDstConn` / `wSrcConn`을 직접 close 후 return
 4. `Promise.all`로 Worker 병렬 실행, 각 Worker에 `{ srcConfig, dstConfig, reader, writer, ... }` 주입
 5. `finally` 블록: `writer.close()` (stream + dstConn 포함) → `reader.close()` (srcConn 포함)
-   - `writer.open()` 실패 시 dstConn 소유권이 미이전 → `pendingDstConn`으로 별도 close
+   - setup 실패한 Worker는 `workerResources`에 포함되지 않으므로 중복 close 없음
 
 **Graceful Shutdown**
 - SIGTERM / SIGINT → `shutdownFlag.value = true` + 타이머 시작
@@ -1094,7 +1097,7 @@ sequenceDiagram
 | D-01 | SourceReader SQL 방식 | RID_RANGE 힌트 + `_RID >= startRid` 조건 병용. endRid는 `MAX(_RID)` 실제 조회값 |
 | D-02 | TagMetaProvider 메타 로드 방식 | Read-through cache. Worker 시작 시 전체 로드, miss 시 단건 DB 조회 |
 | D-03 | `getMaxRid()` 실패 시 처리 | SKIP_MAPPING (worker 즉시 return) |
-| D-04 | Reader/Writer conn 소유 방식 | Reader가 srcConn 소유·close, Writer가 dstConn 소유·close. JobRunner는 open 실패 시 pendingDstConn을 별도 close |
+| D-04 | Reader/Writer conn 소유 방식 | Reader가 srcConn 소유·close, Writer가 dstConn 소유·close. setup 실패 시 JobRunner가 해당 경로에서 직접 close |
 | — | STARTUP_INTEGRITY retry 시 배치 재처리 범위 | 배치 내 이미 처리한 row는 건너뜀, 실패 row부터 재처리 |
 | — | Statement ID 고갈 대응 (STEADY) | stmtCount 추적, 900 도달 시 `reader.refreshConnection(srcConfig)` 호출 |
 

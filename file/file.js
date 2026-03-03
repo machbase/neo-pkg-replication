@@ -1,14 +1,21 @@
+'use strict';
+
 const fs = require('fs/promises');
 const path = require('path');
 
 class File {
-  constructor(fullPath) {
+  /**
+   * @param {string} fullPath
+   * @param {{ bigintKeys?: string[] }} [opts]
+   */
+  constructor(fullPath, opts = {}) {
     if (!fullPath) {
       throw new Error('fullPath is required');
     }
 
     this.fullPath = fullPath;
     this.dir = path.dirname(fullPath);
+    this._bigintKeys = new Set(opts.bigintKeys ?? []);
   }
 
   async ensureDir() {
@@ -27,9 +34,8 @@ class File {
   async read() {
     const content = await fs.readFile(this.fullPath, 'utf-8');
 
-    const BIGINT_KEYS = new Set(['last_success_rid']);
-    return JSON.parse(content, (_key, value) => {
-      if (BIGINT_KEYS.has(_key) && typeof value === 'string' && /^\d+$/.test(value)) {
+    return JSON.parse(content, (key, value) => {
+      if (this._bigintKeys.has(key) && typeof value === 'string' && /^\d+$/.test(value)) {
         return BigInt(value);
       }
       return value;
@@ -48,7 +54,7 @@ class File {
 
     await this.ensureDir();
 
-    const tmpPath = `${this.fullPath}.${Date.now()}.tmp`;
+    const tmpPath = `${this.fullPath}.${process.hrtime.bigint()}.tmp`;
 
     const content = JSON.stringify(
       data,
@@ -57,22 +63,12 @@ class File {
     );
 
     await fs.writeFile(tmpPath, content, 'utf-8');
-    await fs.rename(tmpPath, this.fullPath);
-  }
-
-
-  /**
-   * 기존 데이터 읽어서 병합 후 저장
-   */
-  async update(partial) {
-    let current = {};
-
-    if (await this.exists()) {
-      current = await this.read();
+    try {
+      await fs.rename(tmpPath, this.fullPath);
+    } catch (err) {
+      await fs.unlink(tmpPath).catch(() => {});
+      throw err;
     }
-
-    const merged = { ...current, ...partial };
-    await this.write(merged);
   }
 }
 

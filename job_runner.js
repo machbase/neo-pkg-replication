@@ -1,10 +1,98 @@
 'use strict';
 
 const { MachbaseClient } = require('./machbase/machbase.js');
-const TableInfo = require('./machbase/table_info.js');
+const { TableSchema, TagAliasCache } = require('./machbase/table_info.js');
 const Reader = require('./machbase/reader.js');
 const Writer = require('./machbase/writer.js');
-const { runDataTableWorker } = require('./worker/worker.js');
+const { runDataTableWorker, TagRowProcessor, LogRowProcessor } = require('./worker/worker.js');
+
+// ─── DISCOVER ─────────────────────────────────────────────────────────────────
+
+/**
+ * mapping의 소스/대상 스키마 수집 (단기 커넥션 사용 후 즉시 반납)
+ *
+ * @returns {{ tableType, dataTables, srcSchema, dstSchema }}|null  null = 실패
+ */
+async function _discoverMapping(mapping, servers, logCtx) {
+  const srcConfig = servers[mapping.source.server];
+  const dstConfig = servers[mapping.target.server];
+
+  let sourceConn;
+  try {
+    sourceConn = new MachbaseClient(srcConfig);
+    await sourceConn.connect();
+  } catch (err) {
+    console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `source connect failed: ${err.message}` }));
+    return null;
+  }
+
+  let tableType;
+  let dataTables;
+  let srcSchema;
+  let dstSchema;
+
+  try {
+    const result = await sourceConn.getTableType(mapping.source.table);
+    tableType = result.type;
+
+    if (tableType === 'UNSUPPORTED') {
+      console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `unsupported table type, skipping mapping` }));
+      return null;
+    }
+
+    if (tableType === 'TAG') {
+      const tables = await sourceConn.listTagDataTables(mapping.source.table);
+      if (tables.length === 0) {
+        console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `no data partitions found, skipping mapping` }));
+        return null;
+      }
+      dataTables = tables.map(t => t.data_table);
+
+      // 소스 TableSchema 생성 (첫 번째 파티션 기준)
+      srcSchema = await TableSchema.buildTag(sourceConn, mapping.source.table, tables[0].table_id);
+
+      // 대상 TableSchema 생성
+      const tmpDstConn = new MachbaseClient(dstConfig);
+      try {
+        await tmpDstConn.connect();
+        const dstTables = await tmpDstConn.listTagDataTables(mapping.target.table);
+        if (dstTables.length === 0) {
+          console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `no target data partitions found, skipping mapping` }));
+          return null;
+        }
+        dstSchema = await TableSchema.buildTag(tmpDstConn, mapping.target.table, dstTables[0].table_id);
+      } finally {
+        await tmpDstConn.close().catch(() => {});
+      }
+    } else {
+      // LOG: 논리 테이블을 data_table로 사용
+      dataTables = [mapping.source.table];
+
+      srcSchema = await TableSchema.buildLog(sourceConn, mapping.source.table);
+
+      // 대상 TableSchema 생성
+      const tmpDstConn = new MachbaseClient(dstConfig);
+      try {
+        await tmpDstConn.connect();
+        dstSchema = await TableSchema.buildLog(tmpDstConn, mapping.target.table);
+      } finally {
+        await tmpDstConn.close().catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `discover failed: ${err.message}` }));
+    return null;
+  } finally {
+    // DISCOVER 완료 후 sourceConn 즉시 반납 (Worker는 각자 독립 연결을 사용)
+    await sourceConn.close().catch(err =>
+      console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `sourceConn.close after discover failed: ${err.message}` }))
+    );
+  }
+
+  return { tableType, dataTables, srcSchema, dstSchema };
+}
+
+// ─── _runMapping ──────────────────────────────────────────────────────────────
 
 /**
  * 단일 mapping의 DISCOVER → 연결 생성 → Worker 실행 → 정리
@@ -22,76 +110,10 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
 
   // ── DISCOVER ──────────────────────────────────────────────────
 
-  let sourceConn;
-  try {
-    sourceConn = new MachbaseClient(srcConfig);
-    await sourceConn.connect();
-  } catch (err) {
-    console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `source connect failed: ${err.message}` }));
-    return;
-  }
+  const discovered = await _discoverMapping(mapping, servers, logCtx);
+  if (!discovered) return;
 
-  let tableType;
-  let dataTables;
-  let srcTableInfo;
-  let dstTableInfo;
-
-  try {
-    const result = await sourceConn.getTableType(mapping.source.table);
-    tableType = result.type;
-
-    if (tableType === 'UNSUPPORTED') {
-      console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `unsupported table type, skipping mapping` }));
-      await sourceConn.close().catch(() => {});
-      return;
-    }
-
-    if (tableType === 'TAG') {
-      const tables = await sourceConn.listTagDataTables(mapping.source.table);
-      if (tables.length === 0) {
-        console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `no data partitions found, skipping mapping` }));
-        await sourceConn.close().catch(() => {});
-        return;
-      }
-      dataTables = tables.map(t => t.data_table);
-
-      // 소스 TableInfo 생성 (첫 번째 파티션 기준)
-      srcTableInfo = await TableInfo.buildTag(sourceConn, mapping.source.table, tables[0].table_id);
-
-      // 대상 TableInfo 생성
-      const tmpDstConn = new MachbaseClient(dstConfig);
-      try {
-        await tmpDstConn.connect();
-        const dstTables = await tmpDstConn.listTagDataTables(mapping.target.table);
-        if (dstTables.length === 0) {
-          console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `no target data partitions found, skipping mapping` }));
-          await sourceConn.close().catch(() => {});
-          return;
-        }
-        dstTableInfo = await TableInfo.buildTag(tmpDstConn, mapping.target.table, dstTables[0].table_id);
-      } finally {
-        await tmpDstConn.close().catch(() => {});
-      }
-    } else {
-      // LOG: 논리 테이블을 data_table로 사용
-      dataTables = [mapping.source.table];
-
-      srcTableInfo = await TableInfo.buildLog(sourceConn, mapping.source.table);
-
-      // 대상 TableInfo 생성
-      const tmpDstConn = new MachbaseClient(dstConfig);
-      try {
-        await tmpDstConn.connect();
-        dstTableInfo = await TableInfo.buildLog(tmpDstConn, mapping.target.table);
-      } finally {
-        await tmpDstConn.close().catch(() => {});
-      }
-    }
-  } catch (err) {
-    console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `discover failed: ${err.message}` }));
-    await sourceConn.close().catch(() => {});
-    return;
-  }
+  const { tableType, dataTables, srcSchema, dstSchema } = discovered;
 
   console.log(JSON.stringify({
     level: 'info', stage: 'job_runner', ...logCtx,
@@ -100,31 +122,44 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
     msg: `discover ok, spawning ${dataTables.length} worker(s)`,
   }));
 
+  // rowProcessor 생성 (TAG/LOG 전략 패턴)
+  const tagIdentifier = mapping.source.tag_identifier || { mode: 'none', value: '' };
+  const makeRowProcessor = () => tableType === 'TAG'
+    ? new TagRowProcessor(tagIdentifier)
+    : new LogRowProcessor();
+
   // ── Workers 병렬 실행 ─────────────────────────────────────────
   // @machbase/ts-client는 단일 connection/stream에서 동시 호출을 지원하지 않으므로
   // Worker(data_table)당 별도 sourceConn, targetConn, Writer를 생성한다.
 
-  const workerResources = []; // { reader, writer, pendingDstConn }
+  const workerResources = []; // { reader, writer }
   try {
     const workerPromises = dataTables.map(async dataTable => {
       const wSrcConn = new MachbaseClient(srcConfig);
       const wDstConn = new MachbaseClient(dstConfig);
-      const wReader = new Reader(srcTableInfo, wSrcConn, dataTable);
-      const wWriter = new Writer(dstTableInfo);
-      const res = { reader: wReader, writer: wWriter, pendingDstConn: wDstConn };
-      workerResources.push(res);
+      // Worker별 TagAliasCache 생성 (TAG 전용; LOG는 null)
+      const wAliasCache = tableType === 'TAG' ? new TagAliasCache(mapping.source.table) : null;
+      const wReader = new Reader(srcSchema, wAliasCache, wSrcConn, dataTable);
+      const wWriter = new Writer(dstSchema);
+      const wRowProcessor = makeRowProcessor();
 
       try {
         await wSrcConn.connect();
         await wDstConn.connect();
-        const openErr = await wWriter.open(wDstConn, mapping.target.table, srcTableInfo);
+        const openErr = await wWriter.open(wDstConn, mapping.target.table, srcSchema);
         if (openErr) {
           console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, data_table: dataTable, msg: `worker Writer.open failed: ${openErr.message}` }));
+          await wDstConn.close().catch(() => {});
+          await wSrcConn.close().catch(() => {});
           return;
         }
-        res.pendingDstConn = null; // 소유권 Writer로 이전 완료
+        // 리소스 준비 완료 후 push — open() 실패 시 직접 close하므로 finally 중복 처리 없음.
+        // open() 성공 시 dstConn 소유권은 Writer로 이전되므로 pendingDstConn은 null.
+        workerResources.push({ reader: wReader, writer: wWriter });
       } catch (err) {
         console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, data_table: dataTable, msg: `worker setup failed: ${err.message}` }));
+        await wDstConn.close().catch(() => {});
+        await wSrcConn.close().catch(() => {});
         return;
       }
 
@@ -138,6 +173,7 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
         dstConfig,
         reader: wReader,
         writer: wWriter,
+        rowProcessor: wRowProcessor,
         shutdownFlag,
       }).catch(err => {
         console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, data_table: dataTable, msg: `worker crashed: ${err.message}` }));
@@ -148,6 +184,7 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
     console.log(JSON.stringify({ level: 'info', stage: 'job_runner', ...logCtx, msg: 'all workers finished' }));
   } finally {
     // 정리: writer.close() (stream + dstConn) → reader.close() (srcConn) 순서
+    // setup 실패한 worker는 workerResources에 추가되지 않아 중복 close 없음.
     await Promise.all(workerResources.map(async res => {
       await res.writer.close().catch(err =>
         console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `workerWriter.close failed: ${err.message}` }))
@@ -155,18 +192,11 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
       await res.reader.close().catch(err =>
         console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `workerReader.close failed: ${err.message}` }))
       );
-      // open() 실패 시 dstConn 소유권이 Writer로 이전되지 않았으므로 직접 close
-      if (res.pendingDstConn) {
-        await res.pendingDstConn.close().catch(err =>
-          console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `pendingDstConn.close failed: ${err.message}` }))
-        );
-      }
     }));
-    await sourceConn.close().catch(err =>
-      console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `sourceConn.close failed: ${err.message}` }))
-    );
   }
 }
+
+// ─── _runJob / run ────────────────────────────────────────────────────────────
 
 /**
  * 단일 job 실행 (모든 mapping 병렬)
@@ -180,6 +210,8 @@ async function _runJob(job, servers, shutdownFlag) {
 
   console.log(JSON.stringify({ level: 'info', stage: 'job_runner', job_id: job.id, msg: `job start, mappings=${job.mappings.length}` }));
 
+  // 각 mapping은 독립적으로 동작한다. 한 mapping의 예외가 다른 mapping을 중단시키지 않도록
+  // .catch()로 감싸 의도적으로 오류를 로그만 남기고 계속 진행한다.
   const mappingPromises = job.mappings.map(mapping =>
     _runMapping(job, mapping, servers, shutdownFlag).catch(err => {
       console.error(JSON.stringify({ level: 'error', stage: 'job_runner', job_id: job.id, msg: `mapping crashed: ${err.message}` }));

@@ -17,63 +17,41 @@ test('shouldRetry: err.retryable=false → false', () => {
   assert.equal(rh.shouldRetry(err), false);
 });
 
-test('shouldRetry: CONFIG_ERROR 코드 → false', () => {
-  const rh = new RetryHandler();
-  const err = Object.assign(new Error('bad config'), { code: 'CONFIG_ERROR' });
-  assert.equal(rh.shouldRetry(err), false);
-});
-
-test('shouldRetry: SCHEMA_ERROR 코드 → false', () => {
-  const rh = new RetryHandler();
-  const err = Object.assign(new Error('schema'), { code: 'SCHEMA_ERROR' });
-  assert.equal(rh.shouldRetry(err), false);
-});
-
-test('shouldRetry: TYPE_MISMATCH 코드 → false', () => {
-  const rh = new RetryHandler();
-  const err = Object.assign(new Error('type'), { code: 'TYPE_MISMATCH' });
-  assert.equal(rh.shouldRetry(err), false);
-});
-
-test('shouldRetry: err=null → true', () => {
-  const rh = new RetryHandler();
-  assert.equal(rh.shouldRetry(null), true);
-});
 
 // ─── nextDelay ────────────────────────────────────────────────────────────────
 
-test('exponential: attempt=0 → initial_delay_ms', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', initial_delay_ms: 1000, multiplier: 2, jitter: false });
+test('exponential: attempt=0 → base_delay_ms', () => {
+  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 2, jitter: false });
   assert.equal(rh.nextDelay(0), 1000);
 });
 
 test('exponential: attempt=1 → initial * multiplier^1', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', initial_delay_ms: 1000, multiplier: 2, jitter: false });
+  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 2, jitter: false });
   assert.equal(rh.nextDelay(1), 2000);
 });
 
 test('exponential: attempt=3 → 8000', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', initial_delay_ms: 1000, multiplier: 2, jitter: false });
+  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 2, jitter: false });
   assert.equal(rh.nextDelay(3), 8000);
 });
 
-test('linear: attempt=0 → initial_delay_ms', () => {
-  const rh = new RetryHandler({ strategy: 'linear', initial_delay_ms: 500, jitter: false });
+test('linear: attempt=0 → base_delay_ms', () => {
+  const rh = new RetryHandler({ strategy: 'linear', base_delay_ms: 500, jitter: false });
   assert.equal(rh.nextDelay(0), 500);
 });
 
 test('linear: attempt=2 → initial * 3', () => {
-  const rh = new RetryHandler({ strategy: 'linear', initial_delay_ms: 500, jitter: false });
+  const rh = new RetryHandler({ strategy: 'linear', base_delay_ms: 500, jitter: false });
   assert.equal(rh.nextDelay(2), 1500);
 });
 
 test('max_delay_ms 상한 적용', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', initial_delay_ms: 1000, multiplier: 10, max_delay_ms: 5000, jitter: false });
+  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 10, max_delay_ms: 5000, jitter: false });
   assert.equal(rh.nextDelay(5), 5000); // 1000 * 10^5 = 100000 → 5000으로 제한
 });
 
 test('jitter=true → delay < 원본 delay', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', initial_delay_ms: 1000, multiplier: 2, max_delay_ms: 60000, jitter: true });
+  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 2, max_delay_ms: 60000, jitter: true });
   const delays = Array.from({ length: 20 }, () => rh.nextDelay(3));
   // jitter가 있으면 8000보다 작아야 함 (Math.random() < 1)
   assert.ok(delays.every(d => d <= 8000));

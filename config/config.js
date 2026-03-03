@@ -32,7 +32,12 @@ class ConfigLoader {
    */
   static async load(filePath) {
     const content = await fs.readFile(filePath, 'utf-8');
-    const raw = JSON.parse(content);
+    let raw;
+    try {
+      raw = JSON.parse(content);
+    } catch (err) {
+      throw new Error(`Failed to parse config file '${filePath}': ${err.message}`);
+    }
 
     if (raw.version !== 3) {
       throw new Error(`Unsupported config version: ${raw.version} (expected 3)`);
@@ -78,10 +83,8 @@ class ConfigLoader {
     }
 
     const checkpoint = job.checkpoint || { directory: './checkpoints' };
-    if (job.checkpoint) {
-      if (typeof checkpoint.directory !== 'string' || checkpoint.directory === '') {
-        throw new Error(`checkpoint.directory must be a non-empty string in job '${job.id}'`);
-      }
+    if (typeof checkpoint.directory !== 'string' || checkpoint.directory === '') {
+      throw new Error(`checkpoint.directory must be a non-empty string in job '${job.id}'`);
     }
 
     const jobDefaults = ConfigLoader._mergeExecution(EXECUTION_DEFAULTS, job.execution_defaults || {});
@@ -95,8 +98,6 @@ class ConfigLoader {
       enabled: job.enabled !== false,
       shutdown_timeout_ms: shutdownTimeout,
       checkpoint,
-      integrity: job.integrity,
-      retry: job.retry,
       mappings,
     };
   }
@@ -247,11 +248,11 @@ class ConfigLoader {
           return [];
         }
       }
-      if (r.initial_delay_ms !== undefined) {
-        if (!Number.isInteger(r.initial_delay_ms) || r.initial_delay_ms < 0) {
+      if (r.base_delay_ms !== undefined) {
+        if (!Number.isInteger(r.base_delay_ms) || r.base_delay_ms < 0) {
           console.error(JSON.stringify({
             level: 'error', stage: 'config', ...logCtx,
-            msg: `retry.initial_delay_ms must be a non-negative integer, got: ${r.initial_delay_ms}, skipping mapping`,
+            msg: `retry.base_delay_ms must be a non-negative integer, got: ${r.base_delay_ms}, skipping mapping`,
           }));
           return [];
         }
@@ -297,12 +298,21 @@ class ConfigLoader {
     // tag_identifier 검증
     const VALID_MODES = ['prefix', 'suffix', 'none'];
     const tagId = mapping.source.tag_identifier;
-    if (tagId && !VALID_MODES.includes(tagId.mode)) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `Invalid tag_identifier.mode '${tagId.mode}' in mapping '${mapping.mapping_id}', skipping mapping`,
-      }));
-      return [];
+    if (tagId) {
+      if (tagId.mode === undefined || tagId.mode === null) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: `tag_identifier.mode is required when tag_identifier is specified (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`,
+        }));
+        return [];
+      }
+      if (!VALID_MODES.includes(tagId.mode)) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: `Invalid tag_identifier.mode '${tagId.mode}' (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`,
+        }));
+        return [];
+      }
     }
     if (tagId && tagId.value !== undefined && typeof tagId.value !== 'string') {
       console.error(JSON.stringify({

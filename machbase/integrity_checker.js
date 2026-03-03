@@ -19,13 +19,20 @@ class IntegrityChecker {
     if (!rows || rows.length === 0) return { existSet: new Set(), err: null };
 
     if (rows.length > 500) {
-      console.warn(JSON.stringify({ level: 'warn', stage: 'integrity_checker', msg: `batchExists called with ${rows.length} rows (>500), query may be slow` }));
+      throw new Error(`batchExists called with ${rows.length} rows (>500). Caller must limit batch size to 500.`);
     }
 
     // UNION ALL 방식으로 일괄 조회
     // SELECT name, time FROM table WHERE (name='...' AND time=...) OR ...
     // Machbase는 OR 조건을 지원하므로 하나의 쿼리로 처리
     const conditions = rows.map(r => {
+      if (r.canonical == null) {
+        throw new Error(`batchExists: row has null/undefined canonical (time="${r.time}")`);
+      }
+      if (r.time === null || r.time === undefined) {
+        throw new Error(`batchExists: row has null/undefined time (canonical="${r.canonical}")`);
+      }
+      // SQL 싱글쿼트 이스케이프: Machbase SQL 파서는 '' 을 리터럴 ' 로 해석 (ANSI SQL 표준)
       const safeTag = String(r.canonical).replace(/'/g, "''");
       const safeTime = BigInt(r.time);
       return `(name = '${safeTag}' AND time = ${safeTime})`;
@@ -48,7 +55,10 @@ class IntegrityChecker {
    * batchExists의 key 생성 헬퍼
    */
   static existKey(canonical, timeNs) {
-    // 주의: canonical에 \x00이 포함되면 키 충돌 가능. Machbase 태그명은 \x00을 허용하지 않으므로 실용상 안전.
+    // separator \x00은 canonical에 포함되지 않아야 키 충돌이 없음
+    if (canonical.includes('\x00')) {
+      throw new Error(`canonical contains null byte: ${JSON.stringify(canonical)}`);
+    }
     return `${canonical}\x00${BigInt(timeNs)}`;
   }
 }

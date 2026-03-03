@@ -1,18 +1,10 @@
 'use strict';
 
-// 재시도 불가 오류 코드
-const NON_RETRYABLE_CODES = new Set([
-  'CONFIG_ERROR',
-  'SCHEMA_ERROR',
-  'TYPE_MISMATCH',
-  'COLUMN_VALIDATION_ERROR',
-]);
-
 class RetryHandler {
   /**
    * @param {object} config
    * @param {string}  [config.strategy='exponential'] - 'exponential' | 'linear'
-   * @param {number}  [config.initial_delay_ms=1000]
+   * @param {number}  [config.base_delay_ms=1000]
    * @param {number}  [config.multiplier=2]           - exponential 전용
    * @param {number}  [config.max_delay_ms=60000]
    * @param {boolean} [config.jitter=true]
@@ -20,7 +12,7 @@ class RetryHandler {
    */
   constructor(config = {}) {
     this.strategy = config.strategy || 'exponential';
-    this.initialDelayMs = config.initial_delay_ms ?? 1000;
+    this.baseDelayMs = config.base_delay_ms ?? 1000;
     this.multiplier = config.multiplier ?? 2;
     this.maxDelayMs = config.max_delay_ms ?? 60000;
     this.jitter = config.jitter !== false;
@@ -29,13 +21,11 @@ class RetryHandler {
 
   /**
    * 재시도 가능 여부 판단
-   * @param {Error|null} err
+   * @param {Error} err
    * @returns {boolean}
    */
   shouldRetry(err) {
-    if (!err) return true;
     if (err.retryable === false) return false;
-    if (NON_RETRYABLE_CODES.has(err.code)) return false;
     return true;
   }
 
@@ -57,10 +47,10 @@ class RetryHandler {
   nextDelay(attempt) {
     let delay;
     if (this.strategy === 'exponential') {
-      delay = this.initialDelayMs * Math.pow(this.multiplier, attempt);
+      delay = this.baseDelayMs * Math.pow(this.multiplier, attempt);
     } else {
       // linear
-      delay = this.initialDelayMs * (attempt + 1);
+      delay = this.baseDelayMs * (attempt + 1);
     }
 
     delay = Math.min(delay, this.maxDelayMs);
@@ -80,9 +70,13 @@ class RetryHandler {
    * @returns {Promise<'timeout'|'shutdown'>}
    */
   sleepOrShutdown(ms, shutdownFlag) {
+    if (shutdownFlag.value) return Promise.resolve('shutdown');
+
     return new Promise(resolve => {
+      const ac = new AbortController();
+
       const timer = setTimeout(() => {
-        clearInterval(checker);
+        ac.abort();
         resolve('timeout');
       }, ms);
 
@@ -90,9 +84,12 @@ class RetryHandler {
         if (shutdownFlag.value) {
           clearTimeout(timer);
           clearInterval(checker);
+          ac.abort();
           resolve('shutdown');
         }
       }, 50);
+
+      ac.signal.addEventListener('abort', () => clearInterval(checker), { once: true });
     });
   }
 }

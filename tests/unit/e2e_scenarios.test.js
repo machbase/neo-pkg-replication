@@ -57,10 +57,10 @@ function logMapping(overrides = {}) {
   };
 }
 
-/** TAG sourceReader mock */
+/** TAG Reader mock */
 function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null) {
   return {
-    tableInfo: {
+    schema: {
       tableType: 'TAG',
       logicalTable: 'TAG',
       dataColumns: [
@@ -73,15 +73,15 @@ function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null
         { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
         { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
       ],
-      aliasMap: metaMap,
       getSelectColumnNames() { return ['time', 'value']; },
     },
+    aliasCache: { _map: metaMap, get size() { return metaMap.size; } },
     dataTable: '_TAG_DATA_0',
-    get aliasMap() { return this.tableInfo.aliasMap; },
+    get aliasSize() { return metaMap.size; },
     async loadAliases() { return null; },
     async resolveTagCanonical(tagId) {
       const tagIdBig = BigInt(tagId);
-      const name = this.tableInfo.aliasMap.get(tagIdBig) || this.tableInfo.aliasMap.get(Number(tagId));
+      const name = metaMap.get(tagIdBig) || metaMap.get(Number(tagId));
       if (!name) return { canonical: null, status: 'drop_not_found' };
       return { canonical: name, status: 'ok' };
     },
@@ -97,10 +97,10 @@ function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null
   };
 }
 
-/** LOG sourceReader mock */
+/** LOG Reader mock */
 function makeLogSourceReader(readFn = null) {
   return {
-    tableInfo: {
+    schema: {
       tableType: 'LOG',
       logicalTable: 'LOG_TABLE',
       dataColumns: [
@@ -114,11 +114,11 @@ function makeLogSourceReader(readFn = null) {
         { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
         { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
       ],
-      aliasMap: new Map(),
       getSelectColumnNames() { return ['name', 'time', 'value']; },
     },
+    aliasCache: null,
     dataTable: 'LOG_TABLE',
-    get aliasMap() { return this.tableInfo.aliasMap; },
+    get aliasSize() { return 0; },
     async loadAliases() { return null; },
     async close() {},
     async refreshConnection(config) {},
@@ -501,7 +501,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
           retry: {
             enabled: true,
             strategy: 'linear',
-            initial_delay_ms: 10,
+            base_delay_ms: 10,
             max_delay_ms: 50,
             multiplier: 1,
             jitter: false,
@@ -554,7 +554,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
           retry: {
             enabled: true,
             strategy: 'linear',
-            initial_delay_ms: 5,
+            base_delay_ms: 5,
             max_delay_ms: 20,
             multiplier: 1,
             jitter: false,

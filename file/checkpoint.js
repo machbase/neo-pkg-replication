@@ -18,7 +18,7 @@ class CheckpointStore {
    * @returns {{ cp: object|null, exists: boolean, err: Error|null }}
    */
   async load(jobId, dataTable) {
-    const file = new File(this._filePath(jobId, dataTable));
+    const file = new File(this._filePath(jobId, dataTable), { bigintKeys: ['last_success_rid'] });
 
     let data;
     try {
@@ -27,12 +27,13 @@ class CheckpointStore {
       if (err.code === 'ENOENT') {
         return { cp: null, exists: false, err: null };
       }
+      const msg = err instanceof SyntaxError ? `parse failed: ${err.message}` : `read failed: ${err.message}`;
       console.error(JSON.stringify({
         level: 'error',
         stage: 'checkpoint_io',
         job_id: jobId,
         data_table: dataTable,
-        msg: `parse failed: ${err.message}`,
+        msg,
       }));
       return { cp: null, exists: false, err };
     }
@@ -49,7 +50,19 @@ class CheckpointStore {
       return { cp: null, exists: false, err: new Error('checkpoint data_table mismatch') };
     }
 
-    return { cp: data.checkpoint, exists: true, err: null };
+    const cp = data.checkpoint;
+    if (!cp || typeof cp.last_success_rid !== 'bigint') {
+      console.error(JSON.stringify({
+        level: 'error',
+        stage: 'checkpoint_io',
+        job_id: jobId,
+        data_table: dataTable,
+        msg: `invalid checkpoint structure (last_success_rid missing or wrong type), invalidating`,
+      }));
+      return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
+    }
+
+    return { cp, exists: true, err: null };
   }
 
   /**
@@ -62,7 +75,11 @@ class CheckpointStore {
    * @returns {Error|null}
    */
   async save(jobId, dataTable, cp, stats, opts) {
-    const file = new File(this._filePath(jobId, dataTable));
+    if (typeof cp.last_success_rid !== 'bigint') {
+      throw new TypeError(`last_success_rid must be BigInt, got ${typeof cp.last_success_rid}`);
+    }
+
+    const file = new File(this._filePath(jobId, dataTable), { bigintKeys: ['last_success_rid'] });
 
     const data = {
       version: 1,
