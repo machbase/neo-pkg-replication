@@ -1,6 +1,83 @@
 'use strict';
 
-const { ColumnType } = require('./machbase.js');
+// ─── ColumnType ───────────────────────────────────────────────────────────────
+
+/**
+ * Machbase 컬럼 타입 정의
+ * (공식 문서: https://docs.machbase.com/dbms/sql-reference/datatypes/#data-type-table)
+ *
+ * @property {number} code      - M$SYS_COLUMNS.TYPE 값
+ * @property {string} type      - appendOpen 프로토콜 타입 문자열
+ * @property {*}      safeNull  - 타입 안전 null 대체값 (append 패딩용)
+ */
+class ColumnType {
+  constructor(code, type, safeNull) {
+    this.code     = code;
+    this.type     = type;
+    this.safeNull = safeNull;
+  }
+
+  static SHORT     = new ColumnType(4,   'int32',   0);
+  static USHORT    = new ColumnType(104, 'int32',   0);
+  static INTEGER   = new ColumnType(8,   'int32',   0);
+  static UINTEGER  = new ColumnType(108, 'int32',   0);
+  static LONG      = new ColumnType(12,  'int64',   0n);
+  static ULONG     = new ColumnType(112, 'int64',   0n);
+  static DATETIME  = new ColumnType(6,   'int64',   0n);
+  static FLOAT     = new ColumnType(16,  'float64', 0.0);
+  static DOUBLE    = new ColumnType(20,  'float64', 0.0);
+  static VARCHAR   = new ColumnType(5,   'varchar', '');
+  static TEXT      = new ColumnType(49,  'varchar', '');
+  static CLOB      = new ColumnType(53,  'varchar', '');
+  static BLOB      = new ColumnType(57,  'varchar', '');
+  static BINARY    = new ColumnType(97,  'varchar', '');
+  static IPV4      = new ColumnType(32,  'varchar', '');
+  static IPV6      = new ColumnType(36,  'varchar', '');
+  static JSON      = new ColumnType(61,  'varchar', '');
+  static UNKNOWN   = new ColumnType(-1,  'unknown', null);
+
+  /** @type {Map<number, ColumnType>} */
+  static #byCode = new Map(
+    [
+      ColumnType.SHORT, ColumnType.USHORT, ColumnType.INTEGER, ColumnType.UINTEGER,
+      ColumnType.LONG, ColumnType.ULONG, ColumnType.DATETIME,
+      ColumnType.FLOAT, ColumnType.DOUBLE,
+      ColumnType.VARCHAR, ColumnType.TEXT, ColumnType.CLOB, ColumnType.BLOB,
+      ColumnType.BINARY, ColumnType.IPV4, ColumnType.IPV6, ColumnType.JSON,
+    ].map(ct => [ct.code, ct])
+  );
+
+  /**
+   * M$SYS_COLUMNS.TYPE 코드로 ColumnType 인스턴스 반환
+   * @param {number} code
+   * @returns {ColumnType}
+   */
+  static fromCode(code) {
+    return ColumnType.#byCode.get(code) ?? ColumnType.UNKNOWN;
+  }
+}
+
+// ─── Column ───────────────────────────────────────────────────────────────────
+
+/**
+ * 테이블 컬럼 메타정보
+ *
+ * @property {string} name - 컬럼명 (UPPERCASE, M$SYS_COLUMNS 기준)
+ * @property {ColumnType} columnType - 컬럼 타입
+ * @property {number} id - 컬럼 ID (M$SYS_COLUMNS.ID)
+ * @property {'key'|'data'|'metadata'} category
+ *   - key: TAG의 NAME 컬럼 (논리적 PK)
+ *   - data: 일반 데이터 컬럼 (DATA 파티션 및 LOG)
+ *   - metadata: TAG META 테이블의 추가 속성 컬럼
+ */
+class Column {
+  constructor(name, columnType, id, category) {
+    this.name = name;
+    this.columnType = columnType;
+    this.id = id;
+    this.category = category;
+  }
+}
 
 // ─── TableSchema ─────────────────────────────────────────────────────────────
 
@@ -8,25 +85,15 @@ const { ColumnType } = require('./machbase.js');
  * 불변 테이블 컬럼 구조 정보
  *
  * TAG/LOG 테이블의 컬럼 구조를 분석하여:
- *   - dataColumns: SELECT에 사용할 데이터 컬럼 (TIME, VALUE, 추가 컬럼)
- *   - metadataColumns: append 시 safe null로 패딩할 metadata 컬럼
- *   - writeColumns: appendOpen용 전체 컬럼 순서 (NAME + data + metadata)
- *
- * alias 동적 상태는 TagAliasCache로 분리됨.
+ *   - columns: appendOpen용 전체 컬럼 순서 (NAME + data + metadata)
  */
 class TableSchema {
   constructor(tableType, logicalTable) {
     this.tableType = tableType;       // 'TAG' | 'LOG'
     this.logicalTable = logicalTable;
 
-    /** @type {Array<{name: string, columnType: ColumnType, id: number, category: string}>} */
-    this.dataColumns = [];
-
-    /** @type {Array<{name: string, columnType: ColumnType, id: number, category: string}>} */
-    this.metadataColumns = [];
-
-    /** @type {Array<{name: string, columnType: ColumnType, id: number, category: string}>} */
-    this.writeColumns = [];
+    /** @type {Column[]} */
+    this.columns = [];
   }
 
   // ── 팩토리 메서드 ──────────────────────────────────────────────────────────
@@ -36,9 +103,7 @@ class TableSchema {
    *
    * Step 1: _{table}_META 컬럼 조회 → metadata columns 추출
    * Step 2: _{table}_DATA_{dataTableId} 컬럼 조회 → data columns 추출
-   * Step 3: writeColumns = [NAME(varchar)] + dataColumns + metadataColumns
-   *
-   * alias map 로드는 포함하지 않음 — TagAliasCache 책임.
+   * Step 3: columns = [NAME(varchar)] + dataColumns + metadataColumns
    *
    * @param {MachbaseClient} conn
    * @param {string} logicalTable - 논리 테이블명 (예: 'TAG')
@@ -64,6 +129,7 @@ class TableSchema {
     //   - _ prefix 컬럼 제외 (시스템 컬럼: _ID 등)
     //   - 첫 번째 user 컬럼 = NAME (varchar, tag 이름) → 제외
     //   - 나머지 = metadata columns
+    const metadataColumns = [];
     let nameSkipped = false;
     for (const r of (metaRows || [])) {
       if (r.NAME.startsWith('_')) continue;
@@ -71,12 +137,7 @@ class TableSchema {
         nameSkipped = true; // 첫 번째 user 컬럼(NAME) skip
         continue;
       }
-      schema.metadataColumns.push({
-        name: r.NAME,
-        columnType: ColumnType.fromCode(r.TYPE),
-        id: r.ID,
-        category: 'metadata',
-      });
+      metadataColumns.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'metadata'));
     }
 
     // Step 2: DATA 파티션 컬럼 조회 → data columns 추출
@@ -88,30 +149,25 @@ class TableSchema {
     `.trim();
     const dataRows = await conn.query(dataSql, [dataTableId]);
 
+    const dataColumns = [];
     for (const r of (dataRows || [])) {
       if (r.NAME.startsWith('_')) continue;
-      // DATA 파티션에서 NAME 컬럼은 ulong(112) 타입의 tag_id 내부 표현 → 제외
-      // 컬럼명 기반으로 제외하여 타입 코드 의존을 제거
-      if (r.NAME.toLowerCase() === 'name') continue;
-      schema.dataColumns.push({
-        name: r.NAME,
-        columnType: ColumnType.fromCode(r.TYPE),
-        id: r.ID,
-        category: 'data',
-      });
+      // DATA 파티션의 NAME 컬럼은 내부적으로 tag_id(ulong)이지만
+      // 논리적으로는 VARCHAR 문자열이므로 타입을 VARCHAR로 오버라이드
+      const columnType = r.NAME.toLowerCase() === 'name'
+        ? ColumnType.VARCHAR
+        : ColumnType.fromCode(r.TYPE);
+      const category = r.NAME.toLowerCase() === 'name' ? 'key' : 'data';
+      dataColumns.push(new Column(r.NAME, columnType, r.ID, category));
     }
 
     // Step 3: dataColumns 빈 배열 검증 — Worker 시작 전에 오류를 조기 발견
-    if (schema.dataColumns.length === 0) {
+    if (dataColumns.length === 0) {
       throw new Error(`buildTag: no data columns found for table '${logicalTable}' (dataTableId=${dataTableId})`);
     }
 
-    // writeColumns = [NAME] + dataColumns + metadataColumns
-    schema.writeColumns = [
-      { name: 'NAME', columnType: ColumnType.VARCHAR, id: 0, category: 'key' },
-      ...schema.dataColumns,
-      ...schema.metadataColumns,
-    ];
+    // columns = dataColumns(NAME 포함) + metadataColumns
+    schema.columns = [...dataColumns, ...metadataColumns];
 
     return schema;
   }
@@ -120,7 +176,7 @@ class TableSchema {
    * LOG 테이블용 TableSchema 생성
    *
    * LOG는 META/metadata 없음.
-   * 전체 컬럼 = dataColumns = writeColumns
+   * 전체 컬럼 = columns
    *
    * @param {MachbaseClient} conn
    * @param {string} logicalTable - 논리 테이블명 (예: 'LOG_TABLE')
@@ -139,118 +195,12 @@ class TableSchema {
     const rows = await conn.query(sql, [logicalTable]);
 
     for (const r of (rows || [])) {
-      schema.dataColumns.push({
-        name: r.NAME,
-        columnType: ColumnType.fromCode(r.TYPE),
-        id: r.ID,
-        category: 'data',
-      });
+      schema.columns.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data'));
     }
-
-    // LOG: 전체 컬럼 = dataColumns = writeColumns (metadata 없음)
-    schema.writeColumns = [...schema.dataColumns];
 
     return schema;
   }
 
-  // ── 헬퍼 ──────────────────────────────────────────────────────────────────
-
-  /**
-   * Reader SELECT용 추가 컬럼명 배열 반환 (lowercase)
-   *
-   * Reader.readAfterRid()에서 _RID와 name은 항상 별도로 추가하므로,
-   * 이 메서드는 그 외의 데이터 컬럼만 반환한다.
-   * TAG: dataColumns = [TIME, VALUE, ...] (NAME은 buildTag에서 이미 제외됨)
-   * LOG: dataColumns = 전체 컬럼 (Reader에서 name 중복 필터링 처리)
-   *
-   * @returns {string[]} lowercase 컬럼명 배열
-   */
-  getSelectColumnNames() {
-    return this.dataColumns.map(c => c.name.toLowerCase());
-  }
 }
 
-// ─── TagAliasCache ────────────────────────────────────────────────────────────
-
-/**
- * TAG alias 동적 상태 전담 클래스
- *
- * tag_id (_ID) → canonical name 변환을 Read-through cache로 관리.
- * TableSchema가 불변인 반면, TagAliasCache는 실행 중에 항목이 추가될 수 있다.
- *
- * Worker별로 독립 인스턴스를 생성해 상태 격리를 보장한다.
- */
-class TagAliasCache {
-  constructor(logicalTable) {
-    this.logicalTable = logicalTable;
-    /** @type {Map<bigint, string>} TAG alias: _ID → name */
-    this._map = new Map();
-  }
-
-  /** 현재 캐시 항목 수 */
-  get size() { return this._map.size; }
-
-  /**
-   * _TAG_META 전체 로드 → aliasMap 구성
-   *
-   * 주의: META 테이블을 full scan 한다. TAG가 수십만 개인 대규모 환경에서는
-   * Worker 시작 시 지연이 발생할 수 있음. 현재는 Worker당 1회 호출이므로 실용상 문제없음.
-   *
-   * @param {MachbaseClient} conn
-   * @returns {Error|null}
-   */
-  async load(conn) {
-    const sql = `SELECT _ID, name FROM _${this.logicalTable}_META`;
-    try {
-      const rows = await conn.query(sql);
-      this._map.clear();
-      for (const row of (rows || [])) {
-        this._map.set(BigInt(row._ID), row.name);
-      }
-      return null;
-    } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'table_info', msg: `loadAliases failed: ${err.message}` }));
-      return err;
-    }
-  }
-
-  /**
-   * tag_id → canonical 태그명 변환 (Read-through cache)
-   * @param {MachbaseClient} conn
-   * @param {number|bigint} tagId
-   * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
-   * @returns {{ canonical: string|null, status: 'ok'|'drop_not_found'|'retry_error' }}
-   */
-  async resolve(conn, tagId, tagIdentifier) {
-    const tagIdBig = BigInt(tagId);
-    let tagName = this._map.get(tagIdBig);
-
-    // 캐시 miss → DB 단건 조회
-    if (tagName === undefined) {
-      try {
-        const sql = `SELECT name FROM _${this.logicalTable}_META WHERE _ID = ?`;
-        const rows = await conn.query(sql, [tagId]);
-        if (!rows || rows.length === 0) {
-          return { canonical: null, status: 'drop_not_found' };
-        }
-        tagName = rows[0].name;
-        this._map.set(tagIdBig, tagName);
-      } catch (err) {
-        console.error(JSON.stringify({ level: 'error', stage: 'table_info', tag_id: String(tagId), msg: err.message }));
-        return { canonical: null, status: 'retry_error' };
-      }
-    }
-
-    const canonical = TagAliasCache._applyIdentifier(tagName, tagIdentifier);
-    return { canonical, status: 'ok' };
-  }
-
-  static _applyIdentifier(tagName, tagIdentifier) {
-    if (!tagIdentifier || tagIdentifier.mode === 'none') return tagName;
-    if (tagIdentifier.mode === 'prefix') return (tagIdentifier.value || '') + tagName;
-    if (tagIdentifier.mode === 'suffix') return tagName + (tagIdentifier.value || '');
-    return tagName;
-  }
-}
-
-module.exports = { TableSchema, TagAliasCache };
+module.exports = { ColumnType, Column, TableSchema };

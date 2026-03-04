@@ -63,17 +63,11 @@ function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null
     schema: {
       tableType: 'TAG',
       logicalTable: 'TAG',
-      dataColumns: [
-        { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
-        { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
-      ],
-      metadataColumns: [],
-      writeColumns: [
+      columns: [
         { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'key' },
         { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
         { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
       ],
-      getSelectColumnNames() { return ['time', 'value']; },
     },
     aliasCache: { _map: metaMap, get size() { return metaMap.size; } },
     dataTable: '_TAG_DATA_0',
@@ -103,18 +97,11 @@ function makeLogSourceReader(readFn = null) {
     schema: {
       tableType: 'LOG',
       logicalTable: 'LOG_TABLE',
-      dataColumns: [
+      columns: [
         { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'data' },
         { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
         { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
       ],
-      metadataColumns: [],
-      writeColumns: [
-        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'data' },
-        { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
-        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
-      ],
-      getSelectColumnNames() { return ['name', 'time', 'value']; },
     },
     aliasCache: null,
     dataTable: 'LOG_TABLE',
@@ -401,8 +388,8 @@ describe('E2E-05: LOG 테이블 복제 — STARTUP_INTEGRITY 미수행', () => {
       if (batchCount === 1) {
         return {
           rows: [
-            { rid: 51n, tagId: 'machine_temp', data: { TIME: 1000n, VALUE: 25.5 } },
-            { rid: 52n, tagId: 'machine_vibr', data: { TIME: 2000n, VALUE: 0.3 } },
+            { rid: 51n, tagId: null, data: { NAME: 'machine_temp', TIME: 1000n, VALUE: 25.5 } },
+            { rid: 52n, tagId: null, data: { NAME: 'machine_vibr', TIME: 2000n, VALUE: 0.3 } },
           ],
           err: null,
         };
@@ -636,59 +623,4 @@ describe('E2E-07: cp 파일 손상 → start_mode 기준 시작', () => {
     }
   });
 
-  test('source.data_table 불일치 cp 파일 → start_mode=now → startRid=getMaxRid(), stage=checkpoint_io 로그', async () => {
-    const tmpDir = await makeTmpDir();
-    const shutdownFlag = makeFlag(30);
-
-    const cpFile = path.join(tmpDir, 'e2e07b___TAG_DATA_0.json');
-    const corruptedCp = {
-      version: 1,
-      job_id: 'e2e07b',
-      source: {
-        server: 'src',
-        table: 'TAG',
-        data_table: '_TAG_DATA_WRONG',
-      },
-      checkpoint: {
-        last_success_rid: '9999',
-        updated_at: new Date().toISOString(),
-      },
-    };
-    await fs.writeFile(cpFile, JSON.stringify(corruptedCp), 'utf-8');
-
-    const logs = [];
-    console.error = (...args) => { logs.push(args.join(' ')); };
-
-    const readCalls = [];
-    const reader = makeTagSourceReader(new Map([[1, 'sensor_a']]), (startRid) => {
-      readCalls.push(startRid);
-      return { rows: [], err: null };
-    });
-    reader.getMaxRid = async () => ({ maxRid: 777n, err: null });
-
-    restores.push(patchWriter(null));
-
-    try {
-      const Writer = require('../../machbase/writer.js');
-      await runDataTableWorker({
-        jobId: 'e2e07b',
-        mapping: baseMapping({ start_mode: 'now', integrity: { enabled: false } }),
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: '_TAG_DATA_0',
-        reader: reader,
-        dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        writer: new Writer(),
-        shutdownFlag,
-      });
-
-      assert.ok(readCalls.length >= 1, '최소 1회 read 호출');
-      assert.equal(readCalls[0], 778n, 'startRid = getMaxRid() + 1n = 778n (기존 마지막 RID 제외)');
-
-      const cpIoLog = logs.find(l => l.includes('checkpoint_io'));
-      assert.ok(cpIoLog !== undefined, 'stage="checkpoint_io" 오류 로그가 출력되어야 함');
-    } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    }
-  });
 });

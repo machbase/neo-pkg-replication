@@ -35,10 +35,8 @@ class TagRowProcessor {
     if (canonical === undefined) return { action: 'shutdown' };
     if (canonical === null) return { action: 'drop' };
 
-    // row.data는 TIME/VALUE 등 데이터 컬럼만 포함해야 한다는 Reader와의 암묵적 계약.
-    // 방어적으로 NAME을 명시적으로 덮어써서 혹시라도 포함된 NAME 키를 무시한다.
-    const { NAME: _drop, ...restData } = row.data;
-    return { action: 'append', outRow: { NAME: canonical, ...restData } };
+    // canonical name으로 NAME을 덮어씀 (tag_id → canonical 변환)
+    return { action: 'append', outRow: { ...row.data, NAME: canonical } };
   }
 }
 
@@ -48,7 +46,7 @@ class TagRowProcessor {
  */
 class LogRowProcessor {
   async process(row) {
-    return { action: 'append', outRow: { NAME: row.tagId, ...row.data } };
+    return { action: 'append', outRow: row.data };
   }
 }
 

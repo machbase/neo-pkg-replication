@@ -21,11 +21,11 @@ repli-js/
 │   ├── worker.js                 # Worker 상태 머신 (M9): RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
 │   └── retry.js                  # RetryHandler 유틸리티 (M8)
 ├── machbase/
-│   ├── machbase.js               # MachbaseClient, ColumnType 클래스
+│   ├── machbase.js               # MachbaseClient 클래스
 │   ├── catalog.js                # CatalogClient — 테이블 타입/파티션 조회 (M2)
-│   ├── table_info.js             # TableInfo — 컬럼 메타 + alias map (M5)
-│   ├── reader.js                 # Reader — RID 기반 소스 읽기 (M4)
-│   ├── writer.js                 # Writer — appendOpen/append/close 래퍼 (M7)
+│   ├── table_info.js             # ColumnType, Column, TableSchema 클래스
+│   ├── reader.js                 # TagAliasCache, Reader 클래스
+│   ├── writer.js                 # Writer 클래스
 │   └── integrity_checker.js      # IntegrityChecker — batchExists() (M6)
 ├── file/
 │   ├── file.js                   # File — JSON atomic read/write (BigInt 지원)
@@ -36,14 +36,14 @@ repli-js/
 │   │   ├── checkpoint.test.js    # CheckpointStore 단위 테스트 (6개)
 │   │   ├── config.test.js        # Config 단위 테스트 (26개)
 │   │   ├── retry.test.js         # RetryHandler 단위 테스트 (19개)
-│   │   ├── table_info.test.js    # TableInfo 단위 테스트 (16개)
+│   │   ├── table_info.test.js    # TableSchema/TagAliasCache 단위 테스트 (15개)
 │   │   ├── target_writer.test.js # Writer 단위 테스트 (6개)
 │   │   ├── worker.test.js        # Worker 상태 머신 단위 테스트 (9개)
 │   │   └── e2e_scenarios.test.js # E2E 시나리오 mock 테스트 (8개)
 │   └── integration/
-│       ├── tag_table.test.js     # TAG 테이블 통합 테스트 (7개)
-│       ├── log_table.test.js     # LOG 테이블 통합 테스트 (9개)
-│       └── log_schema.test.js    # LOG 스키마 변형 통합 테스트 (4개)
+│       ├── tag_table.test.js     # TAG 테이블 통합 테스트 (8개)
+│       ├── log_table.test.js     # LOG 테이블 통합 테스트 (10개)
+│       └── log_schema.test.js    # LOG 스키마 변형 통합 테스트 (5개)
 ├── docs/
 │   └── PROJECT.md                # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 └── package.json
@@ -58,8 +58,12 @@ repli-js/
 
 ### job_runner.js — JobRunner
 
-- job별로 `data_tables` 목록을 순회하며 `runDataTableWorker`를 `Promise.all`로 병렬 실행
-- 각 worker에 독립적인 `sourceConn` / `targetConn` 연결 제공
+- `_discoverMapping(mapping, servers, logCtx)` → 소스/대상 스키마 수집 + 검증
+  - src-only 컬럼 검출: 소스에만 있고 대상에 없는 컬럼 → 해당 mapping 스킵
+  - `source.columns` 유효성 검증: schema에 존재하지 않는 컬럼명 → 해당 mapping 스킵
+- `_runMapping()` → DISCOVER → Worker별 독립 연결 생성 → `Promise.all` 병렬 실행
+  - Worker별 독립 `TagAliasCache` 생성 (TAG 전용)
+  - Worker별 독립 `sourceConn` / `targetConn` / `Writer` 인스턴스 사용
 
 ### worker/worker.js — Worker 상태 머신
 
@@ -72,29 +76,50 @@ repli-js/
 3. **STEADY_REPLICATION**: 루프 — reader.readAfterRid → reader.resolveTagCanonical → writer.append → cp 저장 → sleep(poll_interval_ms) → shutdown 체크
    - statement ID 고갈 방지: stmtCount 추적, 900 도달 시 srcConn 재생성
 
-### machbase/table_info.js — M5
+### machbase/table_info.js
 
-- `TableInfo` 클래스: 컬럼 메타 + alias map 통합
-- `TableInfo.buildTag(conn, table, dataTableId)` → TAG 테이블 컬럼 분석 + alias 로드
-- `TableInfo.buildLog(conn, table)` → LOG 테이블 컬럼 분석
-- `resolveTagCanonical(conn, tagId, tagIdentifier)` → Read-through cache로 tag_id → canonical name 변환
-- `getSelectColumnNames()` → Reader SELECT용 lowercase 컬럼명 배열
+- `ColumnType` 클래스: Machbase 컬럼 타입 정의 (`code`, `type`, `safeNull`)
+  - Static 상수: `SHORT`, `INTEGER`, `LONG`, `ULONG`, `DATETIME`, `FLOAT`, `DOUBLE`, `VARCHAR`, `TEXT`, `CLOB`, `BLOB`, `BINARY`, `IPV4`, `IPV6`, `JSON`, `UNKNOWN`
+  - `safeNull`: append 패딩용 타입 안전 null 대체값 (int32→`0`, int64/datetime→`0n`, float→`0.0`, string→`''`)
+  - `ColumnType.fromCode(code)` → M$SYS_COLUMNS.TYPE 코드로 인스턴스 반환
+- `Column` 클래스: 테이블 컬럼 메타정보 (`name`, `columnType`, `id`, `category`)
+  - `category`: `'key'`(TAG의 NAME 컬럼), `'data'`(일반 데이터 컬럼), `'metadata'`(TAG META 추가 속성)
+- `TableSchema` 클래스: 불변 테이블 컬럼 구조 (`tableType`, `logicalTable`, `columns: Column[]`)
+  - `TableSchema.buildTag(conn, logicalTable, dataTableId)` → TAG 테이블 컬럼 분석
+    - columns = dataColumns(NAME 포함) + metadataColumns
+  - `TableSchema.buildLog(conn, logicalTable)` → LOG 테이블 컬럼 분석
+- `module.exports = { ColumnType, Column, TableSchema }`
 
-### machbase/reader.js — M4
+### machbase/reader.js
 
-- `Reader` 클래스: TableInfo 소유, 소스 DB 읽기 담당
-- `new Reader(tableInfo, conn, dataTable)` → 인스턴스 생성
-- `readAfterRid(startRid, limit, rangeSize)` → `{ rows, err }` (인스턴스 메서드)
-- `Reader.getMaxRid(conn, dataTable)` → `{ maxRid, err }` (static)
-- `replaceConnection(newConn)` → statement ID 고갈 시 연결 교체
-- 내부적으로 `RID_RANGE` 힌트 SQL 사용
+- `TagAliasCache` 클래스: TAG alias 동적 상태 관리 (tag_id → canonical name)
+  - `new TagAliasCache(logicalTable)` → Worker별 독립 인스턴스
+  - `load(conn)` → 전체 alias 일괄 로드
+  - `resolve(conn, tagId, tagIdentifier)` → Read-through cache, `{ canonical, status }` 반환
+    - `status`: `'ok'` | `'drop_not_found'` | `'retry_error'`
+  - `size` getter
+- `Reader` 클래스: 소스 DB 읽기 담당
+  - `new Reader(schema, aliasCache, conn, dataTable, sourceColumns = null)`
+    - `selectColumnNames`: 생성자에서 1회 계산 (metadata category 제외 + sourceColumns 필터)
+    - `sourceColumns`: UPPERCASE 허용 컬럼명 배열. `null`이면 전체 데이터 컬럼 SELECT.
+  - `readAfterRid(startRid, limit, rangeSize)` → `{ rows, err }`
+  - `Reader.getMaxRid(conn, dataTable)` → `{ maxRid, err }` (static)
+  - `replaceConnection(newConn)` → statement ID 고갈 시 연결 교체
+  - 내부적으로 `RID_RANGE` 힌트 SQL 사용
+- `module.exports = { Reader, TagAliasCache }`
 
-### machbase/writer.js — M7
+### machbase/writer.js
 
-- `Writer` 클래스: dstTableInfo 소유, 대상 DB 쓰기 담당
-- `new Writer(dstTableInfo)` → 인스턴스 생성
-- `open(conn, table, srcTableInfo)` → appendOpen 스트림 초기화, safeNull 패딩 설정
-- `append(rows)` / `close()` → AppendStreamSession 래퍼
+- `Writer` 클래스: 대상 DB 쓰기 담당
+  - `new Writer(dstSchema)` → 인스턴스 생성 (schema 소유)
+  - `open(conn, table, srcSchema)` → appendOpen 스트림 초기화
+    - `srcNames: Set<string>` 구성 (소스 컬럼명 UPPERCASE Set)
+    - conn 소유권 획득 — close() 시 함께 닫힘
+  - `append(rows)` → `_toCell(col, row)`로 각 셀 변환 후 스트림 append
+    - 소스에 없는 컬럼(`!srcNames.has(col.name)`) → `col.columnType.safeNull`로 패딩
+    - null/undefined 값 → `col.columnType.safeNull`
+    - int64 컬럼 → `_toInt64(col, val)` (BigInt 변환)
+  - `close()` → 스트림 + conn 닫기
 
 ### machbase/integrity_checker.js — M7
 
@@ -166,26 +191,40 @@ repli-js/
 
 ```json
 {
-  "jobs": [
-    {
-      "job_id": "job-1",
-      "source": { "host": "...", "port": 5656, "user": "sys", "password": "manager", "table": "TAG" },
-      "destination": { "host": "...", "port": 5656, "user": "sys", "password": "manager", "table": "TAG" },
-      "mappings": [
-        {
-          "data_table": "_TAG_DATA_0",
+  "version": 3,
+  "servers": {
+    "src": { "host": "...", "port": 5656, "user": "sys", "password": "manager" },
+    "dst": { "host": "...", "port": 5656, "user": "sys", "password": "manager" }
+  },
+  "replication": {
+    "jobs": [{
+      "id": "job-1",
+      "checkpoint": { "directory": "./checkpoints" },
+      "mappings": [{
+        "mapping_id": "map-1",
+        "source": {
+          "server": "src",
+          "table": "TAG",
+          "columns": ["TIME", "VALUE"]
+        },
+        "target": { "server": "dst", "table": "TAG" },
+        "execution": {
           "start_mode": "full",
           "poll_interval_ms": 1000,
-          "batch_size": 1000,
+          "query_limit": 1000,
           "integrity": { "enabled": true },
           "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
         }
-      ],
-      "checkpoint": { "directory": "./checkpoints" }
-    }
-  ]
+      }]
+    }]
+  }
 }
 ```
+
+`source.columns` 필드:
+- 미지정(`null`) → 소스 테이블의 모든 데이터 컬럼 SELECT (기존 동작)
+- `["TIME", "VALUE"]` → 지정된 컬럼만 SELECT (대소문자 무관, 내부적으로 UPPERCASE 정규화)
+- 빈 배열(`[]`) 또는 비문자열 항목 → config 검증 오류, 해당 mapping 스킵
 
 ## Machbase TAG 테이블 내부 구조
 
@@ -215,7 +254,7 @@ LIMIT 1000
 ## 테스트 실행
 
 ```bash
-# 전체 단위 테스트 (90개)
+# 전체 단위 테스트 (87개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
@@ -228,17 +267,17 @@ node --test tests/integration/log_table.test.js
 node --test tests/integration/log_schema.test.js
 ```
 
-현재 테스트 현황: **90 단위 + 20 통합 = 110 pass / 0 fail**
+현재 테스트 현황: **87 단위 + 23 통합 = 110 pass / 0 fail**
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
 - config.test.js: 설정 검증 (26개)
 - retry.test.js: RetryHandler 백오프 로직 (19개)
-- table_info.test.js: TableInfo 빌드/조회 (16개)
+- table_info.test.js: TableSchema/TagAliasCache 빌드/조회 (15개)
 - target_writer.test.js: Writer safeNull 패딩 (6개)
 - worker.test.js: Worker 상태 머신 (9개)
 - e2e_scenarios.test.js: E2E 시나리오 (8개)
-- tag_table.test.js: TAG 통합 테스트 (7개)
-- log_table.test.js: LOG 통합 테스트 (9개)
-- log_schema.test.js: LOG 스키마 변형 통합 테스트 (4개)
+- tag_table.test.js: TAG 테이블 통합 테스트 (8개)
+- log_table.test.js: LOG 테이블 통합 테스트 (10개)
+- log_schema.test.js: LOG 스키마 변형 통합 테스트 (5개)
 
 ## 실행 방법
 

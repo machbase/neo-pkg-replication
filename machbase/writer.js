@@ -1,17 +1,16 @@
 'use strict';
 
-const { ColumnType } = require('./machbase.js');
 
 class Writer {
   /**
-   * @param {TableInfo} dstTableInfo - 대상 TableInfo (owned)
+   * @param {TableSchema} schema - 대상 TableSchema (owned)
    */
-  constructor(dstTableInfo) {
-    this.dstTableInfo = dstTableInfo;
+  constructor(schema) {
+    this.schema = schema;
     this.conn = null;
     this.stream = null;
-    /** @type {Array<{ name: string, columnType: ColumnType, isSourceColumn: boolean }>} */
-    this.appendColumns = [];
+    /** @type {Set<string>|null} 소스에 존재하는 컬럼명 Set (UPPERCASE) */
+    this.srcNames = null;
   }
 
   /**
@@ -19,27 +18,17 @@ class Writer {
    *
    * @param {MachbaseClient} conn - target MachbaseClient
    * @param {string} table - 대상 논리 테이블명
-   * @param {TableInfo} srcTableInfo - 소스 TableInfo
+   * @param {TableSchema} srcSchema - 소스 TableSchema
    * @returns {Error|null}
    */
-  async open(conn, table, srcTableInfo) {
+  async open(conn, table, srcSchema) {
     try {
       this.conn = conn;
+      this.srcNames = new Set(srcSchema.columns.map(c => c.name));
 
-      // 소스 writeColumns에서 컬럼명 Set 구성 (컬럼명은 UPPERCASE — M$SYS_COLUMNS 기준)
-      const srcNames = new Set(srcTableInfo.writeColumns.map(c => c.name));
-
-      // 대상 writeColumns 순회하며 appendColumns 구성
-      this.appendColumns = this.dstTableInfo.writeColumns.map(c => ({
-        name: c.name,
-        columnType: c.columnType,
-        isSourceColumn: srcNames.has(c.name),
-      }));
-
-      // appendOpen에 전체 컬럼 전달 (소스에 없는 컬럼은 safeNull로 패딩)
       this.stream = await this.conn.appendOpen(
         table,
-        this.appendColumns.map(c => ({ name: c.name, type: c.columnType.type }))
+        this.schema.columns.map(c => ({ name: c.name, type: c.columnType.type }))
       );
       return null;
     } catch (err) {
@@ -53,30 +42,32 @@ class Writer {
    * @param {Array<object>} rows - { NAME: ..., TIME: ..., VALUE: ..., ... } 컬럼명 기준 객체
    * @returns {Error|null}
    */
+  _toInt64(col, val) {
+    if (typeof val === 'bigint') return val;
+    if (typeof val === 'number' && !Number.isInteger(val)) {
+      console.warn(JSON.stringify({ level: 'warn', stage: 'writer', msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` }));
+      return BigInt(Math.trunc(val));
+    }
+    return BigInt(val);
+  }
+
+  _toCell(col, row) {
+    if (!this.srcNames.has(col.name)) return col.columnType.safeNull;
+    const val = row[col.name];
+    if (val == null) return col.columnType.safeNull;
+    if (col.columnType.type === 'int64') return this._toInt64(col, val);
+    return val;
+  }
+
   async append(rows) {
     if (!rows || rows.length === 0) return null;
-    // 불변식: open() 성공 후 stream/conn 모두 non-null, close() 후 둘 다 null
     if (!this.stream) {
       return new Error('Writer.append called before open()');
     }
     try {
-      const matrix = rows.map(row => {
-        if (Array.isArray(row)) return row;
-        return this.appendColumns.map(col => {
-          if (!col.isSourceColumn) return col.columnType.safeNull;
-          const val = row[col.name];
-          if (val == null) return col.columnType.safeNull;
-          if (col.columnType.type === 'int64') {
-            if (typeof val === 'bigint') return val;
-            if (typeof val === 'number' && !Number.isInteger(val)) {
-              console.warn(JSON.stringify({ level: 'warn', stage: 'writer', msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` }));
-              return BigInt(Math.trunc(val));
-            }
-            return BigInt(val);
-          }
-          return val;
-        });
-      });
+      const matrix = rows.map(row =>
+        Array.isArray(row) ? row : this.schema.columns.map(col => this._toCell(col, row))
+      );
       await this.stream.append(matrix);
       return null;
     } catch (err) {
@@ -100,6 +91,7 @@ class Writer {
       }
       this.stream = null;
     }
+    this.srcNames = null;
     if (this.conn) {
       try {
         await this.conn.close();

@@ -226,6 +226,7 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) → STEADY
 | mapping_id | string | 고유 식별자 |
 | source.server | string | servers 별칭 참조 |
 | source.table | string | 원본 논리 테이블명 |
+| source.columns | string[]\|null | SELECT 허용 컬럼 목록. null이면 전체 컬럼. 대소문자 무관(UPPERCASE 정규화). |
 | source.start_mode | "full"\|"now"\|"rid_after" | 최초 실행 시작 기준 |
 | source.rid_after | int\|null | start_mode=rid_after 시 기준 rid |
 | source.tag_identifier.mode | "prefix"\|"suffix"\|"none" | tag name 식별자 방식 |
@@ -284,6 +285,10 @@ ConfigLoader.load(filePath) → Config
 - shutdown_timeout_ms: 양의 정수 (기본값: 30000)
 - query_limit 기본값: 5000
 - execution 필드 레벨 merge: mapping > source > job (필드 독립 적용)
+- `source.columns` 검증 및 정규화:
+  - `null`/`undefined` → `columns: null` (전체 컬럼)
+  - 비어있지 않은 문자열 배열 → UPPERCASE 정규화 후 `mapping.source.columns`에 저장
+  - 빈 배열 또는 비문자열 항목 → `level="error"` 로그 + 해당 mapping 스킵
 
 ---
 
@@ -325,7 +330,7 @@ CheckpointStore.save(jobId, dataTable, cp, stats) → err
 ### M4. Reader (`machbase/reader.js`)
 
 ```js
-reader = new Reader(tableInfo, conn, dataTable)
+reader = new Reader(tableInfo, conn, dataTable, sourceColumns = null)
 
 // conn 관리
 reader.close()                    // 소유한 conn 닫기
@@ -341,14 +346,19 @@ reader.readAfterRid(startRid, limit, rangeSize) → { rows, err }
 reader.getMaxRid()                // 인스턴스 메서드 (static 아님)
 ```
 
+**`sourceColumns` 파라미터**
+- `null` (기본값): `schema.getSelectColumnNames(null)` → 전체 dataColumns SELECT
+- `string[]` (UPPERCASE): `schema.getSelectColumnNames(sourceColumns)` → 허용 컬럼만 SELECT
+- config에서 `mapping.source.columns`를 그대로 전달 (JobRunner가 주입)
+
 **SQL (설계 결정 D-01)**
 ```sql
 -- 1. endRid 결정
 SELECT MAX(_RID) as max_rid FROM data_table
 
--- 2. 데이터 읽기
+-- 2. 데이터 읽기 (sourceColumns=["TIME"]인 경우)
 SELECT /*+ RID_RANGE(data_table, startRid, endRid) */
-       _RID, name, time, value [, extra_cols...]
+       _RID, name, time
 FROM   data_table
 WHERE  _RID >= startRid
 LIMIT  limit
@@ -358,46 +368,57 @@ LIMIT  limit
 - `name` 컬럼은 정수 tag_id 그대로 반환 → `resolveTagCanonical()`이 이름으로 변환
 - Row 구조: `{ rid: BigInt, tagId: any, data: { TIME, VALUE, ... } }` (UPPERCASE key)
 - `getMaxRid()` 빈 테이블 → `0n` 반환 / 오류 → `{ maxRid: 0n, err }` 반환
-- SELECT 컬럼은 `tableInfo.getSelectColumnNames()`에서 동적 결정
+- SELECT 컬럼은 `tableInfo.getSelectColumnNames(this.sourceColumns)`에서 동적 결정
 
 ---
 
-### M5. TableInfo (`machbase/table_info.js`)
+### M5. TableSchema / TagAliasCache (`machbase/table_info.js`)
 
 ```js
-// 팩토리 메서드
-TableInfo.buildTag(conn, logicalTable, dataTableId) → Promise<TableInfo>
-TableInfo.buildLog(conn, logicalTable) → Promise<TableInfo>
+// ── TableSchema (불변 컬럼 구조) ──
+TableSchema.buildTag(conn, logicalTable, dataTableId) → Promise<TableSchema>
+TableSchema.buildLog(conn, logicalTable) → Promise<TableSchema>
 
 // 인스턴스 속성
-tableInfo.tableType         // 'TAG' | 'LOG'
-tableInfo.logicalTable      // 논리 테이블명
-tableInfo.dataColumns       // SELECT용 데이터 컬럼
-tableInfo.metadataColumns   // metadata 컬럼 (TAG 전용)
-tableInfo.writeColumns      // appendOpen용 전체 컬럼 (NAME + data + metadata)
-tableInfo.aliasMap           // Map<bigint, string> — TAG _ID → name
+schema.tableType         // 'TAG' | 'LOG'
+schema.logicalTable      // 논리 테이블명
+schema.dataColumns       // SELECT용 데이터 컬럼
+schema.metadataColumns   // metadata 컬럼 (TAG 전용)
+schema.writeColumns      // appendOpen용 전체 컬럼 (NAME + data + metadata)
 
 // 인스턴스 메서드
-tableInfo.loadAliases(conn) → Error|null
-tableInfo.resolveTagCanonical(conn, tagId, tagIdentifier)
+schema.getSelectColumnNames(allowedColumns = null) → string[]
+  // allowedColumns: UPPERCASE string[] | null
+  // null → 전체 dataColumns 반환 (lowercase)
+  // string[] → allowedColumns에 포함된 dataColumns만 반환 (lowercase)
+
+// ── TagAliasCache (동적 TAG alias 상태) ──
+new TagAliasCache(logicalTable)
+cache.load(conn) → Error|null
+cache.resolve(conn, tagId, tagIdentifier)
   → { canonical: string|null, status: "ok"|"drop_not_found"|"retry_error" }
-tableInfo.getSelectColumnNames() → string[]
+cache.size  // 현재 캐시 항목 수
 ```
 
 **구현 항목**
 
-`buildTag()` — TAG 테이블 컬럼 분석 + alias map 로드
+`TableSchema.buildTag()` — TAG 테이블 컬럼 분석
 - Step 1: _{table}_META 컬럼 조회 → metadata columns 추출
-- Step 2: _{table}_DATA_{id} 컬럼 조회 → data columns 추출 (TYPE=112 제외)
+- Step 2: _{table}_DATA_{id} 컬럼 조회 → data columns 추출 (NAME/_ prefix 컬럼 제외)
 - Step 3: writeColumns = [NAME(varchar)] + dataColumns + metadataColumns
-- Step 4: loadAliases() 호출
+- alias map 로드는 포함하지 않음 (TagAliasCache 책임)
 
-`buildLog()` — LOG 테이블 컬럼 분석
+`TableSchema.buildLog()` — LOG 테이블 컬럼 분석
 - M$SYS_COLUMNS에서 전체 컬럼 조회
 - dataColumns = writeColumns (metadata 없음)
 
-`resolveTagCanonical()` — Read-through cache (설계 결정 D-02)
-- aliasMap에서 tagId 조회 → 있으면 tag_identifier 적용 후 반환 (`status: "ok"`)
+`TableSchema.getSelectColumnNames(allowedColumns = null)` — SELECT 컬럼 결정
+- `allowedColumns === null`: 전체 dataColumns → lowercase 변환
+- `allowedColumns` (UPPERCASE string[]): 해당 컬럼명이 dataColumns에 있는 것만 필터링 → lowercase 변환
+- allowlist에 없는 컬럼은 조용히 무시 (에러 없음)
+
+`TagAliasCache.resolve()` — Read-through cache (설계 결정 D-02)
+- `_map`에서 tagId 조회 → 있으면 tag_identifier 적용 후 반환 (`status: "ok"`)
 - Map miss → `_LOGICAL_META`에서 단건 DB 조회 → Map에 추가 후 반환
 - DB 조회 후에도 없음 → `status: "drop_not_found"` (해당 row drop)
 - DB 오류 → `status: "retry_error"` (retry 대상)
@@ -548,7 +569,8 @@ while NOT shutdown_requested:
    - LOG: `dataTables = [source.table]`, `TableInfo.buildLog()` (srcTableInfo/dstTableInfo)
    - dstTableInfo 빌드용 tmpDstConn은 빌드 후 즉시 close
 2. sourceConn close
-3. data_table마다 `Reader(srcConn)` + `Writer(dstTableInfo)` 생성 → `writer.open(dstConn, ...)`
+3. data_table마다 `Reader(srcConn, sourceColumns)` + `Writer(dstTableInfo)` 생성 → `writer.open(dstConn, ...)`
+   - `mapping.source.columns`를 Reader 5번째 인수로 전달 (null이면 전체 컬럼)
    - setup(connect + open) 성공 시에만 `workerResources`에 push
    - setup 실패 시 해당 경로에서 `wDstConn` / `wSrcConn`을 직접 close 후 return
 4. `Promise.all`로 Worker 병렬 실행, 각 Worker에 `{ srcConfig, dstConfig, reader, writer, ... }` 주입
@@ -1050,7 +1072,7 @@ sequenceDiagram
 | Phase 3 | Worker 조합 | ✅ 완료 | Worker 상태 머신 |
 | Phase 4 | 오케스트레이션 | ✅ 완료 | JobRunner, app.js 진입점 |
 
-**단위 테스트: 90개 전체 통과** (pass 90 / fail 0)
+**단위 테스트: 97개 전체 통과** (pass 97 / fail 0)
 **통합 테스트: 23개 전체 통과** (tag_table 8 + log_table 10 + log_schema 5)
 
 ### 11.2 마일스톤 E2E 테스트 현황

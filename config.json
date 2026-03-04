@@ -37,11 +37,12 @@
             "mapping_id": "tag-to-tag2",
             "source": {
               "server": "src",
-              "table": "TAG"
+              "table": "TAG",
+              "columns": ["NAME", "VALUE"]
             },
             "target": {
               "server": "dst",
-              "table": "HDCAR"
+              "table": "TAG2"
             }
           }
         ]

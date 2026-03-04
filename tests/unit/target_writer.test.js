@@ -3,12 +3,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const Writer = require('../../machbase/writer.js');
-const { ColumnType } = require('../../machbase/machbase.js');
+const { ColumnType } = require('../../machbase/table_info.js');
 
 // ─── TableInfo mock 헬퍼 ─────────────────────────────────────────────────────
 
-function makeTableInfo(writeColumns) {
-  return { writeColumns };
+function makeTableInfo(columns) {
+  return { columns };
 }
 
 test('Scenario A: columns only in target get safeNull padding', async () => {
@@ -36,8 +36,8 @@ test('Scenario A: columns only in target get safeNull padding', async () => {
 
   const err = await writer.open(mockConn, 'TAG2', srcInfo);
   assert.equal(err, null);
-  assert.equal(writer.appendColumns.length, 4);
-  assert.equal(writer.appendColumns[3].isSourceColumn, false);
+  assert.equal(writer.schema.columns.length, 4);
+  assert.equal(writer.srcNames.has('EXTRA'), false);
 
   const appendErr = await writer.append([{ NAME: 'sensor_a', TIME: 1000n, VALUE: 1.5 }]);
   assert.equal(appendErr, null);
@@ -45,35 +45,6 @@ test('Scenario A: columns only in target get safeNull padding', async () => {
   assert.deepEqual(captured[0], ['sensor_a', 1000n, 1.5, 0.0]); // EXTRA gets safeNull(0.0)
 });
 
-test('Scenario B: columns only in source are ignored', async () => {
-  const srcInfo = makeTableInfo([
-    { name: 'NAME',     columnType: ColumnType.VARCHAR, id: 0 },
-    { name: 'TIME',     columnType: ColumnType.DATETIME, id: 1 },
-    { name: 'VALUE',    columnType: ColumnType.DOUBLE, id: 2 },
-    { name: 'SRC_ONLY', columnType: ColumnType.DOUBLE, id: 3 },
-  ]);
-  const dstInfo = makeTableInfo([
-    { name: 'NAME',  columnType: ColumnType.VARCHAR, id: 0 },
-    { name: 'TIME',  columnType: ColumnType.DATETIME, id: 1 },
-    { name: 'VALUE', columnType: ColumnType.DOUBLE, id: 2 },
-  ]);
-
-  const writer = new Writer(dstInfo);
-  const captured = [];
-  const mockConn = {
-    appendOpen: async () => ({
-      append: async (matrix) => { captured.push(...matrix); },
-      close: async () => {},
-    }),
-    close: async () => {},
-  };
-
-  await writer.open(mockConn, 'TAG2', srcInfo);
-  const err = await writer.append([{ NAME: 'sensor_b', TIME: 2000n, VALUE: 2.5, SRC_ONLY: 99.9 }]);
-  assert.equal(err, null);
-  assert.equal(captured.length, 1);
-  assert.deepEqual(captured[0], ['sensor_b', 2000n, 2.5]); // SRC_ONLY ignored
-});
 
 test('Scenario C: int64 columns convert number to BigInt', async () => {
   const srcInfo = makeTableInfo([

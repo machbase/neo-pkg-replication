@@ -322,12 +322,34 @@ class ConfigLoader {
       return [];
     }
 
+    // source.columns 검증
+    let sourceColumns = null;
+    const rawCols = mapping.source.columns;
+    if (rawCols !== undefined && rawCols !== null) {
+      if (!Array.isArray(rawCols) || rawCols.length === 0) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: 'source.columns must be a non-empty array when specified, skipping mapping',
+        }));
+        return [];
+      }
+      if (!rawCols.every(c => typeof c === 'string' && c.trim() !== '')) {
+        console.error(JSON.stringify({
+          level: 'error', stage: 'config', ...logCtx,
+          msg: 'source.columns entries must be non-empty strings, skipping mapping',
+        }));
+        return [];
+      }
+      sourceColumns = rawCols.map(c => c.toUpperCase());
+    }
+
     return [{
       mapping_id: mapping.mapping_id,
       source: {
         server: srcServer,
         table: mapping.source.table,
         tag_identifier: mapping.source.tag_identifier || { mode: 'none', value: '' },
+        columns: sourceColumns,
       },
       target: { server: dstServer, table: mapping.target.table },
       execution,

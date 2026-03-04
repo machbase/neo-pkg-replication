@@ -2,8 +2,8 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { TableSchema, TagAliasCache } = require('../../machbase/table_info.js');
-const { ColumnType } = require('../../machbase/machbase.js');
+const { ColumnType, Column, TableSchema } = require('../../machbase/table_info.js');
+const { TagAliasCache } = require('../../machbase/reader.js');
 
 // ─── mock conn 헬퍼 ─────────────────────────────────────────────────────────
 
@@ -21,7 +21,7 @@ function mockConn(queryMap) {
 // ─── TableSchema.buildTag ─────────────────────────────────────────────────────
 
 describe('TableSchema.buildTag', () => {
-  test('META + DATA 컬럼 분류: dataColumns, metadataColumns, writeColumns', async () => {
+  test('META + DATA 컬럼 분류: columns (data + metadata)', async () => {
     const conn = mockConn({
       // Step 1: META 컬럼 조회
       'M$SYS_COLUMNS c, M$SYS_TABLES t': (sql, params) => {
@@ -41,7 +41,7 @@ describe('TableSchema.buildTag', () => {
         if (params && params[0] === 100) {
           return [
             { NAME: '_ROWID', TYPE: 112, ID: 0 },   // _ prefix → 제외
-            { NAME: 'NAME', TYPE: 112, ID: 1 },      // NAME 컬럼 → 컬럼명 기반 제외
+            { NAME: 'NAME', TYPE: 112, ID: 1 },      // tag_id → columns에 포함
             { NAME: 'TIME', TYPE: 6, ID: 2 },        // data column
             { NAME: 'VALUE', TYPE: 20, ID: 3 },      // data column
           ];
@@ -55,31 +55,26 @@ describe('TableSchema.buildTag', () => {
     assert.equal(schema.tableType, 'TAG');
     assert.equal(schema.logicalTable, 'TAG');
 
-    // dataColumns: TIME, VALUE
-    assert.equal(schema.dataColumns.length, 2);
-    assert.equal(schema.dataColumns[0].name, 'TIME');
-    assert.equal(schema.dataColumns[0].columnType, ColumnType.DATETIME);
-    assert.equal(schema.dataColumns[1].name, 'VALUE');
-    assert.equal(schema.dataColumns[1].columnType, ColumnType.DOUBLE);
-
-    // metadataColumns: LOCATION, UNIT
-    assert.equal(schema.metadataColumns.length, 2);
-    assert.equal(schema.metadataColumns[0].name, 'LOCATION');
-    assert.equal(schema.metadataColumns[1].name, 'UNIT');
-
-    // writeColumns: NAME + data + metadata
-    assert.equal(schema.writeColumns.length, 5); // NAME + TIME + VALUE + LOCATION + UNIT
-    assert.equal(schema.writeColumns[0].name, 'NAME');
-    assert.equal(schema.writeColumns[1].name, 'TIME');
-    assert.equal(schema.writeColumns[2].name, 'VALUE');
-    assert.equal(schema.writeColumns[3].name, 'LOCATION');
-    assert.equal(schema.writeColumns[4].name, 'UNIT');
+    // columns = data(NAME, TIME, VALUE) + metadata(LOCATION, UNIT)
+    assert.equal(schema.columns.length, 5);
+    assert.ok(schema.columns.every(c => c instanceof Column), 'columns must be Column instances');
+    assert.equal(schema.columns[0].name, 'NAME');
+    assert.equal(schema.columns[0].category, 'key');
+    assert.equal(schema.columns[1].name, 'TIME');
+    assert.equal(schema.columns[1].columnType, ColumnType.DATETIME);
+    assert.equal(schema.columns[1].category, 'data');
+    assert.equal(schema.columns[2].name, 'VALUE');
+    assert.equal(schema.columns[2].columnType, ColumnType.DOUBLE);
+    assert.equal(schema.columns[3].name, 'LOCATION');
+    assert.equal(schema.columns[3].category, 'metadata');
+    assert.equal(schema.columns[4].name, 'UNIT');
+    assert.equal(schema.columns[4].category, 'metadata');
 
     // TableSchema에는 aliasMap 없음 (TagAliasCache로 분리됨)
     assert.equal(schema.aliasMap, undefined);
   });
 
-  test('metadata 없는 TAG 테이블 → metadataColumns 비어있음', async () => {
+  test('metadata 없는 TAG 테이블 → metadata category 컬럼 없음', async () => {
     const conn = mockConn({
       'M$SYS_COLUMNS c, M$SYS_TABLES t': (sql, params) => {
         if (params && params[0] === '_SIMPLE_META') {
@@ -90,6 +85,7 @@ describe('TableSchema.buildTag', () => {
         return [];
       },
       'c.TABLE_ID = ?': () => [
+        { NAME: 'NAME', TYPE: 112, ID: 1 },
         { NAME: 'TIME', TYPE: 6, ID: 2 },
         { NAME: 'VALUE', TYPE: 20, ID: 3 },
       ],
@@ -97,9 +93,8 @@ describe('TableSchema.buildTag', () => {
 
     const schema = await TableSchema.buildTag(conn, 'SIMPLE', 200);
 
-    assert.equal(schema.metadataColumns.length, 0);
-    assert.equal(schema.dataColumns.length, 2);
-    assert.equal(schema.writeColumns.length, 3); // NAME + TIME + VALUE
+    assert.equal(schema.columns.length, 3); // NAME + TIME + VALUE
+    assert.ok(schema.columns.every(c => c.category !== 'metadata'));
   });
 
   test('additional column이 있는 DATA 파티션', async () => {
@@ -111,6 +106,7 @@ describe('TableSchema.buildTag', () => {
         return [];
       },
       'c.TABLE_ID = ?': () => [
+        { NAME: 'NAME', TYPE: 112, ID: 1 },
         { NAME: 'TIME', TYPE: 6, ID: 2 },
         { NAME: 'VALUE', TYPE: 20, ID: 3 },
         { NAME: 'QUALITY', TYPE: 20, ID: 4 },  // additional column
@@ -119,10 +115,10 @@ describe('TableSchema.buildTag', () => {
 
     const schema = await TableSchema.buildTag(conn, 'EXTRA', 300);
 
-    assert.equal(schema.dataColumns.length, 3);
-    assert.equal(schema.dataColumns[2].name, 'QUALITY');
-    assert.equal(schema.dataColumns[2].columnType, ColumnType.DOUBLE);
-    assert.equal(schema.writeColumns.length, 4); // NAME + TIME + VALUE + QUALITY
+    assert.equal(schema.columns.length, 4); // NAME + TIME + VALUE + QUALITY
+    assert.equal(schema.columns[3].name, 'QUALITY');
+    assert.equal(schema.columns[3].columnType, ColumnType.DOUBLE);
+    assert.equal(schema.columns[3].category, 'data');
   });
 });
 
@@ -142,16 +138,17 @@ describe('TableSchema.buildLog', () => {
 
     assert.equal(schema.tableType, 'LOG');
     assert.equal(schema.logicalTable, 'LOG_TABLE');
-    assert.equal(schema.dataColumns.length, 3);
-    assert.equal(schema.metadataColumns.length, 0);
-    assert.equal(schema.writeColumns.length, 3);
+    assert.equal(schema.columns.length, 3);
+    assert.ok(schema.columns.every(c => c instanceof Column), 'columns must be Column instances');
     // LOG에는 aliasMap 없음
     assert.equal(schema.aliasMap, undefined);
 
     // 컬럼 순서 확인
-    assert.equal(schema.writeColumns[0].name, 'NAME');
-    assert.equal(schema.writeColumns[1].name, 'TIME');
-    assert.equal(schema.writeColumns[2].name, 'VALUE');
+    assert.equal(schema.columns[0].name, 'NAME');
+    assert.equal(schema.columns[1].name, 'TIME');
+    assert.equal(schema.columns[2].name, 'VALUE');
+    // LOG 컬럼은 모두 'data' category
+    assert.ok(schema.columns.every(c => c.category === 'data'));
   });
 
   test('LOG 테이블 + 추가 컬럼', async () => {
@@ -166,10 +163,9 @@ describe('TableSchema.buildLog', () => {
 
     const schema = await TableSchema.buildLog(conn, 'LOG_EXT');
 
-    assert.equal(schema.dataColumns.length, 4);
-    assert.equal(schema.writeColumns.length, 4);
-    assert.equal(schema.writeColumns[3].name, 'STATUS');
-    assert.equal(schema.writeColumns[3].columnType, ColumnType.VARCHAR);
+    assert.equal(schema.columns.length, 4);
+    assert.equal(schema.columns[3].name, 'STATUS');
+    assert.equal(schema.columns[3].columnType, ColumnType.VARCHAR);
   });
 });
 
@@ -262,49 +258,5 @@ describe('TagAliasCache.load', () => {
     const err = await cache.load(conn);
     assert.ok(err instanceof Error);
     assert.equal(cache.size, 0);
-  });
-});
-
-// ─── TagAliasCache.size ───────────────────────────────────────────────────────
-
-describe('TagAliasCache.size', () => {
-  test('빈 캐시 → size=0', () => {
-    const cache = new TagAliasCache('TAG');
-    assert.equal(cache.size, 0);
-  });
-
-  test('항목 추가 후 size 반영', () => {
-    const cache = new TagAliasCache('TAG');
-    cache._map.set(1n, 'a');
-    cache._map.set(2n, 'b');
-    assert.equal(cache.size, 2);
-  });
-});
-
-// ─── TableSchema.getSelectColumnNames ────────────────────────────────────────
-
-describe('TableSchema.getSelectColumnNames', () => {
-  test('TAG: dataColumns의 name을 lowercase로 반환', () => {
-    const schema = new TableSchema('TAG', 'TAG');
-    schema.dataColumns = [
-      { name: 'TIME', columnType: ColumnType.DATETIME, id: 2, category: 'data' },
-      { name: 'VALUE', columnType: ColumnType.DOUBLE, id: 3, category: 'data' },
-      { name: 'QUALITY', columnType: ColumnType.DOUBLE, id: 4, category: 'data' },
-    ];
-
-    const names = schema.getSelectColumnNames();
-    assert.deepEqual(names, ['time', 'value', 'quality']);
-  });
-
-  test('LOG: dataColumns의 name을 lowercase로 반환 (name 포함)', () => {
-    const schema = new TableSchema('LOG', 'LOG_TABLE');
-    schema.dataColumns = [
-      { name: 'NAME', columnType: ColumnType.VARCHAR, id: 0, category: 'data' },
-      { name: 'TIME', columnType: ColumnType.DATETIME, id: 1, category: 'data' },
-      { name: 'VALUE', columnType: ColumnType.DOUBLE, id: 2, category: 'data' },
-    ];
-
-    const names = schema.getSelectColumnNames();
-    assert.deepEqual(names, ['name', 'time', 'value']);
   });
 });

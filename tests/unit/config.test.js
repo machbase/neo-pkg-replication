@@ -275,3 +275,43 @@ test('JSON 파싱 실패 → 파일 경로 포함 에러', async () => {
     return true;
   });
 });
+
+// === source.columns 허용 목록 테스트 ===
+
+test('source.columns 미지정 → columns: null', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const result = await ConfigLoader.load(filePath);
+  assert.equal(result.replication.jobs[0].mappings[0].source.columns, null);
+});
+
+test('source.columns: ["TIME", "VALUE"] → UPPERCASE 정규화 후 ["TIME", "VALUE"]', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].mappings[0].source.columns = ['TIME', 'VALUE'];
+  const filePath = await writeConfig(config);
+  const result = await ConfigLoader.load(filePath);
+  assert.deepEqual(result.replication.jobs[0].mappings[0].source.columns, ['TIME', 'VALUE']);
+});
+
+test('source.columns: ["time", "value"] (소문자) → ["TIME", "VALUE"]로 정규화', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].mappings[0].source.columns = ['time', 'value'];
+  const filePath = await writeConfig(config);
+  const result = await ConfigLoader.load(filePath);
+  assert.deepEqual(result.replication.jobs[0].mappings[0].source.columns, ['TIME', 'VALUE']);
+});
+
+test('source.columns: [] (빈 배열) → mapping 스킵', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].mappings[0].source.columns = [];
+  const filePath = await writeConfig(config);
+  const result = await ConfigLoader.load(filePath);
+  assert.equal(result.replication.jobs[0].mappings.length, 0);
+});
+
+test('source.columns: [123] (비문자열) → mapping 스킵', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].mappings[0].source.columns = [123];
+  const filePath = await writeConfig(config);
+  const result = await ConfigLoader.load(filePath);
+  assert.equal(result.replication.jobs[0].mappings.length, 0);
+});

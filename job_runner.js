@@ -1,8 +1,8 @@
 'use strict';
 
 const { MachbaseClient } = require('./machbase/machbase.js');
-const { TableSchema, TagAliasCache } = require('./machbase/table_info.js');
-const Reader = require('./machbase/reader.js');
+const { TableSchema } = require('./machbase/table_info.js');
+const { Reader, TagAliasCache } = require('./machbase/reader.js');
 const Writer = require('./machbase/writer.js');
 const { runDataTableWorker, TagRowProcessor, LogRowProcessor } = require('./worker/worker.js');
 
@@ -51,6 +51,16 @@ async function _discoverMapping(mapping, servers, logCtx) {
       // 소스 TableSchema 생성 (첫 번째 파티션 기준)
       srcSchema = await TableSchema.buildTag(sourceConn, mapping.source.table, tables[0].table_id);
 
+      // source.columns 유효성 검증: columns(NAME+data+metadata) 기준
+      if (mapping.source.columns) {
+        const actualCols = new Set(srcSchema.columns.map(c => c.name));
+        const unknownCols = mapping.source.columns.filter(c => !actualCols.has(c));
+        if (unknownCols.length > 0) {
+          console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping mapping` }));
+          return null;
+        }
+      }
+
       // 대상 TableSchema 생성
       const tmpDstConn = new MachbaseClient(dstConfig);
       try {
@@ -70,6 +80,16 @@ async function _discoverMapping(mapping, servers, logCtx) {
 
       srcSchema = await TableSchema.buildLog(sourceConn, mapping.source.table);
 
+      // source.columns 유효성 검증: columns(전체 컬럼) 기준
+      if (mapping.source.columns) {
+        const actualCols = new Set(srcSchema.columns.map(c => c.name));
+        const unknownCols = mapping.source.columns.filter(c => !actualCols.has(c));
+        if (unknownCols.length > 0) {
+          console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping mapping` }));
+          return null;
+        }
+      }
+
       // 대상 TableSchema 생성
       const tmpDstConn = new MachbaseClient(dstConfig);
       try {
@@ -87,6 +107,14 @@ async function _discoverMapping(mapping, servers, logCtx) {
     await sourceConn.close().catch(err =>
       console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `sourceConn.close after discover failed: ${err.message}` }))
     );
+  }
+
+  // src에만 있는 컬럼 검출 — dst에 없는 src 컬럼은 append할 수 없으므로 mapping 스킵
+  const dstNames = new Set(dstSchema.columns.map(c => c.name));
+  const srcOnlyCols = srcSchema.columns.map(c => c.name).filter(n => !dstNames.has(n));
+  if (srcOnlyCols.length > 0) {
+    console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `source has columns not present in destination: ${srcOnlyCols.join(', ')}, skipping mapping` }));
+    return null;
   }
 
   return { tableType, dataTables, srcSchema, dstSchema };
@@ -139,7 +167,7 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
       const wDstConn = new MachbaseClient(dstConfig);
       // Worker별 TagAliasCache 생성 (TAG 전용; LOG는 null)
       const wAliasCache = tableType === 'TAG' ? new TagAliasCache(mapping.source.table) : null;
-      const wReader = new Reader(srcSchema, wAliasCache, wSrcConn, dataTable);
+      const wReader = new Reader(srcSchema, wAliasCache, wSrcConn, dataTable, mapping.source.columns);
       const wWriter = new Writer(dstSchema);
       const wRowProcessor = makeRowProcessor();
 

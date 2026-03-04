@@ -2,14 +2,100 @@
 
 const { MachbaseClient } = require('./machbase.js');
 
+// ─── TagAliasCache ────────────────────────────────────────────────────────────
+
+/**
+ * TAG alias 동적 상태 전담 클래스
+ *
+ * tag_id (_ID) → canonical name 변환을 Read-through cache로 관리.
+ * TableSchema가 불변인 반면, TagAliasCache는 실행 중에 항목이 추가될 수 있다.
+ *
+ * Worker별로 독립 인스턴스를 생성해 상태 격리를 보장한다.
+ */
+class TagAliasCache {
+  constructor(logicalTable) {
+    this.logicalTable = logicalTable;
+    /** @type {Map<bigint, string>} TAG alias: _ID → name */
+    this._map = new Map();
+  }
+
+  /** 현재 캐시 항목 수 */
+  get size() { return this._map.size; }
+
+  /**
+   * _TAG_META 전체 로드 → aliasMap 구성
+   *
+   * 주의: META 테이블을 full scan 한다. TAG가 수십만 개인 대규모 환경에서는
+   * Worker 시작 시 지연이 발생할 수 있음. 현재는 Worker당 1회 호출이므로 실용상 문제없음.
+   *
+   * @param {MachbaseClient} conn
+   * @returns {Error|null}
+   */
+  async load(conn) {
+    const sql = `SELECT _ID, name FROM _${this.logicalTable}_META`;
+    try {
+      const rows = await conn.query(sql);
+      this._map.clear();
+      for (const row of (rows || [])) {
+        this._map.set(BigInt(row._ID), row.name);
+      }
+      return null;
+    } catch (err) {
+      console.error(JSON.stringify({ level: 'error', stage: 'reader', msg: `loadAliases failed: ${err.message}` }));
+      return err;
+    }
+  }
+
+  /**
+   * tag_id → canonical 태그명 변환 (Read-through cache)
+   * @param {MachbaseClient} conn
+   * @param {number|bigint} tagId
+   * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
+   * @returns {{ canonical: string|null, status: 'ok'|'drop_not_found'|'retry_error' }}
+   */
+  async resolve(conn, tagId, tagIdentifier) {
+    const tagIdBig = BigInt(tagId);
+    let tagName = this._map.get(tagIdBig);
+
+    // 캐시 miss → DB 단건 조회
+    if (tagName === undefined) {
+      try {
+        const sql = `SELECT name FROM _${this.logicalTable}_META WHERE _ID = ?`;
+        const rows = await conn.query(sql, [tagId]);
+        if (!rows || rows.length === 0) {
+          return { canonical: null, status: 'drop_not_found' };
+        }
+        tagName = rows[0].name;
+        this._map.set(tagIdBig, tagName);
+      } catch (err) {
+        console.error(JSON.stringify({ level: 'error', stage: 'reader', tag_id: String(tagId), msg: err.message }));
+        return { canonical: null, status: 'retry_error' };
+      }
+    }
+
+    const canonical = TagAliasCache._applyIdentifier(tagName, tagIdentifier);
+    return { canonical, status: 'ok' };
+  }
+
+  static _applyIdentifier(tagName, tagIdentifier) {
+    if (!tagIdentifier || tagIdentifier.mode === 'none') return tagName;
+    if (tagIdentifier.mode === 'prefix') return (tagIdentifier.value || '') + tagName;
+    if (tagIdentifier.mode === 'suffix') return tagName + (tagIdentifier.value || '');
+    return tagName;
+  }
+}
+
+// ─── Reader ───────────────────────────────────────────────────────────────────
+
 class Reader {
   /**
    * @param {TableSchema} schema - srcTableSchema (불변 컬럼 구조, owned)
    * @param {TagAliasCache|null} aliasCache - TAG alias 캐시 (TAG 전용, owned), LOG는 null
    * @param {MachbaseClient} conn - 소스 DB 연결 (owned)
    * @param {string} dataTable - 파티션 테이블명 (예: _TAG_DATA_0)
+   * @param {string[]|null} sourceColumns - UPPERCASE 허용 컬럼명 배열. null이면 전체 컬럼.
    */
-  constructor(schema, aliasCache, conn, dataTable) {
+  constructor(schema, aliasCache, conn, dataTable, sourceColumns = null) {
     if (!/^[A-Za-z0-9_]+$/.test(dataTable)) {
       throw new Error(`Reader: invalid dataTable name '${dataTable}' (must match /^[A-Za-z0-9_]+$/)`);
     }
@@ -17,6 +103,14 @@ class Reader {
     this.aliasCache = aliasCache;
     this.conn = conn;
     this.dataTable = dataTable;
+
+    // SELECT 컬럼명 목록을 생성 시점에 확정 (lowercase)
+    // metadata 컬럼(category='metadata')은 SELECT 대상에서 제외 — DATA 파티션에 존재하지 않음
+    const cols = schema.columns.filter(c => c.category !== 'metadata');
+    const filtered = sourceColumns
+      ? cols.filter(c => sourceColumns.includes(c.name))
+      : cols;
+    this.selectColumnNames = filtered.map(c => c.name.toLowerCase());
   }
 
   /**
@@ -64,17 +158,15 @@ class Reader {
    * @returns {{ rows: Array<{ rid: BigInt, tagId: any, data: object }>, err: Error|null }}
    */
   async readAfterRid(startRid, limit = 1000, rangeSize = 50000) {
-    const columnNames = this.schema.getSelectColumnNames();
+    const columnNames = this.selectColumnNames;
     const conn = this.conn;
     const dataTable = this.dataTable;
 
-    // SELECT할 추가 컬럼 결정 (name과 _RID는 colList에서 항상 별도 추가)
-    // getSelectColumnNames()는 TAG의 경우 name을 포함하지 않지만,
-    // LOG의 경우 포함할 수 있으므로 여기서 중복 방지를 위해 filter 처리
     if (!columnNames || columnNames.length === 0) {
       return { rows: [], err: new Error('readAfterRid: schema has no columns') };
     }
-    const extraCols = columnNames.filter(c => c.toLowerCase() !== 'name');
+
+    const selectCols = ['_RID', ...columnNames];
 
     // RID_RANGE 힌트는 반개방 구간 [startRid, endRid)
     let endRid = startRid + BigInt(rangeSize);
@@ -93,7 +185,7 @@ class Reader {
     }
     if (endRid < startRid) endRid = startRid;
 
-    const colList = ['_RID', 'name', ...extraCols].join(', ');
+    const colList = selectCols.join(', ');
     const sql = `SELECT /*+ RID_RANGE(${dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${dataTable} WHERE _RID >= ${startRid} LIMIT ${limit}`;
     try {
       const rows = await conn.query(sql);
@@ -103,15 +195,15 @@ class Reader {
           console.warn(JSON.stringify({ level: 'warn', stage: 'reader', msg: `row with null _RID skipped in ${dataTable}` }));
           continue;
         }
-        // data에 name/_RID 제외한 나머지 컬럼을 UPPERCASE key로 저장
+        // data에 _RID 제외한 나머지 컬럼을 UPPERCASE key로 저장
         // Machbase query()는 컬럼명을 소문자로 반환하므로 toUpperCase()로 변환
         const data = {};
-        for (const col of extraCols) {
+        for (const col of columnNames) {
           data[col.toUpperCase()] = row[col];
         }
         result.push({
           rid: BigInt(row._RID),
-          tagId: row.name,
+          tagId: data.NAME ?? null,
           data,
         });
       }
@@ -143,4 +235,4 @@ class Reader {
   }
 }
 
-module.exports = Reader;
+module.exports = { Reader, TagAliasCache };

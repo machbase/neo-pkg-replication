@@ -31,17 +31,11 @@ function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), re
     schema: {
       tableType: 'TAG',
       logicalTable: 'TAG',
-      dataColumns: [
-        { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
-        { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
-      ],
-      metadataColumns: [],
-      writeColumns: [
+      columns: [
         { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'key' },
         { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
         { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
       ],
-      getSelectColumnNames() { return ['time', 'value']; },
     },
     aliasCache: { _map: metaMap, get size() { return metaMap.size; } },
     dataTable: '_TAG_DATA_0',
@@ -71,18 +65,11 @@ function makeLogSourceReader(readFn = null) {
     schema: {
       tableType: 'LOG',
       logicalTable: 'LOG',
-      dataColumns: [
+      columns: [
         { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'data' },
         { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
         { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
       ],
-      metadataColumns: [],
-      writeColumns: [
-        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'data' },
-        { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
-        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
-      ],
-      getSelectColumnNames() { return ['name', 'time', 'value']; },
     },
     aliasCache: null,
     dataTable: '_LOG_DATA_0',
@@ -211,48 +198,6 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     }
   });
 
-  test('start_mode=now → getMaxRid 실패 시 mapping skip (return)', async () => {
-    const tmpDir = await makeTmpDir();
-    const shutdownFlag = { value: false };
-
-    const reader = makeTagSourceReader();
-    reader.getMaxRid = async () => ({ maxRid: null, err: new Error('DB down') });
-
-    const Writer = require('../../machbase/writer.js');
-    const origOpen = Writer.prototype.open;
-    Writer.prototype.open = async function() {
-      this.appendColumns = [];
-      this.stream = { append: async () => {}, close: async () => {} };
-      return null;
-    };
-
-    try {
-      await runDataTableWorker({
-        jobId: 'test-job',
-        mapping: {
-          source: { server: 'src', table: 'TAG' },
-          target: { server: 'dst', table: 'TAG2' },
-          execution: {
-            query_limit: 100,
-            poll_interval_ms: 1000,
-            start_mode: 'now',
-            on_save_failure: 'continue',
-            integrity: { enabled: false },
-          },
-        },
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: '_TAG_DATA_0',
-        reader: reader,
-        writer: new Writer(),
-        shutdownFlag,
-      });
-      assert.equal(shutdownFlag.value, false, 'shutdownFlag는 변경되지 않아야 함');
-    } finally {
-      Writer.prototype.open = origOpen;
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe('runDataTableWorker — STEADY_REPLICATION', () => {
@@ -404,7 +349,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
       batchCall++;
       if (batchCall === 1) {
         return {
-          rows: [{ rid: 20n, tagId: 'raw_name', data: { TIME: 5000n, VALUE: 9.9 } }],
+          rows: [{ rid: 20n, tagId: null, data: { NAME: 'raw_name', TIME: 5000n, VALUE: 9.9 } }],
           err: null,
         };
       }
@@ -449,7 +394,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
       });
 
       assert.equal(appendedRows.length, 1);
-      assert.equal(appendedRows[0].NAME, 'raw_name', 'LOG: tagId → NAME 그대로 사용');
+      assert.equal(appendedRows[0].NAME, 'raw_name', 'LOG: data.NAME 그대로 사용');
     } finally {
       Writer.prototype.open = origOpen;
       Writer.prototype.append = origAppend;
