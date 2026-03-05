@@ -4,13 +4,13 @@
  * E2E 시나리오 단위 테스트 (mock 기반)
  */
 
-const { test, describe, beforeEach, afterEach } = require('node:test');
+const { test, describe, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs/promises');
 const os = require('os');
 
-const { runDataTableWorker } = require('../../worker/worker.js');
+const { Worker } = require('../../worker/worker.js');
 const CheckpointStore = require('../../file/checkpoint.js');
 
 // ─── 공통 헬퍼 ───────────────────────────────────────────────────────────────
@@ -29,7 +29,8 @@ function makeFlag(autoShutdownAfterMs) {
 
 function baseMapping(overrides = {}) {
   return {
-    source: { server: 'src', table: 'TAG' },
+    mapping_id: 'map-e2e',
+    source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
     target: { server: 'dst', table: 'TAG2' },
     execution: {
       query_limit: 100,
@@ -44,7 +45,8 @@ function baseMapping(overrides = {}) {
 
 function logMapping(overrides = {}) {
   return {
-    source: { server: 'src', table: 'LOG_TABLE' },
+    mapping_id: 'map-log',
+    source: { server: 'src', table: 'LOG_TABLE', tag_identifier: { mode: 'none', value: '' }, columns: null },
     target: { server: 'dst', table: 'LOG_TABLE2' },
     execution: {
       query_limit: 100,
@@ -57,70 +59,27 @@ function logMapping(overrides = {}) {
   };
 }
 
-/** TAG AliasCache mock */
-function makeTagAliasCache(metaMap = new Map([[1, 'sensor_a']])) {
+function makeTagSchema() {
   return {
-    _map: metaMap,
-    get size() { return metaMap.size; },
-    async load() { return null; },
-    async resolve(client, tagId) {
-      const tagIdBig = BigInt(tagId);
-      const name = metaMap.get(tagIdBig) || metaMap.get(Number(tagId));
-      if (!name) return { canonical: null, status: 'drop_not_found' };
-      return { canonical: name, status: 'ok' };
-    },
+    tableType: 'TAG',
+    logicalTable: 'TAG',
+    columns: [
+      { name: 'NAME', columnType: { type: 'varchar', safeNull: '' }, id: 0, category: 'key' },
+      { name: 'TIME', columnType: { type: 'int64', safeNull: 0n }, id: 2, category: 'data' },
+      { name: 'VALUE', columnType: { type: 'float64', safeNull: 0.0 }, id: 3, category: 'data' },
+    ],
   };
 }
 
-/** TAG Reader mock */
-function makeTagSourceReader(readFn = null) {
+function makeLogSchema() {
   return {
-    schema: {
-      tableType: 'TAG',
-      logicalTable: 'TAG',
-      columns: [
-        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'key' },
-        { name: 'TIME', columnType: { type: 'int64' }, id: 2, category: 'data' },
-        { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
-      ],
-    },
-    client: {},
-    dataTable: '_TAG_DATA_0',
-    async close() {},
-    async refreshConnection() {},
-    async getMaxRid() {
-      return { maxRid: 0n, err: null };
-    },
-    async readAfterRid(startRid, limit, rangeSize) {
-      if (readFn) return readFn(startRid, limit, rangeSize);
-      return { rows: [], err: null };
-    },
-  };
-}
-
-/** LOG Reader mock */
-function makeLogSourceReader(readFn = null) {
-  return {
-    schema: {
-      tableType: 'LOG',
-      logicalTable: 'LOG_TABLE',
-      columns: [
-        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'data' },
-        { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
-        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
-      ],
-    },
-    client: {},
-    dataTable: 'LOG_TABLE',
-    async close() {},
-    async refreshConnection() {},
-    async getMaxRid() {
-      return { maxRid: 0n, err: null };
-    },
-    async readAfterRid(startRid, limit, rangeSize) {
-      if (readFn) return readFn(startRid, limit, rangeSize);
-      return { rows: [], err: null };
-    },
+    tableType: 'LOG',
+    logicalTable: 'LOG_TABLE',
+    columns: [
+      { name: 'NAME', columnType: { type: 'varchar', safeNull: '' }, id: 0, category: 'data' },
+      { name: 'TIME', columnType: { type: 'int64', safeNull: 0n }, id: 1, category: 'data' },
+      { name: 'VALUE', columnType: { type: 'float64', safeNull: 0.0 }, id: 2, category: 'data' },
+    ],
   };
 }
 
@@ -143,6 +102,40 @@ function patchMachbaseClient() {
   };
 }
 
+function patchReader(readFn) {
+  const mod = require('../../machbase/reader.js');
+  const origReadAfterRid = mod.Reader.prototype.readAfterRid;
+  const origGetMaxRid = mod.Reader.prototype.getMaxRid;
+  const origClose = mod.Reader.prototype.close;
+  const origRefresh = mod.Reader.prototype.refreshConnection;
+  const origLoad = mod.TagAliasCache.prototype.load;
+  const origResolve = mod.TagAliasCache.prototype.resolve;
+
+  mod.Reader.prototype.readAfterRid = readFn
+    ? async function(startRid, limit, rangeSize) { return readFn(startRid, limit, rangeSize); }
+    : async function() { return { rows: [], err: null }; };
+  mod.Reader.prototype.getMaxRid = async function() { return { maxRid: 0n, err: null }; };
+  mod.Reader.prototype.close = async function() {};
+  mod.Reader.prototype.refreshConnection = async function() {};
+  mod.TagAliasCache.prototype.load = async function() { return null; };
+  mod.TagAliasCache.prototype.resolve = async function(client, tagId) {
+    // default: tagId 1 → sensor_a
+    const map = { 1: 'sensor_a' };
+    const name = map[Number(tagId)];
+    if (!name) return { canonical: null, status: 'drop_not_found' };
+    return { canonical: name, status: 'ok' };
+  };
+
+  return () => {
+    mod.Reader.prototype.readAfterRid = origReadAfterRid;
+    mod.Reader.prototype.getMaxRid = origGetMaxRid;
+    mod.Reader.prototype.close = origClose;
+    mod.Reader.prototype.refreshConnection = origRefresh;
+    mod.TagAliasCache.prototype.load = origLoad;
+    mod.TagAliasCache.prototype.resolve = origResolve;
+  };
+}
+
 function patchWriter(appendFn) {
   const { Writer: TW } = require('../../machbase/writer.js');
   const origOpen = TW.prototype.open;
@@ -160,6 +153,40 @@ function patchWriter(appendFn) {
     TW.prototype.append = origAppend;
     TW.prototype.close = origClose;
   };
+}
+
+/** TAG Worker 생성 헬퍼 */
+function makeTagWorker(jobId, tmpDir, mapping, shutdownFlag) {
+  const schema = makeTagSchema();
+  return new Worker(
+    jobId,
+    { directory: tmpDir },
+    mapping,
+    'TAG',
+    '_TAG_DATA_0',
+    schema,
+    schema,
+    { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
+    { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
+    shutdownFlag,
+  );
+}
+
+/** LOG Worker 생성 헬퍼 */
+function makeLogWorker(jobId, tmpDir, mapping, shutdownFlag) {
+  const schema = makeLogSchema();
+  return new Worker(
+    jobId,
+    { directory: tmpDir },
+    mapping,
+    'LOG',
+    'LOG_TABLE',
+    schema,
+    schema,
+    { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
+    { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
+    shutdownFlag,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -190,8 +217,9 @@ describe('E2E-02: SIGKILL 후 재시작 — STARTUP_INTEGRITY skip 동작', () =
     let integrityReadDone = false;
     let steadyBatch = 0;
 
-    const aliasCache = makeTagAliasCache();
-    const reader = makeTagSourceReader((startRid) => {
+    restores.push(patchMachbaseClient());
+
+    restores.push(patchReader((startRid) => {
       if (!integrityReadDone) {
         integrityReadDone = true;
         return {
@@ -214,7 +242,7 @@ describe('E2E-02: SIGKILL 후 재시작 — STARTUP_INTEGRITY skip 동작', () =
       }
       shutdownFlag.value = true;
       return { rows: [], err: null };
-    });
+    }));
 
     restores.push(patchIntegrityChecker(async (conn, table, rows) => {
       const existSet = new Set();
@@ -227,27 +255,14 @@ describe('E2E-02: SIGKILL 후 재시작 — STARTUP_INTEGRITY skip 동작', () =
       return { existSet, err: null };
     }));
 
-    restores.push(patchMachbaseClient());
-
     restores.push(patchWriter(async function(rows) {
       for (const r of rows) writtenRids.push(r);
       return null;
     }));
 
     try {
-      const { Writer } = require('../../machbase/writer.js');
-      await runDataTableWorker({
-        jobId: 'e2e02',
-        mapping: baseMapping({ integrity: { enabled: true } }),
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: '_TAG_DATA_0',
-        reader: reader,
-        aliasCache,
-        dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        writer: new Writer(),
-        shutdownFlag,
-      });
+      const worker = makeTagWorker('e2e02', tmpDir, baseMapping({ integrity: { enabled: true } }), shutdownFlag);
+      await worker.run(new AbortController().signal);
 
       assert.ok(skippedRids.length >= 1, 'skipped_exists > 0: 기존 복제분이 skip되어야 함');
       assert.ok(writtenRids.length >= 2, 'STEADY에서 rid=2,3이 기록되어야 함');
@@ -276,7 +291,9 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
     const shutdownFlag = { value: false };
     let batchCount = 0;
 
-    const reader = makeTagSourceReader((startRid) => {
+    restores.push(patchMachbaseClient());
+
+    restores.push(patchReader((startRid) => {
       batchCount++;
       if (batchCount === 1) {
         return {
@@ -289,7 +306,7 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
       }
       shutdownFlag.value = true;
       return { rows: [], err: null };
-    });
+    }));
 
     const writtenRows = [];
     restores.push(patchWriter(async function(rows) {
@@ -300,19 +317,8 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
     const startTime = Date.now();
 
     try {
-      const { Writer } = require('../../machbase/writer.js');
-      await runDataTableWorker({
-        jobId: 'e2e03',
-        mapping: baseMapping({ integrity: { enabled: false } }),
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: '_TAG_DATA_0',
-        reader: reader,
-        aliasCache: makeTagAliasCache(),
-        dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        writer: new Writer(),
-        shutdownFlag,
-      });
+      const worker = makeTagWorker('e2e03', tmpDir, baseMapping({ integrity: { enabled: false } }), shutdownFlag);
+      await worker.run(new AbortController().signal);
 
       const elapsed = Date.now() - startTime;
       assert.ok(elapsed < 30000, `종료 시간(${elapsed}ms)이 shutdown_timeout_ms(30000ms) 이내여야 함`);
@@ -331,33 +337,24 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
     const shutdownFlag = { value: false };
     let readCount = 0;
 
-    const reader = makeTagSourceReader(() => {
+    restores.push(patchMachbaseClient());
+
+    restores.push(patchReader(() => {
       readCount++;
       if (readCount === 1) {
         setTimeout(() => { shutdownFlag.value = true; }, 10);
         return { rows: [], err: null };
       }
       return { rows: [], err: null };
-    });
+    }));
 
     restores.push(patchWriter(null));
 
     const startTime = Date.now();
 
     try {
-      const { Writer } = require('../../machbase/writer.js');
-      await runDataTableWorker({
-        jobId: 'e2e03-sleep',
-        mapping: baseMapping({ poll_interval_ms: 5000, integrity: { enabled: false } }),
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: '_TAG_DATA_0',
-        reader: reader,
-        aliasCache: makeTagAliasCache(),
-        dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        writer: new Writer(),
-        shutdownFlag,
-      });
+      const worker = makeTagWorker('e2e03-sleep', tmpDir, baseMapping({ poll_interval_ms: 5000, integrity: { enabled: false } }), shutdownFlag);
+      await worker.run(new AbortController().signal);
 
       const elapsed = Date.now() - startTime;
       assert.ok(elapsed < 500, `SLEEP 중 즉시 깨어나야 함: elapsed=${elapsed}ms (기대 < 500ms)`);
@@ -388,11 +385,13 @@ describe('E2E-05: LOG 테이블 복제 — STARTUP_INTEGRITY 미수행', () => {
     }, { rows_read: 10, rows_written: 10, dropped_no_meta: 0, skipped_exists: 0 });
 
     const shutdownFlag = { value: false };
-    const IC = require('../../machbase/integrity_checker.js');
     const integrityCallCount = { count: 0 };
 
     let batchCount = 0;
-    const reader = makeLogSourceReader((startRid) => {
+
+    restores.push(patchMachbaseClient());
+
+    restores.push(patchReader((startRid) => {
       batchCount++;
       if (batchCount === 1) {
         return {
@@ -405,7 +404,7 @@ describe('E2E-05: LOG 테이블 복제 — STARTUP_INTEGRITY 미수행', () => {
       }
       shutdownFlag.value = true;
       return { rows: [], err: null };
-    });
+    }));
 
     restores.push(patchIntegrityChecker(async () => {
       integrityCallCount.count++;
@@ -419,19 +418,8 @@ describe('E2E-05: LOG 테이블 복제 — STARTUP_INTEGRITY 미수행', () => {
     }));
 
     try {
-      const { Writer } = require('../../machbase/writer.js');
-      await runDataTableWorker({
-        jobId: 'e2e05',
-        mapping: logMapping(),
-        checkpoint: { directory: tmpDir },
-        tableType: 'LOG',
-        dataTable: 'LOG_TABLE',
-        reader: reader,
-        aliasCache: null,
-        dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        writer: new Writer(),
-        shutdownFlag,
-      });
+      const worker = makeLogWorker('e2e05', tmpDir, logMapping(), shutdownFlag);
+      await worker.run(new AbortController().signal);
 
       assert.equal(integrityCallCount.count, 0, 'LOG 테이블 → STARTUP_INTEGRITY(batchExists) 미수행');
       assert.equal(writtenRows.length, 2, '2개 LOG row가 기록되어야 함');
@@ -462,7 +450,10 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
     const shutdownFlag = { value: false };
 
     let batchCount = 0;
-    const reader = makeTagSourceReader((startRid) => {
+
+    restores.push(patchMachbaseClient());
+
+    restores.push(patchReader((startRid) => {
       batchCount++;
       if (batchCount === 1) {
         return {
@@ -474,7 +465,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
       }
       shutdownFlag.value = true;
       return { rows: [], err: null };
-    });
+    }));
 
     let appendAttempt = 0;
     const writtenRows = [];
@@ -490,34 +481,23 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
     }));
 
     try {
-      const { Writer } = require('../../machbase/writer.js');
-      await runDataTableWorker({
-        jobId: 'e2e06',
-        mapping: baseMapping({
-          integrity: { enabled: false },
-          retry: {
-            enabled: true,
-            strategy: 'linear',
-            base_delay_ms: 10,
-            max_delay_ms: 50,
-            multiplier: 1,
-            jitter: false,
-            max_attempts: 5,
-          },
-        }),
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: '_TAG_DATA_0',
-        reader: reader,
-        aliasCache: makeTagAliasCache(new Map([[1, 'sensor_x']])),
-        dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        writer: new Writer(),
-        shutdownFlag,
-      });
+      const worker = makeTagWorker('e2e06', tmpDir, baseMapping({
+        integrity: { enabled: false },
+        retry: {
+          enabled: true,
+          strategy: 'linear',
+          base_delay_ms: 10,
+          max_delay_ms: 50,
+          multiplier: 1,
+          jitter: false,
+          max_attempts: 5,
+        },
+      }), shutdownFlag);
+      await worker.run(new AbortController().signal);
 
       assert.equal(appendAttempt, 2, 'append 1회 실패 후 retry → 총 2회 시도');
       assert.equal(writtenRows.length, 1, '최종적으로 1개 row가 기록되어야 함');
-      assert.equal(writtenRows[0].NAME, 'sensor_x', '복구 후 정상 기록');
+      assert.equal(writtenRows[0].NAME, 'sensor_a', '복구 후 정상 기록');
 
       const { cp } = await store.load('e2e06', '_TAG_DATA_0');
       assert.equal(cp.last_success_rid, 100n, 'cp = maxRid(100n) — 마지막 성공 RID');
@@ -530,10 +510,12 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
     const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
 
-    const reader = makeTagSourceReader(() => ({
+    restores.push(patchMachbaseClient());
+
+    restores.push(patchReader(() => ({
       rows: [{ rid: 1n, tagId: 1, data: { TIME: 1000n, VALUE: 1.0 } }],
       err: null,
-    }));
+    })));
 
     let appendCount = 0;
     restores.push(patchWriter(async function(rows) {
@@ -544,30 +526,19 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
     }));
 
     try {
-      const { Writer } = require('../../machbase/writer.js');
-      await runDataTableWorker({
-        jobId: 'e2e06-exhaust',
-        mapping: baseMapping({
-          integrity: { enabled: false },
-          retry: {
-            enabled: true,
-            strategy: 'linear',
-            base_delay_ms: 5,
-            max_delay_ms: 20,
-            multiplier: 1,
-            jitter: false,
-            max_attempts: 3,
-          },
-        }),
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: '_TAG_DATA_0',
-        reader: reader,
-        aliasCache: makeTagAliasCache(new Map([[1, 'tag_a']])),
-        dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        writer: new Writer(),
-        shutdownFlag,
-      });
+      const worker = makeTagWorker('e2e06-exhaust', tmpDir, baseMapping({
+        integrity: { enabled: false },
+        retry: {
+          enabled: true,
+          strategy: 'linear',
+          base_delay_ms: 5,
+          max_delay_ms: 20,
+          multiplier: 1,
+          jitter: false,
+          max_attempts: 3,
+        },
+      }), shutdownFlag);
+      await worker.run(new AbortController().signal);
 
       assert.equal(appendCount, 3, 'max_attempts=3 → 3회 append 시도 후 종료');
       assert.equal(shutdownFlag.value, false, 'shutdownFlag는 변경되지 않아야 함');
@@ -582,14 +553,8 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
 // ─────────────────────────────────────────────────────────────────────────────
 describe('E2E-07: cp 파일 손상 → start_mode 기준 시작', () => {
   let restores = [];
-  let origConsoleError;
-
-  beforeEach(() => {
-    origConsoleError = console.error;
-  });
 
   afterEach(() => {
-    console.error = origConsoleError;
     while (restores.length) restores.pop()();
   });
 
@@ -597,39 +562,36 @@ describe('E2E-07: cp 파일 손상 → start_mode 기준 시작', () => {
     const tmpDir = await makeTmpDir();
     const shutdownFlag = makeFlag(30);
 
-    const cpFile = path.join(tmpDir, 'e2e07___TAG_DATA_0.json');
+    const cpFile = path.join(tmpDir, 'e2e07_TAG_DATA_0.json');
     await fs.writeFile(cpFile, '{ broken json !!', 'utf-8');
 
+    // Logger를 mock하여 error 로그를 캡처
+    const loggerMod = require('../../logger/logger.js');
+    const logger = loggerMod.getInstance();
+    const origError = logger.error.bind(logger);
     const logs = [];
-    console.error = (...args) => { logs.push(args.join(' ')); };
+    logger.error = (stage, fields) => { logs.push({ stage, ...fields }); };
+    restores.push(() => { logger.error = origError; });
 
     const readCalls = [];
-    const reader = makeTagSourceReader((startRid) => {
+
+    restores.push(patchMachbaseClient());
+
+    restores.push(patchReader((startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
-    });
+    }));
 
     restores.push(patchWriter(null));
 
     try {
-      const { Writer } = require('../../machbase/writer.js');
-      await runDataTableWorker({
-        jobId: 'e2e07',
-        mapping: baseMapping({ start_mode: 'full', integrity: { enabled: false } }),
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: '_TAG_DATA_0',
-        reader: reader,
-        aliasCache: makeTagAliasCache(),
-        dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
-        writer: new Writer(),
-        shutdownFlag,
-      });
+      const worker = makeTagWorker('e2e07', tmpDir, baseMapping({ start_mode: 'full', integrity: { enabled: false } }), shutdownFlag);
+      await worker.run(new AbortController().signal);
 
       assert.ok(readCalls.length >= 1, '최소 1회 이상 read 호출');
       assert.equal(readCalls[0], 0n, '파싱 실패 → start_mode=full → startRid=0n');
 
-      const cpIoLog = logs.find(l => l.includes('checkpoint_io'));
+      const cpIoLog = logs.find(l => l.stage === 'checkpoint_io');
       assert.ok(cpIoLog !== undefined, 'stage="checkpoint_io" 오류 로그가 출력되어야 함');
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });

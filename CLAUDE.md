@@ -21,11 +21,13 @@ repli-js/
 │   ├── worker.js                 # Worker 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
 │   └── retry.js                  # RetryHandler 유틸리티
 ├── machbase/
-│   ├── machbase.js               # MachbaseClient 클래스, toInt64 유틸리티
-│   ├── table_info.js             # ColumnType, Column, TableSchema 클래스
+│   ├── machbase.js               # MachbaseClient, ColumnType, Column, TableSchema, toInt64
+│   ├── schema_builder.js         # buildTagSchema(), buildLogSchema() — 스키마 빌드 함수
 │   ├── reader.js                 # TagAliasCache, Reader 클래스
 │   ├── writer.js                 # Writer 클래스
 │   └── integrity_checker.js      # IntegrityChecker — batchExists()
+├── logger/
+│   └── logger.js                 # Logger 클래스 — 날짜 로테이션, stdout/file 출력
 ├── file/
 │   ├── file.js                   # File — JSON atomic read/write (BigInt 지원)
 │   └── checkpoint.js             # CheckpointStore — cp 파일 load/save
@@ -43,7 +45,8 @@ repli-js/
 │       ├── tag_replication.test.js # TAG 테이블 통합 테스트 (11개)
 │       └── log_replication.test.js # LOG 테이블 통합 테스트 (8개)
 ├── docs/
-│   └── PROJECT.md                # 상세 설계 문서 (아키텍처, UML, 결정 이력)
+│   ├── PROJECT.md                # 상세 설계 문서 (아키텍처, UML, 결정 이력)
+│   └── ENDIAN_BUG.md             # @machbase/ts-client endian 버그 상세 분석
 └── package.json
 ```
 
@@ -60,7 +63,7 @@ repli-js/
     - `getColumnsByTableName(tableName)` → `[{ NAME, TYPE, ID }]` (META·LOG 컬럼 조회)
     - `getColumnsByTableId(tableId)` → `[{ NAME, TYPE, ID }]` (DATA 파티션 컬럼 조회)
 - `toInt64(val)` → BigInt 변환 유틸리티 (writer.js에서 import)
-- `module.exports = { createConnection, QueryError, MachbaseClient, toInt64 }`
+- `module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema }`
 
 ### app.js — 진입점
 
@@ -87,7 +90,9 @@ repli-js/
 3. **STEADY_REPLICATION**: 루프 — reader.readAfterRid → aliasCache.resolve(reader.client) → writer.append → cp 저장 → sleep(poll_interval_ms) → shutdown 체크
    - statement ID 고갈 방지: stmtCount 추적, 900 도달 시 srcConn 재생성
 
-### machbase/table_info.js
+### machbase/machbase.js — ColumnType / Column / TableSchema
+
+`ColumnType`, `Column`, `TableSchema` 클래스가 `machbase.js`에 정의되어 있다.
 
 - `ColumnType` 클래스: Machbase 컬럼 타입 정의 (`code`, `type`, `safeNull`)
   - Static 상수: `SHORT`, `INTEGER`, `LONG`, `ULONG`, `DATETIME`, `FLOAT`, `DOUBLE`, `VARCHAR`, `TEXT`, `CLOB`, `BLOB`, `BINARY`, `IPV4`, `IPV6`, `JSON`, `UNKNOWN`
@@ -96,13 +101,20 @@ repli-js/
 - `Column` 클래스: 테이블 컬럼 메타정보 (`name`, `columnType`, `id`, `category`)
   - `category`: `'key'`(TAG의 NAME 컬럼), `'data'`(일반 데이터 컬럼), `'metadata'`(TAG META 추가 속성)
 - `TableSchema` 클래스: 불변 테이블 컬럼 구조 (`tableType`, `logicalTable`, `columns: Column[]`)
-  - `TableSchema.buildTag(client, logicalTable, dataTableId)` → TAG 테이블 컬럼 분석
-    - `client.getColumnsByTableName(_META)` → metadata columns
-    - `client.getColumnsByTableId(dataTableId)` → data columns
-    - columns = dataColumns(NAME 포함) + metadataColumns
-  - `TableSchema.buildLog(client, logicalTable)` → LOG 테이블 컬럼 분석
-    - `client.getColumnsByTableName(logicalTable)` → 전체 컬럼
-- `module.exports = { ColumnType, Column, TableSchema }`
+  - constructor: `(tableType, logicalTable, columns)` — columns 배열 직접 수신
+- `module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema }`
+
+### machbase/schema_builder.js
+
+스키마 빌드 함수만 담당하는 순수 함수 모듈.
+
+- `buildTagSchema(client, logicalTable, dataTableId)` → `Promise<TableSchema>`
+  - `client.getColumnsByTableName(_META)` → metadata columns
+  - `client.getColumnsByTableId(dataTableId)` → data columns (NAME 컬럼은 VARCHAR 타입으로 오버라이드)
+  - columns = dataColumns(NAME 포함) + metadataColumns
+- `buildLogSchema(client, logicalTable)` → `Promise<TableSchema>`
+  - `client.getColumnsByTableName(logicalTable)` → 전체 컬럼
+- `module.exports = { buildTagSchema, buildLogSchema }`
 
 ### machbase/reader.js
 
@@ -145,7 +157,7 @@ repli-js/
 ### file/checkpoint.js
 
 - `CheckpointStore(directory)`: `load(jobId, dataTable)` / `save(jobId, dataTable, cp, stats)`
-- 파일 경로: `{directory}/{jobId}__{dataTable}.json` (예: `job-1___TAG_DATA_0.json`)
+- 파일 경로: `{directory}/{jobId}_{dataTable}.json` (예: `job-1__TAG_DATA_0.json`)
 - 파싱 실패 또는 `source.data_table` 불일치 → `console.error({stage:'checkpoint_io',...})` 후 무효화
 
 ### file/file.js
@@ -262,14 +274,14 @@ LIMIT 1000
 - **비동기 패턴**: `async/await`
 - **BigInt 처리**: RID 값은 BigInt. JSON 직렬화 시 `BigInt → string` 변환 필요
 - **에러 처리**: `@machbase/ts-client`의 `QueryError` 클래스로 DB 에러 구분
-- **로깅**: `console.log` — info/warn, `console.error` — error. 항상 JSON 구조체로 출력 (`{level, stage, job_id, data_table, msg, ...}`)
+- **로깅**: `logger/logger.js`의 `Logger` 클래스 사용. `logger.info(stage, fields)` / `logger.warn(...)` / `logger.error(...)` 형태로 호출. 날짜 기반 로테이션, stdout/file 독립 제어 지원.
 - **코드 스타일**: 기존 파일의 세미콜론 스타일을 따를 것
 - **단일 연결 제약**: `@machbase/ts-client` 연결 하나로 동시 query + append 불가 ("Unexpected protocol N" 오류) → Worker별 독립 연결 사용 (설계 결정 B-01)
 
 ## 테스트 실행
 
 ```bash
-# 전체 단위 테스트 (87개)
+# 전체 단위 테스트 (101개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
@@ -281,13 +293,13 @@ node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
 ```
 
-현재 테스트 현황: **87 단위 + 19 통합 = 106 pass / 0 fail**
+현재 테스트 현황: **101 단위 + 19 통합 = 120 pass / 0 fail**
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
 - config.test.js: 설정 검증 (33개)
 - retry.test.js: RetryHandler 백오프 로직 (19개)
 - table_info.test.js: TableSchema/TagAliasCache 빌드/조회 (13개)
 - target_writer.test.js: Writer safeNull 패딩 (5개)
-- worker.test.js: Worker 상태 머신 (9개)
+- worker.test.js: Worker 상태 머신 + Job/Replicator (25개)
 - e2e_scenarios.test.js: E2E 시나리오 (8개)
 - tag_replication.test.js: TAG 복제 통합 테스트 (11개)
 - log_replication.test.js: LOG 복제 통합 테스트 (8개)

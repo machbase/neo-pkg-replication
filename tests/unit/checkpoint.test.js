@@ -57,7 +57,7 @@ test('load: source.data_table 불일치 → { exists: false, err }', async () =>
 
   // 정상 저장 후 파일 내부 data_table 값을 오염
   await store.save('job-1', '_TAG_DATA_0', { last_success_rid: 0n }, {});
-  const filePath = path.join(dir, 'job-1___TAG_DATA_0.json');
+  const filePath = path.join(dir, 'job-1_TAG_DATA_0.json');
   const raw = JSON.parse(await fs.readFile(filePath, 'utf-8'));
   raw.source.data_table = '_TAG_DATA_CORRUPTED';
   await fs.writeFile(filePath, JSON.stringify(raw));
@@ -72,7 +72,7 @@ test('load: JSON 파싱 실패 → { exists: false, err }', async () => {
   await fs.mkdir(dir, { recursive: true });
   const store = new CheckpointStore(dir);
 
-  const filePath = path.join(dir, 'job-1___TAG_DATA_0.json');
+  const filePath = path.join(dir, 'job-1_TAG_DATA_0.json');
   await fs.writeFile(filePath, 'NOT_VALID_JSON');
 
   const result = await store.load('job-1', '_TAG_DATA_0');

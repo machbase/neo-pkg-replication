@@ -1,5 +1,7 @@
 'use strict';
 
+const { getInstance: getLogger } = require('../logger/logger.js');
+
 const fs = require('fs/promises');
 
 const EXECUTION_DEFAULTS = {
@@ -64,6 +66,40 @@ class ConfigLoader {
       version: raw.version,
       servers: raw.servers,
       replication: { jobs },
+      logging: ConfigLoader._processLogging(raw.logging),
+    };
+  }
+
+  static _processLogging(raw = {}) {
+    const VALID_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+    const level = raw.level ?? 'info';
+    if (!VALID_LEVELS.has(level)) {
+      throw new Error(`logging.level must be one of: debug, info, warn, error (got: "${level}")`);
+    }
+
+    const stdout = raw.stdout !== undefined ? raw.stdout : true;
+    if (typeof stdout !== 'boolean') {
+      throw new Error(`logging.stdout must be a boolean (got: ${typeof stdout})`);
+    }
+
+    const file = raw.file || {};
+    const fileEnabled = file.enabled !== undefined ? file.enabled : false;
+    if (typeof fileEnabled !== 'boolean') {
+      throw new Error(`logging.file.enabled must be a boolean (got: ${typeof fileEnabled})`);
+    }
+    if (fileEnabled) {
+      if (file.directory !== undefined && (typeof file.directory !== 'string' || file.directory === '')) {
+        throw new Error('logging.file.directory must be a non-empty string');
+      }
+    }
+
+    return {
+      level,
+      stdout,
+      file: {
+        enabled: fileEnabled,
+        directory: file.directory || './logs',
+      },
     };
   }
 
@@ -73,10 +109,10 @@ class ConfigLoader {
     let shutdownTimeout = 30000;
     if (job.shutdown_timeout_ms !== undefined) {
       if (!Number.isInteger(job.shutdown_timeout_ms) || job.shutdown_timeout_ms < 1) {
-        console.warn(JSON.stringify({
-          level: 'warn', stage: 'config', job_id: job.id,
-          msg: `shutdown_timeout_ms must be a positive integer, got: ${job.shutdown_timeout_ms}, using default 30000`,
-        }));
+        getLogger().warn('config', {
+job_id: job.id,
+          msg: `shutdown_timeout_ms must be a positive integer, got: ${job.shutdown_timeout_ms}, using default 30000`
+});
       } else {
         shutdownTimeout = job.shutdown_timeout_ms;
       }
@@ -109,31 +145,31 @@ class ConfigLoader {
 
     // source/target 구조 검증
     if (!mapping.source || typeof mapping.source !== 'object') {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: 'mapping.source is required and must be an object, skipping mapping',
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: 'mapping.source is required and must be an object, skipping mapping'
+});
       return [];
     }
     if (!mapping.target || typeof mapping.target !== 'object') {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: 'mapping.target is required and must be an object, skipping mapping',
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: 'mapping.target is required and must be an object, skipping mapping'
+});
       return [];
     }
     if (!mapping.source.table || typeof mapping.source.table !== 'string') {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: 'mapping.source.table is required and must be a non-empty string, skipping mapping',
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: 'mapping.source.table is required and must be a non-empty string, skipping mapping'
+});
       return [];
     }
     if (!mapping.target.table || typeof mapping.target.table !== 'string') {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: 'mapping.target.table is required and must be a non-empty string, skipping mapping',
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: 'mapping.target.table is required and must be a non-empty string, skipping mapping'
+});
       return [];
     }
 
@@ -141,17 +177,17 @@ class ConfigLoader {
     const dstServer = mapping.target.server;
 
     if (!servers[srcServer]) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `Unknown source server alias: "${srcServer}", skipping mapping`,
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: `Unknown source server alias: "${srcServer}", skipping mapping`
+});
       return [];
     }
     if (!servers[dstServer]) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `Unknown target server alias: "${dstServer}", skipping mapping`,
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: `Unknown target server alias: "${dstServer}", skipping mapping`
+});
       return [];
     }
 
@@ -164,114 +200,114 @@ class ConfigLoader {
 
     // query_limit 검증
     if (!Number.isInteger(execution.query_limit) || execution.query_limit < 1) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `query_limit must be a positive integer, got: ${execution.query_limit}, skipping mapping`,
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: `query_limit must be a positive integer, got: ${execution.query_limit}, skipping mapping`
+});
       return [];
     }
 
     // poll_interval_ms 검증
     if (!Number.isInteger(execution.poll_interval_ms) || execution.poll_interval_ms < 1) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `poll_interval_ms must be a positive integer, got: ${execution.poll_interval_ms}, skipping mapping`,
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: `poll_interval_ms must be a positive integer, got: ${execution.poll_interval_ms}, skipping mapping`
+});
       return [];
     }
 
     if (!VALID_START_MODES.has(execution.start_mode)) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `Invalid start_mode: "${execution.start_mode}", skipping mapping`,
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: `Invalid start_mode: "${execution.start_mode}", skipping mapping`
+});
       return [];
     }
     if (execution.start_mode === 'rid_after') {
       const ridVal = execution.rid_after;
       if (ridVal === undefined || ridVal === null) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: 'rid_after is required when start_mode is "rid_after", skipping mapping',
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: 'rid_after is required when start_mode is "rid_after", skipping mapping'
+});
         return [];
       }
       if (!/^\d+$/.test(String(ridVal))) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: `rid_after must be a non-negative integer, got: ${ridVal}, skipping mapping`,
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: `rid_after must be a non-negative integer, got: ${ridVal}, skipping mapping`
+});
         return [];
       }
     }
     if (!VALID_ON_SAVE_FAILURE.has(execution.on_save_failure)) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `Invalid on_save_failure: "${execution.on_save_failure}", skipping mapping`,
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: `Invalid on_save_failure: "${execution.on_save_failure}", skipping mapping`
+});
       return [];
     }
 
     const rrs = execution.rid_range_size;
     if (!Number.isInteger(rrs) || rrs < 1) {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `rid_range_size must be a positive integer, got: ${rrs}, skipping mapping`,
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: `rid_range_size must be a positive integer, got: ${rrs}, skipping mapping`
+});
       return [];
     }
 
     // retry 구조 검증
     if (execution.retry !== undefined) {
       if (typeof execution.retry !== 'object' || execution.retry === null || Array.isArray(execution.retry)) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: 'retry must be an object, skipping mapping',
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: 'retry must be an object, skipping mapping'
+});
         return [];
       }
       const r = execution.retry;
       const VALID_STRATEGIES = ['exponential', 'linear'];
       if (r.strategy !== undefined && !VALID_STRATEGIES.includes(r.strategy)) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: `retry.strategy must be 'exponential' or 'linear', got: "${r.strategy}", skipping mapping`,
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: `retry.strategy must be 'exponential' or 'linear', got: "${r.strategy}", skipping mapping`
+});
         return [];
       }
       if (r.max_attempts !== undefined && r.max_attempts !== null) {
         if (!Number.isInteger(r.max_attempts) || r.max_attempts < 1) {
-          console.error(JSON.stringify({
-            level: 'error', stage: 'config', ...logCtx,
-            msg: `retry.max_attempts must be a positive integer or null, got: ${r.max_attempts}, skipping mapping`,
-          }));
+          getLogger().error('config', {
+...logCtx,
+            msg: `retry.max_attempts must be a positive integer or null, got: ${r.max_attempts}, skipping mapping`
+});
           return [];
         }
       }
       if (r.base_delay_ms !== undefined) {
         if (!Number.isInteger(r.base_delay_ms) || r.base_delay_ms < 0) {
-          console.error(JSON.stringify({
-            level: 'error', stage: 'config', ...logCtx,
-            msg: `retry.base_delay_ms must be a non-negative integer, got: ${r.base_delay_ms}, skipping mapping`,
-          }));
+          getLogger().error('config', {
+...logCtx,
+            msg: `retry.base_delay_ms must be a non-negative integer, got: ${r.base_delay_ms}, skipping mapping`
+});
           return [];
         }
       }
       if (r.max_delay_ms !== undefined) {
         if (!Number.isInteger(r.max_delay_ms) || r.max_delay_ms < 0) {
-          console.error(JSON.stringify({
-            level: 'error', stage: 'config', ...logCtx,
-            msg: `retry.max_delay_ms must be a non-negative integer, got: ${r.max_delay_ms}, skipping mapping`,
-          }));
+          getLogger().error('config', {
+...logCtx,
+            msg: `retry.max_delay_ms must be a non-negative integer, got: ${r.max_delay_ms}, skipping mapping`
+});
           return [];
         }
       }
       if (r.multiplier !== undefined) {
         if (typeof r.multiplier !== 'number' || r.multiplier <= 0) {
-          console.error(JSON.stringify({
-            level: 'error', stage: 'config', ...logCtx,
-            msg: `retry.multiplier must be a positive number, got: ${r.multiplier}, skipping mapping`,
-          }));
+          getLogger().error('config', {
+...logCtx,
+            msg: `retry.multiplier must be a positive number, got: ${r.multiplier}, skipping mapping`
+});
           return [];
         }
       }
@@ -280,17 +316,17 @@ class ConfigLoader {
     // integrity 구조 검증
     if (execution.integrity !== undefined) {
       if (typeof execution.integrity !== 'object' || execution.integrity === null || Array.isArray(execution.integrity)) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: 'integrity must be an object, skipping mapping',
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: 'integrity must be an object, skipping mapping'
+});
         return [];
       }
       if (execution.integrity.enabled !== undefined && typeof execution.integrity.enabled !== 'boolean') {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: `integrity.enabled must be a boolean, got: ${typeof execution.integrity.enabled}, skipping mapping`,
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: `integrity.enabled must be a boolean, got: ${typeof execution.integrity.enabled}, skipping mapping`
+});
         return [];
       }
     }
@@ -300,25 +336,25 @@ class ConfigLoader {
     const tagId = mapping.source.tag_identifier;
     if (tagId) {
       if (tagId.mode === undefined || tagId.mode === null) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: `tag_identifier.mode is required when tag_identifier is specified (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`,
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: `tag_identifier.mode is required when tag_identifier is specified (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`
+});
         return [];
       }
       if (!VALID_MODES.includes(tagId.mode)) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: `Invalid tag_identifier.mode '${tagId.mode}' (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`,
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: `Invalid tag_identifier.mode '${tagId.mode}' (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`
+});
         return [];
       }
     }
     if (tagId && tagId.value !== undefined && typeof tagId.value !== 'string') {
-      console.error(JSON.stringify({
-        level: 'error', stage: 'config', ...logCtx,
-        msg: `tag_identifier.value must be a string, got: ${typeof tagId.value}, skipping mapping`,
-      }));
+      getLogger().error('config', {
+...logCtx,
+        msg: `tag_identifier.value must be a string, got: ${typeof tagId.value}, skipping mapping`
+});
       return [];
     }
 
@@ -327,17 +363,17 @@ class ConfigLoader {
     const rawCols = mapping.source.columns;
     if (rawCols !== undefined && rawCols !== null) {
       if (!Array.isArray(rawCols) || rawCols.length === 0) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: 'source.columns must be a non-empty array when specified, skipping mapping',
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: 'source.columns must be a non-empty array when specified, skipping mapping'
+});
         return [];
       }
       if (!rawCols.every(c => typeof c === 'string' && c.trim() !== '')) {
-        console.error(JSON.stringify({
-          level: 'error', stage: 'config', ...logCtx,
-          msg: 'source.columns entries must be non-empty strings, skipping mapping',
-        }));
+        getLogger().error('config', {
+...logCtx,
+          msg: 'source.columns entries must be non-empty strings, skipping mapping'
+});
         return [];
       }
       sourceColumns = rawCols.map(c => c.toUpperCase());

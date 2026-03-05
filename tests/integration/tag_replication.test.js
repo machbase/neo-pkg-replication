@@ -28,10 +28,8 @@ const path = require('path');
 
 const { MachbaseClient } = require('../../machbase/machbase.js');
 const { buildTagSchema, buildLogSchema } = require('../../machbase/schema_builder.js');
-const { Reader, TagAliasCache } = require('../../machbase/reader.js');
-const { Writer } = require('../../machbase/writer.js');
 const CheckpointStore = require('../../file/checkpoint.js');
-const { runDataTableWorker, TagRowProcessor, LogRowProcessor } = require('../../worker/worker.js');
+const { Worker } = require('../../worker/worker.js');
 
 // ─── 접속 설정 ────────────────────────────────────────────────────────────────
 
@@ -153,7 +151,7 @@ function baseMapping(srcTable, dstTable, overrides = {}) {
  * @param {object} mappingOverrides - mapping 필드 오버라이드 (source, execution 등)
  */
 async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides = {}) {
-  // 소스 파티션 + 스키마 조회
+  // 소스 파티션 조회
   const discoverConn = await makeConn();
   let partitions, srcSchema, dstSchema;
   try {
@@ -174,6 +172,16 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
     await dstDiscoverConn.close();
   }
 
+  // src-only 컬럼 검출 (job_runner._discoverMapping 로직과 동일)
+  const dstNames = new Set(dstSchema.columns.map(c => c.name));
+  const srcOnlyCols = srcSchema.columns
+    .filter(c => c.category !== 'metadata' && !dstNames.has(c.name))
+    .map(c => c.name);
+  if (srcOnlyCols.length > 0) {
+    // discover 실패 → 모든 파티션 스킵
+    return;
+  }
+
   const mapping = {
     ...baseMapping(srcTable, dstTable),
     ...mappingOverrides,
@@ -182,36 +190,19 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
   };
 
   for (const part of partitions) {
-    const srcConn = await makeConn();
-    const dstConn = await makeConn();
-    const aliasCache = new TagAliasCache(srcTable);
-    const reader = new Reader(srcSchema, srcConn, part.data_table);
-    const writer = new Writer(dstSchema);
-    const openErr = await writer.open(dstConn, dstTable, srcSchema);
-    if (openErr) {
-      await writer.close();
-      await reader.close();
-      continue;
-    }
-    try {
-      await runDataTableWorker({
-        jobId,
-        mapping,
-        checkpoint: { directory: tmpDir },
-        tableType: 'TAG',
-        dataTable: part.data_table,
-        srcConfig: DB_CONFIG,
-        dstConfig: DB_CONFIG,
-        reader,
-        aliasCache,
-        writer,
-        rowProcessor: new TagRowProcessor(mapping.source.tag_identifier),
-        shutdownFlag: makeShutdownFlag(500),
-      });
-    } finally {
-      await writer.close();
-      await reader.close();
-    }
+    const worker = new Worker(
+      jobId,
+      { directory: tmpDir },
+      mapping,
+      'TAG',
+      part.data_table,
+      srcSchema,
+      dstSchema,
+      DB_CONFIG,
+      DB_CONFIG,
+      makeShutdownFlag(500),
+    );
+    await worker.run(new AbortController().signal);
   }
 }
 
@@ -608,34 +599,24 @@ describe('TAG-10: LOG 테이블은 cp+integrity=true여도 STARTUP_INTEGRITY 미
       let dstSchema;
       try { dstSchema = await buildLogSchema(dc, DST); } finally { await dc.close(); }
 
-      const srcConn = await makeConn();
-      const dstConn = await makeConn();
-      const reader = new Reader(srcSchema, srcConn, SRC);
-      const writer = new Writer(dstSchema);
-      await writer.open(dstConn, DST, srcSchema);
       const mapping = {
         ...baseMapping(SRC, DST, { integrity: { enabled: true } }),
         execution: { ...baseMapping(SRC, DST).execution, integrity: { enabled: true } },
       };
-      try {
-        await runDataTableWorker({
-          jobId,
-          mapping,
-          checkpoint: { directory: tmpDir },
-          tableType: 'LOG',
-          dataTable: SRC,
-          srcConfig: DB_CONFIG,
-          dstConfig: DB_CONFIG,
-          reader,
-          aliasCache: null,
-          writer,
-          rowProcessor: new LogRowProcessor(),
-          shutdownFlag: makeShutdownFlag(500),
-        });
-      } finally {
-        await writer.close();
-        await reader.close();
-      }
+
+      const worker = new Worker(
+        jobId,
+        { directory: tmpDir },
+        mapping,
+        'LOG',
+        SRC,
+        srcSchema,
+        dstSchema,
+        DB_CONFIG,
+        DB_CONFIG,
+        makeShutdownFlag(500),
+      );
+      await worker.run(new AbortController().signal);
     }
 
     // 1차 실행 → cp 저장

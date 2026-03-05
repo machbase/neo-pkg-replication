@@ -1,5 +1,7 @@
 'use strict';
 
+const { getInstance: getLogger } = require('../logger/logger.js');
+
 const { createConnection, QueryError } = require('@machbase/ts-client');
 
 // ─── ColumnType ───────────────────────────────────────────────────────────────
@@ -191,7 +193,7 @@ class MachbaseClient {
     } catch (err) {
       // 연결 오류도 UNSUPPORTED로 반환하여 JobRunner에서 mapping skip 처리됨.
       // 연결 오류와 테이블 미존재를 구분하지 않는 의도적 설계.
-      console.error(JSON.stringify({ level: 'error', stage: 'catalog', table, msg: `getTableType DB error: ${err.message}` }));
+      getLogger().error('catalog', { table, msg: `getTableType DB error: ${err.message}` });
       return { type: 'UNSUPPORTED' };
     }
   }
@@ -208,7 +210,7 @@ class MachbaseClient {
       const rows = await this.query(sql, [pattern]);
       return (rows || []).map(r => ({ data_table: r.data_table, table_id: Number(r.table_id) }));
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'catalog', table: logicalTable, msg: `listTagDataTables DB error: ${err.message}` }));
+      getLogger().error('catalog', { table: logicalTable, msg: `listTagDataTables DB error: ${err.message}` });
       return [];
     }
   }

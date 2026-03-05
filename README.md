@@ -129,16 +129,15 @@ _TAG_DATA_3  ──┘
 ## 테스트
 
 ```bash
-# 전체 단위 테스트 (90개)
+# 전체 단위 테스트 (87개)
 node --test tests/unit/*.test.js
 
 # 통합 테스트 (실 DB 연결 필요 — 192.168.1.189:5656)
-node --test tests/integration/tag_table.test.js
-node --test tests/integration/log_table.test.js
-node --test tests/integration/log_schema.test.js
+node --test tests/integration/tag_replication.test.js
+node --test tests/integration/log_replication.test.js
 ```
 
-현재 90개 단위 테스트 + 20개 통합 테스트 전체 통과.
+현재 87개 단위 테스트 + 19개 통합 테스트 전체 통과.
 
 ## 로그 형식
 
@@ -171,8 +170,8 @@ repli-js/
 │   ├── worker.js        # Worker 상태 머신
 │   └── retry.js         # 재시도 유틸리티
 ├── machbase/
-│   ├── machbase.js      # MachbaseClient, ColumnType (endian 우회 포함)
-│   ├── table_info.js    # 컬럼 메타 + TAG alias map
+│   ├── machbase.js      # MachbaseClient (endian 우회 포함)
+│   ├── schema_builder.js # 컬럼 메타 + TAG alias cache
 │   ├── reader.js        # 소스 DB 읽기 (conn 소유)
 │   ├── writer.js        # 대상 DB 쓰기 (conn 소유)
 │   └── integrity_checker.js # 재시작 정합성 검사
@@ -180,11 +179,10 @@ repli-js/
 │   ├── file.js          # JSON 파일 I/O (atomic write, BigInt 지원)
 │   └── checkpoint.js    # 체크포인트 관리
 ├── docs/
-│   ├── PROJECT.md           # 상세 설계 문서 (아키텍처, UML, 결정 이력)
-│   ├── ENDIAN_BUG.md        # @machbase/ts-client endian 버그 상세 분석
-│   └── INTEGRATION_TESTS.md # 통합 테스트 케이스별 결과 문서
+│   ├── PROJECT.md       # 상세 설계 문서 (아키텍처, UML, 결정 이력)
+│   └── ENDIAN_BUG.md    # @machbase/ts-client endian 버그 상세 분석
 ├── checkpoints/         # 런타임 생성 — cp 파일 저장 위치
 └── tests/
-    ├── unit/            # 단위 테스트 (90개)
-    └── integration/     # 통합 테스트 (20개, 실 DB 필요)
+    ├── unit/            # 단위 테스트 (87개)
+    └── integration/     # 통합 테스트 (19개, 실 DB 필요)
 ```

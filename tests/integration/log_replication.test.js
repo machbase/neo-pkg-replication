@@ -25,10 +25,8 @@ const path = require('path');
 
 const { MachbaseClient } = require('../../machbase/machbase.js');
 const { buildLogSchema } = require('../../machbase/schema_builder.js');
-const { Reader } = require('../../machbase/reader.js');
-const { Writer } = require('../../machbase/writer.js');
 const CheckpointStore = require('../../file/checkpoint.js');
-const { runDataTableWorker, LogRowProcessor } = require('../../worker/worker.js');
+const { Worker } = require('../../worker/worker.js');
 
 // ─── 접속 설정 ────────────────────────────────────────────────────────────────
 
@@ -111,35 +109,34 @@ function baseMapping(srcTable, dstTable, execOverrides = {}) {
 
 /**
  * LOG Worker 실행 헬퍼
- * Writer.open 에러 시 throw
+ * src-only 컬럼 존재 시 throw (job_runner._discoverMapping 로직과 동일)
  */
 async function runLogWorker(jobId, srcTable, dstTable, tmpDir, execOverrides = {}) {
   const { srcSchema, dstSchema } = await buildLogSchemaPair(srcTable, dstTable);
-  const srcConn = await makeConn();
-  const dstConn = await makeConn();
-  const reader = new Reader(srcSchema, srcConn, srcTable);
-  const writer = new Writer(dstSchema);
-  try {
-    const openErr = await writer.open(dstConn, dstTable, srcSchema);
-    if (openErr) throw openErr;
-    await runDataTableWorker({
-      jobId,
-      mapping: baseMapping(srcTable, dstTable, execOverrides),
-      checkpoint: { directory: tmpDir },
-      tableType: 'LOG',
-      dataTable: srcTable,
-      srcConfig: DB_CONFIG,
-      dstConfig: DB_CONFIG,
-      reader,
-      aliasCache: null,
-      writer,
-      rowProcessor: new LogRowProcessor(),
-      shutdownFlag: makeShutdownFlag(500),
-    });
-  } finally {
-    await writer.close();
-    await reader.close();
+
+  // src-only 컬럼 검출
+  const dstNames = new Set(dstSchema.columns.map(c => c.name));
+  const srcOnlyCols = srcSchema.columns
+    .filter(c => c.category !== 'metadata' && !dstNames.has(c.name))
+    .map(c => c.name);
+  if (srcOnlyCols.length > 0) {
+    throw new Error(`source has columns not present in destination: ${srcOnlyCols.join(', ')}`);
   }
+
+  const mapping = baseMapping(srcTable, dstTable, execOverrides);
+  const worker = new Worker(
+    jobId,
+    { directory: tmpDir },
+    mapping,
+    'LOG',
+    srcTable,
+    srcSchema,
+    dstSchema,
+    DB_CONFIG,
+    DB_CONFIG,
+    makeShutdownFlag(500),
+  );
+  await worker.run(new AbortController().signal);
 }
 
 // ─── LOG-01: 동일 스키마 ──────────────────────────────────────────────────────
@@ -198,7 +195,10 @@ test('LOG-02: SRC-only 컬럼 → Writer.open 에러, 복제 스킵, cp 미저�
     await assert.rejects(
       () => runLogWorker(jobId, SRC, DST, tmpDir),
       (err) => {
-        assert.ok(err.message.includes('QUALITY'), `에러 메시지에 QUALITY 포함: ${err.message}`);
+        assert.ok(
+          err.message.toUpperCase().includes('QUALITY'),
+          `에러 메시지에 QUALITY 포함: ${err.message}`
+        );
         return true;
       }
     );

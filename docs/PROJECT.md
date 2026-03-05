@@ -18,8 +18,9 @@
 8. [고정 정책 vs 설정 가능 항목](#8-고정-정책-vs-설정-가능-항목)
 9. [테이블 타입별 동작 비교](#9-테이블-타입별-동작-비교)
 10. [UML 다이어그램](#10-uml-다이어그램)
-11. [구현 현황](#11-구현-현황)
-12. [미결 사항 및 향후 과제](#12-미결-사항-및-향후-과제)
+11. [확정 설계 결정 사항](#11-확정-설계-결정-사항)
+12. [@machbase/ts-client 알려진 버그](#12-machbasets-client-알려진-버그)
+13. [미결 사항 및 향후 과제](#13-미결-사항-및-향후-과제)
 
 ---
 
@@ -86,7 +87,7 @@ repli-js/
 ├── worker/
 │   ├── retry.js                # M8: RetryHandler
 │   └── worker.js               # M9: Worker 상태 머신
-├── job_runner.js               # JobRunner (_runMapping / _runJob / run)
+├── job_runner.js               # Replicator, Job, Worker 클래스 (재시작 루프 포함)
 ├── tests/
 │   ├── unit/
 │   │   ├── checkpoint.test.js    # CheckpointStore 단위 테스트 (6개)
@@ -113,20 +114,18 @@ repli-js/
 ┌──────────────────────────────────────────────────────────────┐
 │  Main Process                                                │
 │                                                              │
-│  app.js → ConfigLoader → JobRunner.run()                    │
+│  app.js → ConfigLoader → new Replicator(config).run()        │
 │                              │                               │
-│                              ├─ MachbaseClient (DISCOVER)    │
-│                              ├─ TableInfo (컬럼 메타 + alias) │
-│                              └─ [Worker × N] ──────────┐     │
-│                                                        │     │
-│  Worker (data_table 1개당 1개, Promise.all 병렬)       │     │
-│  ┌──────────────────────────────────────────────────┐  │     │
-│  │  Reader (srcConn 소유)   — 소스 DB 읽기          │  │     │
-│  │  Writer (dstConn 소유)   — 대상 DB 쓰기          │  │     │
-│  │  IntegrityChecker        — STARTUP 시 대상 확인  │  │     │
-│  │  CheckpointStore         — 파일 갱신             │  │     │
-│  └──────────────────────────────────────────────────┘  │     │
-└────────────────────────────────────────────────────────┘─────┘
+│           Replicator         │                               │
+│           ├─ Job (job당 1개, 독립 루프)                       │
+│           │   ├─ _discoverMapping() — MachbaseClient(단기)   │
+│           │   ├─ AbortController                              │
+│           │   └─ Worker × N  (Promise.all, 병렬)             │
+│           │       ├─ Reader (srcConn 소유) — 소스 DB 읽기    │
+│           │       ├─ Writer (dstConn 소유) — 대상 DB 쓰기    │
+│           │       └─ runDataTableWorker() — 상태 머신        │
+│           └─ Job (다른 job — 독립 실행)                       │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.3 Connection 관리 원칙 (설계 결정 B-01)
@@ -161,9 +160,15 @@ mapping (소스 table → 대상 table)
 
 ### 2.5 시스템 상태 머신
 
-**시스템 레벨**
+**Replicator 레벨**
 ```
-INIT → DISCOVER → [Worker 병렬 실행] → STOPPED
+start → [Job × N 병렬] → SIGTERM/SIGINT → graceful shutdown → exit
+```
+
+**Job 레벨 (job당 1개, 독립 루프)**
+```
+while(!shutdown):
+  DISCOVER → Workers 병렬 실행 → (에러 → AbortController 전체 취소) → 재시작
 ```
 
 **Worker 레벨 (data_table 1개당)**
@@ -1060,56 +1065,7 @@ sequenceDiagram
 
 ---
 
-## 11. 구현 현황
-
-### 11.1 Phase 완료 현황
-
-| Phase | 이름 | 상태 | 내용 |
-|-------|------|------|------|
-| Phase 0 | 환경 구성 | ✅ 완료 | 테스트 프레임워크, 디렉토리, config.json v3 샘플 |
-| Phase 1 | 독립 모듈 | ✅ 완료 | ConfigLoader, CheckpointStore, RetryHandler |
-| Phase 2 | DB 연결 모듈 | ✅ 완료 | CatalogClient, SourceReader, TagMetaProvider, IntegrityChecker, TargetWriter |
-| Phase 3 | Worker 조합 | ✅ 완료 | Worker 상태 머신 |
-| Phase 4 | 오케스트레이션 | ✅ 완료 | JobRunner, app.js 진입점 |
-
-**단위 테스트: 97개 전체 통과** (pass 97 / fail 0)
-**통합 테스트: 23개 전체 통과** (tag_table 8 + log_table 10 + log_schema 5)
-
-### 11.2 마일스톤 E2E 테스트 현황
-
-| ID | 항목 | 상태 |
-|----|------|------|
-| E2E-01 | TAG 테이블 전체 복제 — 4개 파티션 복제 완료, cp 정상 갱신 확인 | ✅ |
-| E2E-02 | SIGKILL 후 재시작 — 중복 없이 이후 데이터 복제, skipped_exists > 0 | ✅ |
-| E2E-03 | SIGTERM graceful — shutdown_timeout_ms 이내 종료, cp 최신 상태 | ✅ |
-| E2E-04 | 다중 mapping 병렬 — data_table별 cp 파일 독립 생성/갱신 확인 | ✅ |
-| E2E-05 | LOG 테이블 복제 — STARTUP_INTEGRITY 미수행 (로그 확인) | ✅ |
-| E2E-06 | 대상 DB 연결 차단 → retry 로그 → 복구 후 자동 재개 | ✅ |
-| E2E-07 | cp 파일 손상 → start_mode 기준 시작, stage="checkpoint_io" 로그 | ✅ |
-
-통합 테스트 케이스별 상세 결과는 [INTEGRATION_TESTS.md](./INTEGRATION_TESTS.md) 참고.
-
-### 11.3 통합 테스트 중 발견된 버그 수정 이력
-
-| 날짜 | 파일 | 버그 내용 | 수정 내용 |
-|------|------|----------|----------|
-| 2026-02-24 | `machbase/catalog.js` | `V$STORAGE_TAG_TABLES.ID` → BigInt 반환, JSON 직렬화 오류 | `Number(r.table_id)` 변환 |
-| 2026-02-24 | `machbase/catalog.js` | `getColumns` 필터 `TYPE <> 112`로 NAME 컬럼 제외됨 | `c.ID >= 1 AND c.ID < 65534` 로 변경 |
-| 2026-02-24 | `machbase/catalog.js` | `validateTagColumns` TIME 컬럼 type=6(datetime)인데 type=12(long)만 허용 | `TIME_TYPE_CODES = new Set([12, 6])` |
-| 2026-02-24 | `machbase/source_reader.js` | `endRid = startRid + limit * 10n` → RID 희소 시 empty 반환 | `MAX(_RID)` 실제 조회로 endRid 결정 |
-| 2026-02-24 | `machbase/tag_meta_provider.js` | Map 키 타입 불일치: `_ID`는 BigInt, `tagId`는 string | `BigInt(tagId)` 정규화 후 Map 조회 |
-| 2026-02-24 | `machbase/target_writer.js` | `getColumns` 필터 `c.ID > 0`으로 논리 테이블 NAME(ID=0) 제외 | `c.ID >= 0 AND c.ID < 65534` |
-| 2026-02-24 | `machbase/target_writer.js` | `append` 매트릭스 구성 시 int64 컬럼 BigInt 변환 누락 ("Bind data type unknown typecode=24") | `col.type === 'int64'` 시 `BigInt(val)` 변환 |
-| 2026-02-24 | `worker/worker.js` | `outRows`에 lowercase 키 사용 (`name`, `time`, `value`) → TargetWriter 조회 실패 | 대문자 키 `{ NAME, TIME, VALUE }` 로 통일 |
-| 2026-02-24 | `machbase/integrity_checker.js` | 파라미터 바인딩 쿼리가 statement ID 소비 → 1024개 한도 초과 | `batchExists()` 단일 OR 쿼리 + 인라인 이스케이프 방식으로 전환 |
-| 2026-02-24 | `worker/worker.js` | STARTUP_INTEGRITY에서 `targetConn` 재연결 시도 → `end()` 후 재연결 불가 | 배치마다 `new MachbaseClient(dstConfig)` 신규 생성 + `dstConfig` 파라미터 추가 |
-| 2026-02-24 | `job_runner.js` | B-01 설계 번복: 공유 connection/stream 동시 접근 시 "Unexpected protocol" 오류 | Worker당 독립 srcConn + dstConn + Writer 생성 구조로 전면 변경 |
-| 2026-02-25 | `machbase/writer.js` | null 패딩 시 JS null → "typecode 24" 오류 | ColumnType.safeNull 도입 (타입별: 0, 0n, 0.0, '') |
-| 2026-02-25 | `worker/worker.js` | statement ID 서버 한도(1024) 초과 | stmtCount 추적 + 900 도달 시 srcConn 재생성 |
-| 2026-02-26 | 전체 | SourceReader/TargetWriter 이름 리팩토링 | Reader/Writer로 클래스명·파일명·파라미터명 변경 |
-| 2026-02-26 | `machbase/machbase.js` | `@machbase/ts-client` double endian 버그 — TAG 파티션에 따라 BE로 저장된 FLOAT/DOUBLE 값을 라이브러리가 LE로 잘못 읽어 denormal로 손상 | `fixDoubleEndian()` 후처리 함수로 우회. 상세 내용은 [11.5 라이브러리 알려진 버그](#115-machbasets-client-알려진-버그) 및 [ENDIAN_BUG.md](./ENDIAN_BUG.md) 참고 |
-
-### 11.4 확정 설계 결정 사항
+## 11. 확정 설계 결정 사항
 
 | ID | 항목 | 결정 |
 |----|------|------|
@@ -1120,10 +1076,14 @@ sequenceDiagram
 | D-02 | TagMetaProvider 메타 로드 방식 | Read-through cache. Worker 시작 시 전체 로드, miss 시 단건 DB 조회 |
 | D-03 | `getMaxRid()` 실패 시 처리 | SKIP_MAPPING (worker 즉시 return) |
 | D-04 | Reader/Writer conn 소유 방식 | Reader가 srcConn 소유·close, Writer가 dstConn 소유·close. setup 실패 시 JobRunner가 해당 경로에서 직접 close |
+| B-04 | Job 재시작 전략 | Worker 하나라도 에러 시 AbortController로 전체 취소 → while(!shutdown) 루프로 Job 전체 재시작. job 독립(다른 job에 영향 없음) |
+| B-05 | AbortSignal → shutdownFlag 연동 | Worker.run()은 `signal.aborted || shutdownFlag.value` proxy 객체를 runDataTableWorker에 전달하여 abort 시 STEADY 루프 즉시 탈출 |
 | — | STARTUP_INTEGRITY retry 시 배치 재처리 범위 | 배치 내 이미 처리한 row는 건너뜀, 실패 row부터 재처리 |
 | — | Statement ID 고갈 대응 (STEADY) | stmtCount 추적, 900 도달 시 `reader.refreshConnection(srcConfig)` 호출 |
 
-### 11.5 @machbase/ts-client 알려진 버그
+---
+
+## 12. @machbase/ts-client 알려진 버그
 
 #### 버그: FLOAT/DOUBLE 쿼리 결과 endian 오류
 
@@ -1156,7 +1116,7 @@ case CMD_FLT64_TYPE:
 
 **우회 구현**
 
-BE로 저장된 값을 LE로 잘못 읽으면 반드시 **denormal**(비정규 부동소수점, `0 < |v| < 2.2250738585072014e-308`)이 된다. 반대로 실측 센서값이 우연히 denormal 범위에 들어오는 경우는 실무상 없으므로, `machbase/machbase.js`의 `fixDoubleEndian()` 함수에서 다음과 같이 사후 보정한다.
+BE로 저장된 값을 LE로 잘못 읽으면 반드시 **denormal**(비정규 부동소수점, `0 < |v| < 2.2250738585072014e-308`)이 된다. 반대로 실측 센서값이 우연히 denormal 범위에 들어오는 경우는 실무상 없으므로, `machbase/machbase.js`의 `fixDoubleEndian()` 함수에서 다음과 같이 사후 보정한다. 상세 분석은 [ENDIAN_BUG.md](./ENDIAN_BUG.md) 참고.
 
 ```js
 // machbase/machbase.js — fixDoubleEndian()
@@ -1170,7 +1130,7 @@ if (v !== 0 && Math.abs(v) < DOUBLE_MIN_NORMAL) {
 
 ---
 
-## 12. 미결 사항 및 향후 과제
+## 13. 미결 사항 및 향후 과제
 
 ### 12.1 미결 사항
 

@@ -1,5 +1,7 @@
 'use strict';
 
+const { getInstance: getLogger } = require('../logger/logger.js');
+
 const { toInt64 } = require('./machbase.js');
 
 
@@ -34,7 +36,7 @@ class Writer {
       );
       return null;
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'writer', table, msg: `open failed: ${err.message}` }));
+      getLogger().error('writer', { table, msg: `open failed: ${err.message}` });
       return err;
     }
   }
@@ -50,7 +52,7 @@ class Writer {
     if (val == null) return col.columnType.safeNull;
     if (col.columnType.type === 'int64') {
       if (typeof val === 'number' && !Number.isInteger(val)) {
-        console.warn(JSON.stringify({ level: 'warn', stage: 'writer', msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` }));
+        getLogger().warn('writer', { msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` });
       }
       return toInt64(val);
     }
@@ -69,7 +71,7 @@ class Writer {
       await this.stream.append(matrix);
       return null;
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'writer', msg: `append failed: ${err.message}` }));
+      getLogger().error('writer', { msg: `append failed: ${err.message}` });
       return err;
     }
   }
@@ -84,7 +86,7 @@ class Writer {
       try {
         await this.stream.close();
       } catch (err) {
-        console.error(JSON.stringify({ level: 'error', stage: 'writer', msg: `stream close failed: ${err.message}` }));
+        getLogger().error('writer', { msg: `stream close failed: ${err.message}` });
         firstErr = err;
       }
       this.stream = null;
@@ -94,7 +96,7 @@ class Writer {
       try {
         await this.client.close();
       } catch (err) {
-        console.error(JSON.stringify({ level: 'error', stage: 'writer', msg: `client close failed: ${err.message}` }));
+        getLogger().error('writer', { msg: `client close failed: ${err.message}` });
         if (!firstErr) firstErr = err;
       }
       this.client = null;

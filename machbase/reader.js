@@ -1,5 +1,7 @@
 'use strict';
 
+const { getInstance: getLogger } = require('../logger/logger.js');
+
 const { MachbaseClient } = require('./machbase.js');
 // ─── TagAliasCache ────────────────────────────────────────────────────────────
 
@@ -40,7 +42,7 @@ class TagAliasCache {
       }
       return null;
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'reader', msg: `loadAliases failed: ${err.message}` }));
+      getLogger().error('reader', { msg: `loadAliases failed: ${err.message}` });
       return err;
     }
   }
@@ -67,7 +69,7 @@ class TagAliasCache {
         tagName = rows[0].name;
         this._map.set(tagIdBig, tagName);
       } catch (err) {
-        console.error(JSON.stringify({ level: 'error', stage: 'reader', tag_id: String(tagId), msg: err.message }));
+        getLogger().error('reader', { tag_id: String(tagId), msg: err.message });
         return { canonical: null, status: 'retry_error' };
       }
     }
@@ -164,7 +166,7 @@ class Reader {
       // MAX(_RID) 실패 시 startRid + rangeSize를 폴백으로 사용.
       // 일시적 오류라면 다음 배치에서 복구되고, RID_RANGE 힌트가 실제 범위를 초과해도
       // WHERE _RID >= startRid 조건으로 안전하게 빈 결과가 반환되므로 무한 루프 위험은 없음.
-      console.warn(JSON.stringify({ level: 'warn', stage: 'reader', msg: `MAX(_RID) query failed for ${dataTable}, using startRid+rangeSize as endRid: ${e.message}` }));
+      getLogger().warn('reader', { msg: `MAX(_RID) query failed for ${dataTable}, using startRid+rangeSize as endRid: ${e.message}` });
     }
     if (endRid < startRid) endRid = startRid;
 
@@ -175,7 +177,7 @@ class Reader {
       const result = [];
       for (const row of (rows || [])) {
         if (row._RID == null) {
-          console.warn(JSON.stringify({ level: 'warn', stage: 'reader', msg: `row with null _RID skipped in ${dataTable}` }));
+          getLogger().warn('reader', { msg: `row with null _RID skipped in ${dataTable}` });
           continue;
         }
         // data에 _RID 제외한 나머지 컬럼을 UPPERCASE key로 저장
@@ -192,7 +194,7 @@ class Reader {
       }
       return { rows: result, err: null };
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'reader', data_table: dataTable, msg: err.message }));
+      getLogger().error('reader', { data_table: dataTable, msg: err.message });
       return { rows: [], err };
     }
   }
@@ -212,7 +214,7 @@ class Reader {
       if (raw === null || raw === undefined) return { maxRid: 0n, err: null };
       return { maxRid: BigInt(raw), err: null };
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'reader', data_table: this.dataTable, msg: `getMaxRid failed: ${err.message}` }));
+      getLogger().error('reader', { data_table: this.dataTable, msg: `getMaxRid failed: ${err.message}` });
       return { maxRid: null, err };
     }
   }

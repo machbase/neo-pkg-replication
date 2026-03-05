@@ -2,13 +2,17 @@
 
 const path = require('path');
 const ConfigLoader = require('./config/config.js');
-const JobRunner = require('./job_runner.js');
+const { Replicator } = require('./job_runner.js');
+const { init: initLogger, getInstance: getLogger } = require('./logger/logger.js');
 
 const configPath = process.argv[2] || path.join(__dirname, 'config.json');
 
 ConfigLoader.load(configPath)
-  .then(config => JobRunner.run(config))
+  .then(config => {
+    initLogger(config.logging);
+    return new Replicator(config).run();
+  })
   .catch(err => {
-    console.error(JSON.stringify({ level: 'error', stage: 'app', msg: err.message }));
+    getLogger().error('app', { msg: err.message });
     process.exitCode = 1;
   });

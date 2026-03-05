@@ -1,5 +1,7 @@
 'use strict';
 
+const { getInstance: getLogger } = require('../logger/logger.js');
+
 /**
  * 대상 테이블에서 tag + time 기준 row 존재 여부 확인
  * STARTUP_INTEGRITY 단계에서만 사용
@@ -46,7 +48,7 @@ class IntegrityChecker {
       }
       return { existSet, err: null };
     } catch (err) {
-      console.error(JSON.stringify({ level: 'error', stage: 'integrity_checker', table, msg: err.message }));
+      getLogger().error('integrity_checker', { table, msg: err.message });
       return { existSet: new Set(), err };
     }
   }

@@ -1,5 +1,7 @@
 'use strict';
 
+const { getInstance: getLogger } = require('../logger/logger.js');
+
 const path = require('path');
 const File = require('./file.js');
 
@@ -10,7 +12,7 @@ class CheckpointStore {
   }
 
   _filePath(jobId, dataTable) {
-    return path.join(this.directory, `${jobId}_${dataTable}.json`);
+    return path.join(this.directory, `${jobId}${dataTable}.json`);
   }
 
   /**
@@ -28,37 +30,31 @@ class CheckpointStore {
         return { cp: null, exists: false, err: null };
       }
       const msg = err instanceof SyntaxError ? `parse failed: ${err.message}` : `read failed: ${err.message}`;
-      console.error(JSON.stringify({
-        level: 'error',
-        stage: 'checkpoint_io',
-        job_id: jobId,
+      getLogger().error('checkpoint_io', {
+job_id: jobId,
         data_table: dataTable,
-        msg,
-      }));
+        msg
+});
       return { cp: null, exists: false, err };
     }
 
     // source.data_table 불일치 → 손상 처리
     if (data.source?.data_table !== dataTable) {
-      console.error(JSON.stringify({
-        level: 'error',
-        stage: 'checkpoint_io',
-        job_id: jobId,
+      getLogger().error('checkpoint_io', {
+job_id: jobId,
         data_table: dataTable,
-        msg: `data_table mismatch in file (got: ${data.source?.data_table}), invalidating`,
-      }));
+        msg: `data_table mismatch in file (got: ${data.source?.data_table}), invalidating`
+});
       return { cp: null, exists: false, err: new Error('checkpoint data_table mismatch') };
     }
 
     const cp = data.checkpoint;
     if (!cp || typeof cp.last_success_rid !== 'bigint') {
-      console.error(JSON.stringify({
-        level: 'error',
-        stage: 'checkpoint_io',
-        job_id: jobId,
+      getLogger().error('checkpoint_io', {
+job_id: jobId,
         data_table: dataTable,
-        msg: `invalid checkpoint structure (last_success_rid missing or wrong type), invalidating`,
-      }));
+        msg: `invalid checkpoint structure (last_success_rid missing or wrong type), invalidating`
+});
       return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
     }
 
@@ -97,26 +93,22 @@ class CheckpointStore {
 
     try {
       await file.write(data);
-      console.log(JSON.stringify({
-        level: 'info',
-        stage: 'checkpoint_saved',
-        job_id: jobId,
+      getLogger().info('checkpoint_saved', {
+job_id: jobId,
         data_table: dataTable,
         last_success_rid: cp.last_success_rid.toString(),
         rows_read: stats?.rows_read ?? 0,
         rows_written: stats?.rows_written ?? 0,
         dropped_no_meta: stats?.dropped_no_meta ?? 0,
-        skipped_exists: stats?.skipped_exists ?? 0,
-      }));
+        skipped_exists: stats?.skipped_exists ?? 0
+});
       return null;
     } catch (err) {
-      console.error(JSON.stringify({
-        level: 'error',
-        stage: 'checkpoint_io',
-        job_id: jobId,
+      getLogger().error('checkpoint_io', {
+job_id: jobId,
         data_table: dataTable,
-        msg: `save failed: ${err.message}`,
-      }));
+        msg: `save failed: ${err.message}`
+});
       if (opts?.on_save_failure === 'abort') throw err;
       return err;
     }

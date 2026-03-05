@@ -1,5 +1,13 @@
 {
   "version": 3,
+  "logging": {
+    "level": "info",
+    "stdout": false,
+    "file": {
+      "enabled": true,
+      "directory": "./logs"
+    }
+  },
   "servers": {
     "src": {
       "host": "192.168.1.189",
@@ -38,7 +46,7 @@
             "source": {
               "server": "src",
               "table": "TAG",
-              "columns": ["NAME", "VALUE"]
+              "columns": ["NAME", "TIME", "VALUE", "txt"]
             },
             "target": {
               "server": "dst",
