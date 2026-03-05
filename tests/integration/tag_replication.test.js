@@ -27,9 +27,9 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const { MachbaseClient } = require('../../machbase/machbase.js');
-const { TableSchema } = require('../../machbase/table_info.js');
+const { buildTagSchema, buildLogSchema } = require('../../machbase/schema_builder.js');
 const { Reader, TagAliasCache } = require('../../machbase/reader.js');
-const Writer = require('../../machbase/writer.js');
+const { Writer } = require('../../machbase/writer.js');
 const CheckpointStore = require('../../file/checkpoint.js');
 const { runDataTableWorker, TagRowProcessor, LogRowProcessor } = require('../../worker/worker.js');
 
@@ -159,7 +159,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
   try {
     partitions = await discoverConn.listTagDataTables(srcTable);
     if (partitions.length === 0) throw new Error(`No partitions for ${srcTable}`);
-    srcSchema = await TableSchema.buildTag(discoverConn, srcTable, partitions[0].table_id);
+    srcSchema = await buildTagSchema(discoverConn, srcTable, partitions[0].table_id);
   } finally {
     await discoverConn.close();
   }
@@ -169,7 +169,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
   try {
     const dstPartitions = await dstDiscoverConn.listTagDataTables(dstTable);
     if (dstPartitions.length === 0) throw new Error(`No partitions for ${dstTable}`);
-    dstSchema = await TableSchema.buildTag(dstDiscoverConn, dstTable, dstPartitions[0].table_id);
+    dstSchema = await buildTagSchema(dstDiscoverConn, dstTable, dstPartitions[0].table_id);
   } finally {
     await dstDiscoverConn.close();
   }
@@ -185,7 +185,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
     const srcConn = await makeConn();
     const dstConn = await makeConn();
     const aliasCache = new TagAliasCache(srcTable);
-    const reader = new Reader(srcSchema, aliasCache, srcConn, part.data_table);
+    const reader = new Reader(srcSchema, srcConn, part.data_table);
     const writer = new Writer(dstSchema);
     const openErr = await writer.open(dstConn, dstTable, srcSchema);
     if (openErr) {
@@ -203,6 +203,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
         srcConfig: DB_CONFIG,
         dstConfig: DB_CONFIG,
         reader,
+        aliasCache,
         writer,
         rowProcessor: new TagRowProcessor(mapping.source.tag_identifier),
         shutdownFlag: makeShutdownFlag(500),
@@ -602,14 +603,14 @@ describe('TAG-10: LOG 테이블은 cp+integrity=true여도 STARTUP_INTEGRITY 미
     async function runLogWorker() {
       const sc = await makeConn();
       let srcSchema;
-      try { srcSchema = await TableSchema.buildLog(sc, SRC); } finally { await sc.close(); }
+      try { srcSchema = await buildLogSchema(sc, SRC); } finally { await sc.close(); }
       const dc = await makeConn();
       let dstSchema;
-      try { dstSchema = await TableSchema.buildLog(dc, DST); } finally { await dc.close(); }
+      try { dstSchema = await buildLogSchema(dc, DST); } finally { await dc.close(); }
 
       const srcConn = await makeConn();
       const dstConn = await makeConn();
-      const reader = new Reader(srcSchema, null, srcConn, SRC);
+      const reader = new Reader(srcSchema, srcConn, SRC);
       const writer = new Writer(dstSchema);
       await writer.open(dstConn, DST, srcSchema);
       const mapping = {
@@ -626,6 +627,7 @@ describe('TAG-10: LOG 테이블은 cp+integrity=true여도 STARTUP_INTEGRITY 미
           srcConfig: DB_CONFIG,
           dstConfig: DB_CONFIG,
           reader,
+          aliasCache: null,
           writer,
           rowProcessor: new LogRowProcessor(),
           shutdownFlag: makeShutdownFlag(500),

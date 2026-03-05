@@ -30,8 +30,8 @@ class TagRowProcessor {
   /**
    * @returns {{ action: 'append'|'drop'|'shutdown', outRow?: object }}
    */
-  async process(row, reader, retry, shutdownFlag, logCtx) {
-    const canonical = await _resolveCanonical(reader, row.tagId, this.tagIdentifier, retry, shutdownFlag, logCtx);
+  async process(row, aliasCache, client, retry, shutdownFlag, logCtx) {
+    const canonical = await _resolveCanonical(aliasCache, client, row.tagId, this.tagIdentifier, retry, shutdownFlag, logCtx);
     if (canonical === undefined) return { action: 'shutdown' };
     if (canonical === null) return { action: 'drop' };
 
@@ -84,12 +84,12 @@ async function _readBatch(reader, startRid, limit, rangeSize, retry, shutdownFla
 }
 
 /**
- * reader.resolveTagCanonical 을 retry 포함하여 호출 (retry scope B 지원)
+ * aliasCache.resolve 를 retry 포함하여 호출 (retry scope B 지원)
  * @returns {string}    ok — canonical tag name
  * @returns {null}      drop_not_found — 이 row를 drop
  * @returns {undefined} shutdown 또는 retry exhausted — caller must return
  */
-async function _resolveCanonical(reader, tagId, tagIdentifier, retry, shutdownFlag, logCtx) {
+async function _resolveCanonical(aliasCache, client, tagId, tagIdentifier, retry, shutdownFlag, logCtx) {
   let attempt = 0;
   while (true) {
     if (shutdownFlag.value) return undefined;
@@ -102,7 +102,7 @@ async function _resolveCanonical(reader, tagId, tagIdentifier, retry, shutdownFl
       const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
       if (signal === 'shutdown') return undefined;
     }
-    const { canonical, status } = await reader.resolveTagCanonical(tagId, tagIdentifier);
+    const { canonical, status } = await aliasCache.resolve(client, tagId, tagIdentifier);
     if (status === 'drop_not_found') return null;
     if (status === 'retry_error') { attempt++; continue; }
     return canonical; // 'ok'
@@ -153,6 +153,7 @@ async function _appendRows(writer, outRows, retry, shutdownFlag, logCtx) {
 async function _runStartupIntegrity({
   startRid,
   reader,
+  aliasCache,
   rowProcessor,
   dstConfig,
   mapping,
@@ -196,7 +197,7 @@ async function _runStartupIntegrity({
       const resolved = []; // { rid, canonical, time }
       for (const row of rows) {
         if (shutdownFlag.value) { shouldReturn = true; break; }
-        const result = await rowProcessor.process(row, reader, retry, shutdownFlag, logCtx);
+        const result = await rowProcessor.process(row, aliasCache, reader.client, retry, shutdownFlag, logCtx);
         if (result.action === 'shutdown') { shouldReturn = true; break; }
         if (result.action === 'drop') { droppedNoMeta++; continue; }
         resolved.push({ rid: row.rid, canonical: result.outRow.NAME, time: row.data.TIME });
@@ -309,6 +310,7 @@ async function runDataTableWorker({
   // targetConn: 미사용 — STARTUP_INTEGRITY는 dstConfig로 신규 접속 생성 (statement ID 누적 방지)
   dstConfig,
   reader,
+  aliasCache,
   writer,
   rowProcessor,
   shutdownFlag,
@@ -358,13 +360,11 @@ async function runDataTableWorker({
     console.log(JSON.stringify({ level: 'info', stage: 'worker', ...logCtx, msg: `start_mode=${startMode}, start_rid=${startRid}` }));
   }
 
-  // TAG alias map 로드 확인 (job_runner에서 이미 로드되었을 수 있지만, 로그로 명시)
-  if (tableType === 'TAG') {
-    if (reader.aliasSize === 0) {
-      const loadErr = await reader.loadAliases();
-      if (loadErr) {
-        console.warn(JSON.stringify({ level: 'warn', stage: 'worker', ...logCtx, msg: `reader.loadAliases failed, falling back to per-row DB lookup: ${loadErr.message}` }));
-      }
+  // TAG alias map 로드
+  if (aliasCache && aliasCache.size === 0) {
+    const loadErr = await aliasCache.load(reader.client);
+    if (loadErr) {
+      console.warn(JSON.stringify({ level: 'warn', stage: 'worker', ...logCtx, msg: `aliasCache.load failed, falling back to per-row DB lookup: ${loadErr.message}` }));
     }
   }
 
@@ -381,6 +381,7 @@ async function runDataTableWorker({
     const result = await _runStartupIntegrity({
       startRid,
       reader,
+      aliasCache,
       rowProcessor,
       dstConfig,
       mapping,
@@ -441,7 +442,7 @@ async function runDataTableWorker({
     for (const row of rows) {
       if (shutdownFlag.value) return;
 
-      const result = await rowProcessor.process(row, reader, retry, shutdownFlag, logCtx);
+      const result = await rowProcessor.process(row, aliasCache, reader.client, retry, shutdownFlag, logCtx);
       if (result.action === 'shutdown') return;
       if (result.action === 'drop') { droppedNoMeta++; continue; }
       outRows.push(result.outRow);

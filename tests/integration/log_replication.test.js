@@ -24,9 +24,9 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const { MachbaseClient } = require('../../machbase/machbase.js');
-const { TableSchema } = require('../../machbase/table_info.js');
+const { buildLogSchema } = require('../../machbase/schema_builder.js');
 const { Reader } = require('../../machbase/reader.js');
-const Writer = require('../../machbase/writer.js');
+const { Writer } = require('../../machbase/writer.js');
 const CheckpointStore = require('../../file/checkpoint.js');
 const { runDataTableWorker, LogRowProcessor } = require('../../worker/worker.js');
 
@@ -74,10 +74,10 @@ async function dropTable(conn, name) {
 async function buildLogSchemaPair(srcTable, dstTable) {
   const sc = await makeConn();
   let srcSchema;
-  try { srcSchema = await TableSchema.buildLog(sc, srcTable); } finally { await sc.close(); }
+  try { srcSchema = await buildLogSchema(sc, srcTable); } finally { await sc.close(); }
   const dc = await makeConn();
   let dstSchema;
-  try { dstSchema = await TableSchema.buildLog(dc, dstTable); } finally { await dc.close(); }
+  try { dstSchema = await buildLogSchema(dc, dstTable); } finally { await dc.close(); }
   return { srcSchema, dstSchema };
 }
 
@@ -117,7 +117,7 @@ async function runLogWorker(jobId, srcTable, dstTable, tmpDir, execOverrides = {
   const { srcSchema, dstSchema } = await buildLogSchemaPair(srcTable, dstTable);
   const srcConn = await makeConn();
   const dstConn = await makeConn();
-  const reader = new Reader(srcSchema, null, srcConn, srcTable);
+  const reader = new Reader(srcSchema, srcConn, srcTable);
   const writer = new Writer(dstSchema);
   try {
     const openErr = await writer.open(dstConn, dstTable, srcSchema);
@@ -131,6 +131,7 @@ async function runLogWorker(jobId, srcTable, dstTable, tmpDir, execOverrides = {
       srcConfig: DB_CONFIG,
       dstConfig: DB_CONFIG,
       reader,
+      aliasCache: null,
       writer,
       rowProcessor: new LogRowProcessor(),
       shutdownFlag: makeShutdownFlag(500),

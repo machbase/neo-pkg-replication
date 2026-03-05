@@ -1,7 +1,6 @@
 'use strict';
 
 const { MachbaseClient } = require('./machbase.js');
-
 // ─── TagAliasCache ────────────────────────────────────────────────────────────
 
 /**
@@ -28,13 +27,13 @@ class TagAliasCache {
    * 주의: META 테이블을 full scan 한다. TAG가 수십만 개인 대규모 환경에서는
    * Worker 시작 시 지연이 발생할 수 있음. 현재는 Worker당 1회 호출이므로 실용상 문제없음.
    *
-   * @param {MachbaseClient} conn
+   * @param {MachbaseClient} client
    * @returns {Error|null}
    */
-  async load(conn) {
+  async load(client) {
     const sql = `SELECT _ID, name FROM _${this.logicalTable}_META`;
     try {
-      const rows = await conn.query(sql);
+      const rows = await client.query(sql);
       this._map.clear();
       for (const row of (rows || [])) {
         this._map.set(BigInt(row._ID), row.name);
@@ -48,12 +47,12 @@ class TagAliasCache {
 
   /**
    * tag_id → canonical 태그명 변환 (Read-through cache)
-   * @param {MachbaseClient} conn
+   * @param {MachbaseClient} client
    * @param {number|bigint} tagId
    * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
    * @returns {{ canonical: string|null, status: 'ok'|'drop_not_found'|'retry_error' }}
    */
-  async resolve(conn, tagId, tagIdentifier) {
+  async resolve(client, tagId, tagIdentifier) {
     const tagIdBig = BigInt(tagId);
     let tagName = this._map.get(tagIdBig);
 
@@ -61,7 +60,7 @@ class TagAliasCache {
     if (tagName === undefined) {
       try {
         const sql = `SELECT name FROM _${this.logicalTable}_META WHERE _ID = ?`;
-        const rows = await conn.query(sql, [tagId]);
+        const rows = await client.query(sql, [tagId]);
         if (!rows || rows.length === 0) {
           return { canonical: null, status: 'drop_not_found' };
         }
@@ -90,18 +89,16 @@ class TagAliasCache {
 class Reader {
   /**
    * @param {TableSchema} schema - srcTableSchema (불변 컬럼 구조, owned)
-   * @param {TagAliasCache|null} aliasCache - TAG alias 캐시 (TAG 전용, owned), LOG는 null
-   * @param {MachbaseClient} conn - 소스 DB 연결 (owned)
+   * @param {MachbaseClient} client - 소스 DB 연결 (owned)
    * @param {string} dataTable - 파티션 테이블명 (예: _TAG_DATA_0)
    * @param {string[]|null} sourceColumns - UPPERCASE 허용 컬럼명 배열. null이면 전체 컬럼.
    */
-  constructor(schema, aliasCache, conn, dataTable, sourceColumns = null) {
+  constructor(schema, client, dataTable, sourceColumns = null) {
     if (!/^[A-Za-z0-9_]+$/.test(dataTable)) {
       throw new Error(`Reader: invalid dataTable name '${dataTable}' (must match /^[A-Za-z0-9_]+$/)`);
     }
     this.schema = schema;
-    this.aliasCache = aliasCache;
-    this.conn = conn;
+    this.client = client;
     this.dataTable = dataTable;
 
     // SELECT 컬럼명 목록을 생성 시점에 확정 (lowercase)
@@ -117,9 +114,9 @@ class Reader {
    * 소유한 연결 닫기
    */
   async close() {
-    if (this.conn) {
-      await this.conn.close();
-      this.conn = null;
+    if (this.client) {
+      await this.client.close();
+      this.client = null;
     }
   }
 
@@ -130,22 +127,8 @@ class Reader {
   async refreshConnection(config) {
     const newConn = new MachbaseClient(config);
     await newConn.connect();
-    if (this.conn) await this.conn.close().catch(() => {});
-    this.conn = newConn;
-  }
-
-  // ── TagAliasCache 위임 ──────────────────────────────────────────────────────
-
-  /** 현재 캐시 항목 수 (TAG 전용; LOG는 항상 0) */
-  get aliasSize() { return this.aliasCache ? this.aliasCache.size : 0; }
-
-  async loadAliases() {
-    if (!this.aliasCache) return null;
-    return this.aliasCache.load(this.conn);
-  }
-
-  async resolveTagCanonical(tagId, tagIdentifier) {
-    return this.aliasCache.resolve(this.conn, tagId, tagIdentifier);
+    if (this.client) await this.client.close().catch(() => {});
+    this.client = newConn;
   }
 
   // ── 인스턴스 메서드 ─────────────────────────────────────────────────────────
@@ -159,7 +142,7 @@ class Reader {
    */
   async readAfterRid(startRid, limit = 1000, rangeSize = 50000) {
     const columnNames = this.selectColumnNames;
-    const conn = this.conn;
+    const client = this.client;
     const dataTable = this.dataTable;
 
     if (!columnNames || columnNames.length === 0) {
@@ -171,7 +154,7 @@ class Reader {
     // RID_RANGE 힌트는 반개방 구간 [startRid, endRid)
     let endRid = startRid + BigInt(rangeSize);
     try {
-      const maxRows = await conn.query(`SELECT MAX(_RID) as max_rid FROM ${dataTable}`);
+      const maxRows = await client.query(`SELECT MAX(_RID) as max_rid FROM ${dataTable}`);
       const rawMax = maxRows?.[0]?.max_rid;
       if (rawMax !== null && rawMax !== undefined) {
         const maxRidPlusOne = BigInt(rawMax) + 1n;
@@ -188,7 +171,7 @@ class Reader {
     const colList = selectCols.join(', ');
     const sql = `SELECT /*+ RID_RANGE(${dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${dataTable} WHERE _RID >= ${startRid} LIMIT ${limit}`;
     try {
-      const rows = await conn.query(sql);
+      const rows = await client.query(sql);
       const result = [];
       for (const row of (rows || [])) {
         if (row._RID == null) {
@@ -223,7 +206,7 @@ class Reader {
   async getMaxRid() {
     const sql = `SELECT MAX(_RID) as max_rid FROM ${this.dataTable}`;
     try {
-      const rows = await this.conn.query(sql);
+      const rows = await this.client.query(sql);
       const raw = rows?.[0]?.max_rid;
       // 빈 테이블: MAX() → null
       if (raw === null || raw === undefined) return { maxRid: 0n, err: null };

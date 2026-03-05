@@ -10,7 +10,7 @@ class CheckpointStore {
   }
 
   _filePath(jobId, dataTable) {
-    return path.join(this.directory, `${jobId}__${dataTable}.json`);
+    return path.join(this.directory, `${jobId}_${dataTable}.json`);
   }
 
   /**

@@ -25,8 +25,23 @@ async function makeTmpDir() {
   return dir;
 }
 
+/** TAG AliasCache mock 생성 */
+function makeTagAliasCache(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']])) {
+  return {
+    _map: metaMap,
+    get size() { return metaMap.size; },
+    async load() { return null; },
+    async resolve(client, tagId) {
+      const tagIdBig = BigInt(tagId);
+      const name = metaMap.get(tagIdBig) || metaMap.get(Number(tagId));
+      if (!name) return { canonical: null, status: 'drop_not_found' };
+      return { canonical: name, status: 'ok' };
+    },
+  };
+}
+
 /** TAG Reader mock 생성 */
-function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), readFn = null) {
+function makeTagSourceReader(readFn = null) {
   return {
     schema: {
       tableType: 'TAG',
@@ -37,18 +52,10 @@ function makeTagSourceReader(metaMap = new Map([[1, 'tag_a'], [2, 'tag_b']]), re
         { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
       ],
     },
-    aliasCache: { _map: metaMap, get size() { return metaMap.size; } },
+    client: {},
     dataTable: '_TAG_DATA_0',
-    get aliasSize() { return metaMap.size; },
-    async loadAliases() { return null; },
-    async resolveTagCanonical(tagId, tagIdentifier) {
-      const tagIdBig = BigInt(tagId);
-      const name = metaMap.get(tagIdBig) || metaMap.get(Number(tagId));
-      if (!name) return { canonical: null, status: 'drop_not_found' };
-      return { canonical: name, status: 'ok' };
-    },
     async close() {},
-    async refreshConnection(config) {},
+    async refreshConnection() {},
     async getMaxRid() {
       return { maxRid: 0n, err: null };
     },
@@ -71,12 +78,10 @@ function makeLogSourceReader(readFn = null) {
         { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
       ],
     },
-    aliasCache: null,
+    client: {},
     dataTable: '_LOG_DATA_0',
-    get aliasSize() { return 0; },
-    async loadAliases() { return null; },
     async close() {},
-    async refreshConnection(config) {},
+    async refreshConnection() {},
     async getMaxRid() {
       return { maxRid: 0n, err: null };
     },
@@ -97,15 +102,15 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     const readCalls = [];
     const appendedRows = [];
 
-    const reader = makeTagSourceReader(new Map([[1, 'tag_a'], [2, 'tag_b']]), (startRid, limit) => {
+    const reader = makeTagSourceReader((startRid, limit) => {
       readCalls.push({ startRid, limit });
       return { rows: [], err: null };
     });
 
-    const Writer = require('../../machbase/writer.js');
+    const { Writer } = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
     Writer.prototype.open = async function() {
-      this.appendColumns = [];
+      this.srcNames = new Set();
       this.stream = { append: async (m) => appendedRows.push(...m), close: async () => {} };
       return null;
     };
@@ -127,7 +132,8 @@ describe('runDataTableWorker — RESOLVE_START', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        reader: reader,
+        reader,
+        aliasCache: makeTagAliasCache(),
         writer: new Writer(),
         shutdownFlag,
       });
@@ -155,15 +161,15 @@ describe('runDataTableWorker — RESOLVE_START', () => {
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];
 
-    const reader = makeTagSourceReader(new Map([[1, 'tag_a'], [2, 'tag_b']]), (startRid) => {
+    const reader = makeTagSourceReader((startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
     });
 
-    const Writer = require('../../machbase/writer.js');
+    const { Writer } = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
     Writer.prototype.open = async function() {
-      this.appendColumns = [];
+      this.srcNames = new Set();
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -185,7 +191,8 @@ describe('runDataTableWorker — RESOLVE_START', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        reader: reader,
+        reader,
+        aliasCache: makeTagAliasCache(),
         writer: new Writer(),
         shutdownFlag,
       });
@@ -206,7 +213,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     const shutdownFlag = { value: false };
     let batchCall = 0;
 
-    const reader = makeTagSourceReader(new Map([[1, 'tag_a'], [2, 'tag_b']]), (startRid) => {
+    const reader = makeTagSourceReader((startRid) => {
       batchCall++;
       if (batchCall === 1) {
         return {
@@ -223,11 +230,11 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     });
 
     const appendedRows = [];
-    const Writer = require('../../machbase/writer.js');
+    const { Writer } = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
     const origAppend = Writer.prototype.append;
     Writer.prototype.open = async function() {
-      this.appendColumns = [];
+      this.srcNames = new Set();
       this.stream = {
         append: async (matrix) => { appendedRows.push(...matrix); },
         close: async () => {},
@@ -256,7 +263,8 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        reader: reader,
+        reader,
+        aliasCache: makeTagAliasCache(),
         writer: new Writer(),
         shutdownFlag,
       });
@@ -278,7 +286,7 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     const shutdownFlag = { value: false };
     let batchCall = 0;
 
-    const reader = makeTagSourceReader(new Map(), (startRid) => {
+    const reader = makeTagSourceReader((startRid) => {
       batchCall++;
       if (batchCall === 1) {
         return {
@@ -293,11 +301,11 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     });
 
     const appendedRows = [];
-    const Writer = require('../../machbase/writer.js');
+    const { Writer } = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
     const origAppend = Writer.prototype.append;
     Writer.prototype.open = async function() {
-      this.appendColumns = [];
+      this.srcNames = new Set();
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -323,7 +331,8 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        reader: reader,
+        reader,
+        aliasCache: makeTagAliasCache(new Map()),
         writer: new Writer(),
         shutdownFlag,
       });
@@ -358,11 +367,11 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
     });
 
     const appendedRows = [];
-    const Writer = require('../../machbase/writer.js');
+    const { Writer } = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
     const origAppend = Writer.prototype.append;
     Writer.prototype.open = async function() {
-      this.appendColumns = [];
+      this.srcNames = new Set();
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -388,7 +397,8 @@ describe('runDataTableWorker — STEADY_REPLICATION', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'LOG',
         dataTable: '_LOG_DATA_0',
-        reader: reader,
+        reader,
+        aliasCache: null,
         writer: new Writer(),
         shutdownFlag,
       });
@@ -419,7 +429,7 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     const readCalls = [];
     const integrityCheckCalls = [];
 
-    const reader = makeTagSourceReader(new Map([[1, 'tag_a'], [2, 'tag_b']]), (startRid) => {
+    const reader = makeTagSourceReader((startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
     });
@@ -431,10 +441,10 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
       return { existSet: new Set(), err: null };
     };
 
-    const Writer = require('../../machbase/writer.js');
+    const { Writer } = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
     Writer.prototype.open = async function() {
-      this.appendColumns = [];
+      this.srcNames = new Set();
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -456,7 +466,8 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        reader: reader,
+        reader,
+        aliasCache: makeTagAliasCache(),
         writer: new Writer(),
         shutdownFlag,
       });
@@ -485,7 +496,7 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     let steadyReadCalls = [];
     let integrityReadDone = false;
 
-    const reader = makeTagSourceReader(new Map([[1, 'sensor_a']]), (startRid) => {
+    const reader = makeTagSourceReader((startRid) => {
       if (!integrityReadDone) {
         integrityReadDone = true;
         return {
@@ -518,11 +529,11 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
     machbaseMod.MachbaseClient.prototype.close = async function() {};
 
     const appendedRows = [];
-    const Writer = require('../../machbase/writer.js');
+    const { Writer } = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
     const origAppend = Writer.prototype.append;
     Writer.prototype.open = async function() {
-      this.appendColumns = [];
+      this.srcNames = new Set();
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -548,7 +559,8 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
-        reader: reader,
+        reader,
+        aliasCache: makeTagAliasCache(new Map([[1, 'sensor_a']])),
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
         writer: new Writer(),
         shutdownFlag,
@@ -590,10 +602,10 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
       return { existSet: new Set(), err: null };
     };
 
-    const Writer = require('../../machbase/writer.js');
+    const { Writer } = require('../../machbase/writer.js');
     const origOpen = Writer.prototype.open;
     Writer.prototype.open = async function() {
-      this.appendColumns = [];
+      this.srcNames = new Set();
       this.stream = { append: async () => {}, close: async () => {} };
       return null;
     };
@@ -615,7 +627,8 @@ describe('runDataTableWorker — STARTUP_INTEGRITY', () => {
         checkpoint: { directory: tmpDir },
         tableType: 'LOG',
         dataTable: '_LOG_DATA_0',
-        reader: reader,
+        reader,
+        aliasCache: null,
         writer: new Writer(),
         shutdownFlag,
       });

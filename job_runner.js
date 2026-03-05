@@ -1,9 +1,9 @@
 'use strict';
 
 const { MachbaseClient } = require('./machbase/machbase.js');
-const { TableSchema } = require('./machbase/table_info.js');
+const { buildTagSchema, buildLogSchema } = require('./machbase/schema_builder.js');
 const { Reader, TagAliasCache } = require('./machbase/reader.js');
-const Writer = require('./machbase/writer.js');
+const { Writer } = require('./machbase/writer.js');
 const { runDataTableWorker, TagRowProcessor, LogRowProcessor } = require('./worker/worker.js');
 
 // ─── DISCOVER ─────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ async function _discoverMapping(mapping, servers, logCtx) {
       dataTables = tables.map(t => t.data_table);
 
       // 소스 TableSchema 생성 (첫 번째 파티션 기준)
-      srcSchema = await TableSchema.buildTag(sourceConn, mapping.source.table, tables[0].table_id);
+      srcSchema = await buildTagSchema(sourceConn, mapping.source.table, tables[0].table_id);
 
       // source.columns 유효성 검증: columns(NAME+data+metadata) 기준
       if (mapping.source.columns) {
@@ -70,7 +70,7 @@ async function _discoverMapping(mapping, servers, logCtx) {
           console.error(JSON.stringify({ level: 'error', stage: 'job_runner', ...logCtx, msg: `no target data partitions found, skipping mapping` }));
           return null;
         }
-        dstSchema = await TableSchema.buildTag(tmpDstConn, mapping.target.table, dstTables[0].table_id);
+        dstSchema = await buildTagSchema(tmpDstConn, mapping.target.table, dstTables[0].table_id);
       } finally {
         await tmpDstConn.close().catch(() => {});
       }
@@ -78,7 +78,7 @@ async function _discoverMapping(mapping, servers, logCtx) {
       // LOG: 논리 테이블을 data_table로 사용
       dataTables = [mapping.source.table];
 
-      srcSchema = await TableSchema.buildLog(sourceConn, mapping.source.table);
+      srcSchema = await buildLogSchema(sourceConn, mapping.source.table);
 
       // source.columns 유효성 검증: columns(전체 컬럼) 기준
       if (mapping.source.columns) {
@@ -94,7 +94,7 @@ async function _discoverMapping(mapping, servers, logCtx) {
       const tmpDstConn = new MachbaseClient(dstConfig);
       try {
         await tmpDstConn.connect();
-        dstSchema = await TableSchema.buildLog(tmpDstConn, mapping.target.table);
+        dstSchema = await buildLogSchema(tmpDstConn, mapping.target.table);
       } finally {
         await tmpDstConn.close().catch(() => {});
       }
@@ -167,7 +167,7 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
       const wDstConn = new MachbaseClient(dstConfig);
       // Worker별 TagAliasCache 생성 (TAG 전용; LOG는 null)
       const wAliasCache = tableType === 'TAG' ? new TagAliasCache(mapping.source.table) : null;
-      const wReader = new Reader(srcSchema, wAliasCache, wSrcConn, dataTable, mapping.source.columns);
+      const wReader = new Reader(srcSchema, wSrcConn, dataTable, mapping.source.columns);
       const wWriter = new Writer(dstSchema);
       const wRowProcessor = makeRowProcessor();
 
@@ -200,6 +200,7 @@ async function _runMapping(job, mapping, servers, shutdownFlag) {
         srcConfig,
         dstConfig,
         reader: wReader,
+        aliasCache: wAliasCache,
         writer: wWriter,
         rowProcessor: wRowProcessor,
         shutdownFlag,

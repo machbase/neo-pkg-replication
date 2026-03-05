@@ -1,5 +1,7 @@
 'use strict';
 
+const { toInt64 } = require('./machbase.js');
+
 
 class Writer {
   /**
@@ -7,7 +9,7 @@ class Writer {
    */
   constructor(schema) {
     this.schema = schema;
-    this.conn = null;
+    this.client = null;
     this.stream = null;
     /** @type {Set<string>|null} 소스에 존재하는 컬럼명 Set (UPPERCASE) */
     this.srcNames = null;
@@ -16,17 +18,17 @@ class Writer {
   /**
    * appendOpen 스트림 초기화 (mapping 시작 시 1회 호출)
    *
-   * @param {MachbaseClient} conn - target MachbaseClient
+   * @param {MachbaseClient} client - target MachbaseClient
    * @param {string} table - 대상 논리 테이블명
    * @param {TableSchema} srcSchema - 소스 TableSchema
    * @returns {Error|null}
    */
-  async open(conn, table, srcSchema) {
+  async open(client, table, srcSchema) {
     try {
-      this.conn = conn;
+      this.client = client;
       this.srcNames = new Set(srcSchema.columns.map(c => c.name));
 
-      this.stream = await this.conn.appendOpen(
+      this.stream = await this.client.appendOpen(
         table,
         this.schema.columns.map(c => ({ name: c.name, type: c.columnType.type }))
       );
@@ -42,20 +44,16 @@ class Writer {
    * @param {Array<object>} rows - { NAME: ..., TIME: ..., VALUE: ..., ... } 컬럼명 기준 객체
    * @returns {Error|null}
    */
-  _toInt64(col, val) {
-    if (typeof val === 'bigint') return val;
-    if (typeof val === 'number' && !Number.isInteger(val)) {
-      console.warn(JSON.stringify({ level: 'warn', stage: 'writer', msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` }));
-      return BigInt(Math.trunc(val));
-    }
-    return BigInt(val);
-  }
-
   _toCell(col, row) {
     if (!this.srcNames.has(col.name)) return col.columnType.safeNull;
     const val = row[col.name];
     if (val == null) return col.columnType.safeNull;
-    if (col.columnType.type === 'int64') return this._toInt64(col, val);
+    if (col.columnType.type === 'int64') {
+      if (typeof val === 'number' && !Number.isInteger(val)) {
+        console.warn(JSON.stringify({ level: 'warn', stage: 'writer', msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` }));
+      }
+      return toInt64(val);
+    }
     return val;
   }
 
@@ -92,17 +90,17 @@ class Writer {
       this.stream = null;
     }
     this.srcNames = null;
-    if (this.conn) {
+    if (this.client) {
       try {
-        await this.conn.close();
+        await this.client.close();
       } catch (err) {
-        console.error(JSON.stringify({ level: 'error', stage: 'writer', msg: `conn close failed: ${err.message}` }));
+        console.error(JSON.stringify({ level: 'error', stage: 'writer', msg: `client close failed: ${err.message}` }));
         if (!firstErr) firstErr = err;
       }
-      this.conn = null;
+      this.client = null;
     }
     return firstErr;
   }
 }
 
-module.exports = Writer;
+module.exports = { Writer };

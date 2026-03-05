@@ -57,8 +57,23 @@ function logMapping(overrides = {}) {
   };
 }
 
+/** TAG AliasCache mock */
+function makeTagAliasCache(metaMap = new Map([[1, 'sensor_a']])) {
+  return {
+    _map: metaMap,
+    get size() { return metaMap.size; },
+    async load() { return null; },
+    async resolve(client, tagId) {
+      const tagIdBig = BigInt(tagId);
+      const name = metaMap.get(tagIdBig) || metaMap.get(Number(tagId));
+      if (!name) return { canonical: null, status: 'drop_not_found' };
+      return { canonical: name, status: 'ok' };
+    },
+  };
+}
+
 /** TAG Reader mock */
-function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null) {
+function makeTagSourceReader(readFn = null) {
   return {
     schema: {
       tableType: 'TAG',
@@ -69,18 +84,10 @@ function makeTagSourceReader(metaMap = new Map([[1, 'sensor_a']]), readFn = null
         { name: 'VALUE', columnType: { type: 'float64' }, id: 3, category: 'data' },
       ],
     },
-    aliasCache: { _map: metaMap, get size() { return metaMap.size; } },
+    client: {},
     dataTable: '_TAG_DATA_0',
-    get aliasSize() { return metaMap.size; },
-    async loadAliases() { return null; },
-    async resolveTagCanonical(tagId) {
-      const tagIdBig = BigInt(tagId);
-      const name = metaMap.get(tagIdBig) || metaMap.get(Number(tagId));
-      if (!name) return { canonical: null, status: 'drop_not_found' };
-      return { canonical: name, status: 'ok' };
-    },
     async close() {},
-    async refreshConnection(config) {},
+    async refreshConnection() {},
     async getMaxRid() {
       return { maxRid: 0n, err: null };
     },
@@ -103,12 +110,10 @@ function makeLogSourceReader(readFn = null) {
         { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
       ],
     },
-    aliasCache: null,
+    client: {},
     dataTable: 'LOG_TABLE',
-    get aliasSize() { return 0; },
-    async loadAliases() { return null; },
     async close() {},
-    async refreshConnection(config) {},
+    async refreshConnection() {},
     async getMaxRid() {
       return { maxRid: 0n, err: null };
     },
@@ -139,12 +144,12 @@ function patchMachbaseClient() {
 }
 
 function patchWriter(appendFn) {
-  const TW = require('../../machbase/writer.js');
+  const { Writer: TW } = require('../../machbase/writer.js');
   const origOpen = TW.prototype.open;
   const origAppend = TW.prototype.append;
   const origClose = TW.prototype.close;
   TW.prototype.open = async function() {
-    this.appendColumns = [];
+    this.srcNames = new Set();
     this.stream = { append: async () => {}, close: async () => {} };
     return null;
   };
@@ -185,7 +190,8 @@ describe('E2E-02: SIGKILL 후 재시작 — STARTUP_INTEGRITY skip 동작', () =
     let integrityReadDone = false;
     let steadyBatch = 0;
 
-    const reader = makeTagSourceReader(new Map([[1, 'sensor_a']]), (startRid) => {
+    const aliasCache = makeTagAliasCache();
+    const reader = makeTagSourceReader((startRid) => {
       if (!integrityReadDone) {
         integrityReadDone = true;
         return {
@@ -229,7 +235,7 @@ describe('E2E-02: SIGKILL 후 재시작 — STARTUP_INTEGRITY skip 동작', () =
     }));
 
     try {
-      const Writer = require('../../machbase/writer.js');
+      const { Writer } = require('../../machbase/writer.js');
       await runDataTableWorker({
         jobId: 'e2e02',
         mapping: baseMapping({ integrity: { enabled: true } }),
@@ -237,6 +243,7 @@ describe('E2E-02: SIGKILL 후 재시작 — STARTUP_INTEGRITY skip 동작', () =
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
         reader: reader,
+        aliasCache,
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
         writer: new Writer(),
         shutdownFlag,
@@ -269,7 +276,7 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
     const shutdownFlag = { value: false };
     let batchCount = 0;
 
-    const reader = makeTagSourceReader(new Map([[1, 'sensor_a']]), (startRid) => {
+    const reader = makeTagSourceReader((startRid) => {
       batchCount++;
       if (batchCount === 1) {
         return {
@@ -293,7 +300,7 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
     const startTime = Date.now();
 
     try {
-      const Writer = require('../../machbase/writer.js');
+      const { Writer } = require('../../machbase/writer.js');
       await runDataTableWorker({
         jobId: 'e2e03',
         mapping: baseMapping({ integrity: { enabled: false } }),
@@ -301,6 +308,7 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
         reader: reader,
+        aliasCache: makeTagAliasCache(),
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
         writer: new Writer(),
         shutdownFlag,
@@ -323,7 +331,7 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
     const shutdownFlag = { value: false };
     let readCount = 0;
 
-    const reader = makeTagSourceReader(new Map([[1, 'sensor_a']]), () => {
+    const reader = makeTagSourceReader(() => {
       readCount++;
       if (readCount === 1) {
         setTimeout(() => { shutdownFlag.value = true; }, 10);
@@ -337,7 +345,7 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
     const startTime = Date.now();
 
     try {
-      const Writer = require('../../machbase/writer.js');
+      const { Writer } = require('../../machbase/writer.js');
       await runDataTableWorker({
         jobId: 'e2e03-sleep',
         mapping: baseMapping({ poll_interval_ms: 5000, integrity: { enabled: false } }),
@@ -345,6 +353,7 @@ describe('E2E-03: SIGTERM graceful shutdown', () => {
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
         reader: reader,
+        aliasCache: makeTagAliasCache(),
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
         writer: new Writer(),
         shutdownFlag,
@@ -410,7 +419,7 @@ describe('E2E-05: LOG 테이블 복제 — STARTUP_INTEGRITY 미수행', () => {
     }));
 
     try {
-      const Writer = require('../../machbase/writer.js');
+      const { Writer } = require('../../machbase/writer.js');
       await runDataTableWorker({
         jobId: 'e2e05',
         mapping: logMapping(),
@@ -418,6 +427,7 @@ describe('E2E-05: LOG 테이블 복제 — STARTUP_INTEGRITY 미수행', () => {
         tableType: 'LOG',
         dataTable: 'LOG_TABLE',
         reader: reader,
+        aliasCache: null,
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
         writer: new Writer(),
         shutdownFlag,
@@ -452,7 +462,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
     const shutdownFlag = { value: false };
 
     let batchCount = 0;
-    const reader = makeTagSourceReader(new Map([[1, 'sensor_x']]), (startRid) => {
+    const reader = makeTagSourceReader((startRid) => {
       batchCount++;
       if (batchCount === 1) {
         return {
@@ -480,7 +490,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
     }));
 
     try {
-      const Writer = require('../../machbase/writer.js');
+      const { Writer } = require('../../machbase/writer.js');
       await runDataTableWorker({
         jobId: 'e2e06',
         mapping: baseMapping({
@@ -499,6 +509,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
         reader: reader,
+        aliasCache: makeTagAliasCache(new Map([[1, 'sensor_x']])),
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
         writer: new Writer(),
         shutdownFlag,
@@ -519,7 +530,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
     const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
 
-    const reader = makeTagSourceReader(new Map([[1, 'tag_a']]), () => ({
+    const reader = makeTagSourceReader(() => ({
       rows: [{ rid: 1n, tagId: 1, data: { TIME: 1000n, VALUE: 1.0 } }],
       err: null,
     }));
@@ -533,7 +544,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
     }));
 
     try {
-      const Writer = require('../../machbase/writer.js');
+      const { Writer } = require('../../machbase/writer.js');
       await runDataTableWorker({
         jobId: 'e2e06-exhaust',
         mapping: baseMapping({
@@ -552,6 +563,7 @@ describe('E2E-06: 대상 DB 연결 차단 → retry → 복구 후 자동 재개
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
         reader: reader,
+        aliasCache: makeTagAliasCache(new Map([[1, 'tag_a']])),
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
         writer: new Writer(),
         shutdownFlag,
@@ -592,7 +604,7 @@ describe('E2E-07: cp 파일 손상 → start_mode 기준 시작', () => {
     console.error = (...args) => { logs.push(args.join(' ')); };
 
     const readCalls = [];
-    const reader = makeTagSourceReader(new Map([[1, 'sensor_a']]), (startRid) => {
+    const reader = makeTagSourceReader((startRid) => {
       readCalls.push(startRid);
       return { rows: [], err: null };
     });
@@ -600,7 +612,7 @@ describe('E2E-07: cp 파일 손상 → start_mode 기준 시작', () => {
     restores.push(patchWriter(null));
 
     try {
-      const Writer = require('../../machbase/writer.js');
+      const { Writer } = require('../../machbase/writer.js');
       await runDataTableWorker({
         jobId: 'e2e07',
         mapping: baseMapping({ start_mode: 'full', integrity: { enabled: false } }),
@@ -608,6 +620,7 @@ describe('E2E-07: cp 파일 손상 → start_mode 기준 시작', () => {
         tableType: 'TAG',
         dataTable: '_TAG_DATA_0',
         reader: reader,
+        aliasCache: makeTagAliasCache(),
         dstConfig: { host: 'mock', port: 5656, user: 'mock', password: 'mock' },
         writer: new Writer(),
         shutdownFlag,

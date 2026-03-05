@@ -4,8 +4,8 @@
  * 대상 테이블에서 tag + time 기준 row 존재 여부 확인
  * STARTUP_INTEGRITY 단계에서만 사용
  *
- * @machbase/ts-client는 conn.query() 호출마다 서버 statement ID를 소비하며
- * 서버는 connection당 1024개 한도를 가진다.
+ * @machbase/ts-client는 client.query() 호출마다 서버 statement ID를 소비하며
+ * 서버는 clientection당 1024개 한도를 가진다.
  * 이를 피하기 위해 배치 단위로 일괄 조회한다.
  */
 class IntegrityChecker {
@@ -15,7 +15,7 @@ class IntegrityChecker {
    * 반환: { existSet: Set<string>, err: Error|null }
    *   existSet: "canonical\x00time" 형태의 key Set (존재하는 행만 포함)
    */
-  static async batchExists(conn, table, rows) {
+  static async batchExists(client, table, rows) {
     if (!rows || rows.length === 0) return { existSet: new Set(), err: null };
 
     if (rows.length > 500) {
@@ -39,7 +39,7 @@ class IntegrityChecker {
     });
     const sql = `SELECT name, time FROM ${table} WHERE ${conditions.join(' OR ')}`;
     try {
-      const result = await conn.query(sql);
+      const result = await client.query(sql);
       const existSet = new Set();
       for (const row of (result || [])) {
         existSet.add(`${row.name}\x00${BigInt(row.time)}`);
