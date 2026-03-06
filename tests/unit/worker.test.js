@@ -820,6 +820,74 @@ describe('Job — run() 재시작 동작', () => {
   });
 });
 
+describe('Worker — non-retryable 에러 처리', () => {
+  test('readAfterRid non-retryable 에러 → Worker 즉시 종료 (retry 없음)', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = { value: false };
+    let readCallCount = 0;
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => {
+        readCallCount++;
+        const err = new Error('non-retryable read error');
+        err.retryable = false;
+        return { rows: [], err };
+      },
+    });
+
+    try {
+      const worker = makeTagWorker('test-nr', tmpDir,
+        { retry: { max_attempts: 5, base_delay_ms: 10, max_delay_ms: 100 } },
+        shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(readCallCount, 1, 'retryable=false → 재시도 없이 1회만 호출되어야 함');
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('Writer.append non-retryable 에러 → Worker 즉시 종료 (retry 없음)', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = { value: false };
+    let appendCallCount = 0;
+    let readCallCount = 0;
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: (startRid) => {
+        readCallCount++;
+        if (readCallCount === 1) {
+          return {
+            rows: [{ rid: 1n, tagId: 1, data: { TIME: 1000n, VALUE: 1.0 } }],
+            err: null,
+          };
+        }
+        shutdownFlag.value = true;
+        return { rows: [], err: null };
+      },
+      appendFn: async function() {
+        appendCallCount++;
+        const err = new Error('non-retryable append error');
+        err.retryable = false;
+        return err;
+      },
+    });
+
+    try {
+      const worker = makeTagWorker('test-nr-append', tmpDir,
+        { retry: { max_attempts: 5, base_delay_ms: 10, max_delay_ms: 100 } },
+        shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(appendCallCount, 1, 'retryable=false → append 재시도 없이 1회만 호출되어야 함');
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('Replicator — run()', () => {
   test('disabled job는 실행되지 않음', async () => {
     const config = {

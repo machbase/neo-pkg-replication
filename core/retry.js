@@ -72,10 +72,8 @@ class RetryHandler {
     if (shutdownFlag.value) return Promise.resolve('shutdown');
 
     return new Promise(resolve => {
-      const ac = new AbortController();
-
       const timer = setTimeout(() => {
-        ac.abort();
+        clearInterval(checker);
         resolve('timeout');
       }, ms);
 
@@ -83,12 +81,9 @@ class RetryHandler {
         if (shutdownFlag.value) {
           clearTimeout(timer);
           clearInterval(checker);
-          ac.abort();
           resolve('shutdown');
         }
       }, 50);
-
-      ac.signal.addEventListener('abort', () => clearInterval(checker), { once: true });
     });
   }
 }

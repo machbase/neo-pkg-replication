@@ -17,16 +17,14 @@ async function buildTagSchema(client, logicalTable, dataTableId) {
   const metaRows = await client.getColumnsByTableName(metaTableName);
 
   const metadataColumns = [];
-  let nameSkipped = false;
-  for (const r of (metaRows || [])) {
-    if (r.NAME.startsWith('_')) continue;
-    if (!nameSkipped) { nameSkipped = true; continue; }
+  for (const r of metaRows) {
+    if (r.NAME.startsWith('_') || r.NAME === 'NAME') continue;
     metadataColumns.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'metadata'));
   }
 
   const dataRows = await client.getColumnsByTableId(dataTableId);
   const dataColumns = [];
-  for (const r of (dataRows || [])) {
+  for (const r of dataRows) {
     if (r.NAME.startsWith('_')) continue;
     // DATA 파티션의 NAME 컬럼은 내부적으로 tag_id(ulong)이지만
     // 논리적으로는 VARCHAR 문자열이므로 타입을 VARCHAR로 오버라이드
@@ -53,7 +51,7 @@ async function buildTagSchema(client, logicalTable, dataTableId) {
  */
 async function buildLogSchema(client, logicalTable) {
   const rows = await client.getColumnsByTableName(logicalTable);
-  const columns = (rows || []).map(r => new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data'));
+  const columns = rows.map(r => new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data'));
   return new TableSchema('LOG', logicalTable, columns);
 }
 

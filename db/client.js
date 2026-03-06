@@ -1,7 +1,5 @@
 'use strict';
 
-const { getInstance: getLogger } = require('../logger/logger.js');
-
 const { createConnection, QueryError } = require('@machbase/ts-client');
 const { ColumnType, Column, TableSchema } = require('../core/types.js');
 
@@ -44,8 +42,7 @@ function fixDoubleEndian(rows) {
   for (const row of rows) {
     for (const key of Object.keys(row)) {
       const v = row[key];
-      if (typeof v !== 'number') continue;
-      if (v === 0 || !isFinite(v)) continue;
+      if (typeof v !== 'number' || v === 0 || !isFinite(v)) continue;
       const abs = Math.abs(v);
       if (abs < FLOAT_MIN_NORMAL) {
         // denormal 범위: DOUBLE(8바이트) 또는 FLOAT(4바이트) BE→LE 오독 가능성
@@ -94,22 +91,15 @@ class MachbaseClient {
   }
 
   async getTableType(table) {
-    try {
-      const rows = await this.query(
-        'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ?',
-        [table]
-      );
-      if (!rows || rows.length === 0) return { type: 'UNSUPPORTED' };
-      const typeCode = rows[0].TYPE;
-      if (typeCode === 6) return { type: 'TAG' };
-      if (typeCode === 0) return { type: 'LOG' };
-      return { type: 'UNSUPPORTED' };
-    } catch (err) {
-      // 연결 오류도 UNSUPPORTED로 반환하여 JobRunner에서 mapping skip 처리됨.
-      // 연결 오류와 테이블 미존재를 구분하지 않는 의도적 설계.
-      getLogger().error('catalog', { table, msg: `getTableType DB error: ${err.message}` });
-      return { type: 'UNSUPPORTED' };
-    }
+    const rows = await this.query(
+      'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ?',
+      [table]
+    );
+    if (!rows || rows.length === 0) return { type: 'UNSUPPORTED' };
+    const typeCode = rows[0].TYPE;
+    if (typeCode === 6) return { type: 'TAG' };
+    if (typeCode === 0) return { type: 'LOG' };
+    return { type: 'UNSUPPORTED' };
   }
 
   async listTagDataTables(logicalTable) {
@@ -120,13 +110,7 @@ class MachbaseClient {
       WHERE v.ID = m.ID AND m.NAME LIKE ?
       ORDER BY m.NAME
     `.trim();
-    try {
-      const rows = await this.query(sql, [pattern]);
-      return (rows || []).map(r => ({ data_table: r.data_table, table_id: Number(r.table_id) }));
-    } catch (err) {
-      getLogger().error('catalog', { table: logicalTable, msg: `listTagDataTables DB error: ${err.message}` });
-      return [];
-    }
+    return this.query(sql, [pattern]);
   }
 
   /**
@@ -149,7 +133,7 @@ class MachbaseClient {
   /**
    * table_id 기준으로 M$SYS_COLUMNS 조회
    * TAG DATA 파티션 컬럼 조회에 사용
-   * @param {number} tableId
+   * @param {number|bigint} tableId
    * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
    */
   async getColumnsByTableId(tableId) {

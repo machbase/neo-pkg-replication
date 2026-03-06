@@ -110,9 +110,9 @@ class ConfigLoader {
     if (job.shutdown_timeout_ms !== undefined) {
       if (!Number.isInteger(job.shutdown_timeout_ms) || job.shutdown_timeout_ms < 1) {
         getLogger().warn('config', {
-job_id: job.id,
-          msg: `shutdown_timeout_ms must be a positive integer, got: ${job.shutdown_timeout_ms}, using default 30000`
-});
+          job_id: job.id,
+          msg: `shutdown_timeout_ms must be a positive integer, got: ${job.shutdown_timeout_ms}, using default 30000`,
+        });
       } else {
         shutdownTimeout = job.shutdown_timeout_ms;
       }
@@ -146,30 +146,30 @@ job_id: job.id,
     // source/target 구조 검증
     if (!mapping.source || typeof mapping.source !== 'object') {
       getLogger().error('config', {
-...logCtx,
-        msg: 'mapping.source is required and must be an object, skipping mapping'
-});
+        ...logCtx,
+        msg: 'mapping.source is required and must be an object, skipping mapping',
+      });
       return [];
     }
     if (!mapping.target || typeof mapping.target !== 'object') {
       getLogger().error('config', {
-...logCtx,
-        msg: 'mapping.target is required and must be an object, skipping mapping'
-});
+        ...logCtx,
+        msg: 'mapping.target is required and must be an object, skipping mapping',
+      });
       return [];
     }
     if (!mapping.source.table || typeof mapping.source.table !== 'string') {
       getLogger().error('config', {
-...logCtx,
-        msg: 'mapping.source.table is required and must be a non-empty string, skipping mapping'
-});
+        ...logCtx,
+        msg: 'mapping.source.table is required and must be a non-empty string, skipping mapping',
+      });
       return [];
     }
     if (!mapping.target.table || typeof mapping.target.table !== 'string') {
       getLogger().error('config', {
-...logCtx,
-        msg: 'mapping.target.table is required and must be a non-empty string, skipping mapping'
-});
+        ...logCtx,
+        msg: 'mapping.target.table is required and must be a non-empty string, skipping mapping',
+      });
       return [];
     }
 
@@ -178,16 +178,16 @@ job_id: job.id,
 
     if (!servers[srcServer]) {
       getLogger().error('config', {
-...logCtx,
-        msg: `Unknown source server alias: "${srcServer}", skipping mapping`
-});
+        ...logCtx,
+        msg: `Unknown source server alias: "${srcServer}", skipping mapping`,
+      });
       return [];
     }
     if (!servers[dstServer]) {
       getLogger().error('config', {
-...logCtx,
-        msg: `Unknown target server alias: "${dstServer}", skipping mapping`
-});
+        ...logCtx,
+        msg: `Unknown target server alias: "${dstServer}", skipping mapping`,
+      });
       return [];
     }
 
@@ -201,59 +201,59 @@ job_id: job.id,
     // query_limit 검증
     if (!Number.isInteger(execution.query_limit) || execution.query_limit < 1) {
       getLogger().error('config', {
-...logCtx,
-        msg: `query_limit must be a positive integer, got: ${execution.query_limit}, skipping mapping`
-});
+        ...logCtx,
+        msg: `query_limit must be a positive integer, got: ${execution.query_limit}, skipping mapping`,
+      });
       return [];
     }
 
     // poll_interval_ms 검증
     if (!Number.isInteger(execution.poll_interval_ms) || execution.poll_interval_ms < 1) {
       getLogger().error('config', {
-...logCtx,
-        msg: `poll_interval_ms must be a positive integer, got: ${execution.poll_interval_ms}, skipping mapping`
-});
+        ...logCtx,
+        msg: `poll_interval_ms must be a positive integer, got: ${execution.poll_interval_ms}, skipping mapping`,
+      });
       return [];
     }
 
     if (!VALID_START_MODES.has(execution.start_mode)) {
       getLogger().error('config', {
-...logCtx,
-        msg: `Invalid start_mode: "${execution.start_mode}", skipping mapping`
-});
+        ...logCtx,
+        msg: `Invalid start_mode: "${execution.start_mode}", skipping mapping`,
+      });
       return [];
     }
     if (execution.start_mode === 'rid_after') {
       const ridVal = execution.rid_after;
       if (ridVal === undefined || ridVal === null) {
         getLogger().error('config', {
-...logCtx,
-          msg: 'rid_after is required when start_mode is "rid_after", skipping mapping'
-});
+          ...logCtx,
+          msg: 'rid_after is required when start_mode is "rid_after", skipping mapping',
+        });
         return [];
       }
       if (!/^\d+$/.test(String(ridVal))) {
         getLogger().error('config', {
-...logCtx,
-          msg: `rid_after must be a non-negative integer, got: ${ridVal}, skipping mapping`
-});
+          ...logCtx,
+          msg: `rid_after must be a non-negative integer, got: ${ridVal}, skipping mapping`,
+        });
         return [];
       }
     }
     if (!VALID_ON_SAVE_FAILURE.has(execution.on_save_failure)) {
       getLogger().error('config', {
-...logCtx,
-        msg: `Invalid on_save_failure: "${execution.on_save_failure}", skipping mapping`
-});
+        ...logCtx,
+        msg: `Invalid on_save_failure: "${execution.on_save_failure}", skipping mapping`,
+      });
       return [];
     }
 
     const rrs = execution.rid_range_size;
     if (!Number.isInteger(rrs) || rrs < 1) {
       getLogger().error('config', {
-...logCtx,
-        msg: `rid_range_size must be a positive integer, got: ${rrs}, skipping mapping`
-});
+        ...logCtx,
+        msg: `rid_range_size must be a positive integer, got: ${rrs}, skipping mapping`,
+      });
       return [];
     }
 
@@ -261,53 +261,53 @@ job_id: job.id,
     if (execution.retry !== undefined) {
       if (typeof execution.retry !== 'object' || execution.retry === null || Array.isArray(execution.retry)) {
         getLogger().error('config', {
-...logCtx,
-          msg: 'retry must be an object, skipping mapping'
-});
+          ...logCtx,
+          msg: 'retry must be an object, skipping mapping',
+        });
         return [];
       }
       const r = execution.retry;
       const VALID_STRATEGIES = ['exponential', 'linear'];
       if (r.strategy !== undefined && !VALID_STRATEGIES.includes(r.strategy)) {
         getLogger().error('config', {
-...logCtx,
-          msg: `retry.strategy must be 'exponential' or 'linear', got: "${r.strategy}", skipping mapping`
-});
+          ...logCtx,
+          msg: `retry.strategy must be 'exponential' or 'linear', got: "${r.strategy}", skipping mapping`,
+        });
         return [];
       }
       if (r.max_attempts !== undefined && r.max_attempts !== null) {
         if (!Number.isInteger(r.max_attempts) || r.max_attempts < 1) {
           getLogger().error('config', {
-...logCtx,
-            msg: `retry.max_attempts must be a positive integer or null, got: ${r.max_attempts}, skipping mapping`
-});
+            ...logCtx,
+            msg: `retry.max_attempts must be a positive integer or null, got: ${r.max_attempts}, skipping mapping`,
+          });
           return [];
         }
       }
       if (r.base_delay_ms !== undefined) {
         if (!Number.isInteger(r.base_delay_ms) || r.base_delay_ms < 0) {
           getLogger().error('config', {
-...logCtx,
-            msg: `retry.base_delay_ms must be a non-negative integer, got: ${r.base_delay_ms}, skipping mapping`
-});
+            ...logCtx,
+            msg: `retry.base_delay_ms must be a non-negative integer, got: ${r.base_delay_ms}, skipping mapping`,
+          });
           return [];
         }
       }
       if (r.max_delay_ms !== undefined) {
         if (!Number.isInteger(r.max_delay_ms) || r.max_delay_ms < 0) {
           getLogger().error('config', {
-...logCtx,
-            msg: `retry.max_delay_ms must be a non-negative integer, got: ${r.max_delay_ms}, skipping mapping`
-});
+            ...logCtx,
+            msg: `retry.max_delay_ms must be a non-negative integer, got: ${r.max_delay_ms}, skipping mapping`,
+          });
           return [];
         }
       }
       if (r.multiplier !== undefined) {
         if (typeof r.multiplier !== 'number' || r.multiplier <= 0) {
           getLogger().error('config', {
-...logCtx,
-            msg: `retry.multiplier must be a positive number, got: ${r.multiplier}, skipping mapping`
-});
+            ...logCtx,
+            msg: `retry.multiplier must be a positive number, got: ${r.multiplier}, skipping mapping`,
+          });
           return [];
         }
       }
@@ -317,16 +317,16 @@ job_id: job.id,
     if (execution.integrity !== undefined) {
       if (typeof execution.integrity !== 'object' || execution.integrity === null || Array.isArray(execution.integrity)) {
         getLogger().error('config', {
-...logCtx,
-          msg: 'integrity must be an object, skipping mapping'
-});
+          ...logCtx,
+          msg: 'integrity must be an object, skipping mapping',
+        });
         return [];
       }
       if (execution.integrity.enabled !== undefined && typeof execution.integrity.enabled !== 'boolean') {
         getLogger().error('config', {
-...logCtx,
-          msg: `integrity.enabled must be a boolean, got: ${typeof execution.integrity.enabled}, skipping mapping`
-});
+          ...logCtx,
+          msg: `integrity.enabled must be a boolean, got: ${typeof execution.integrity.enabled}, skipping mapping`,
+        });
         return [];
       }
     }
@@ -337,24 +337,24 @@ job_id: job.id,
     if (tagId) {
       if (tagId.mode === undefined || tagId.mode === null) {
         getLogger().error('config', {
-...logCtx,
-          msg: `tag_identifier.mode is required when tag_identifier is specified (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`
-});
+          ...logCtx,
+          msg: `tag_identifier.mode is required when tag_identifier is specified (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`,
+        });
         return [];
       }
       if (!VALID_MODES.includes(tagId.mode)) {
         getLogger().error('config', {
-...logCtx,
-          msg: `Invalid tag_identifier.mode '${tagId.mode}' (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`
-});
+          ...logCtx,
+          msg: `Invalid tag_identifier.mode '${tagId.mode}' (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`,
+        });
         return [];
       }
     }
     if (tagId && tagId.value !== undefined && typeof tagId.value !== 'string') {
       getLogger().error('config', {
-...logCtx,
-        msg: `tag_identifier.value must be a string, got: ${typeof tagId.value}, skipping mapping`
-});
+        ...logCtx,
+        msg: `tag_identifier.value must be a string, got: ${typeof tagId.value}, skipping mapping`,
+      });
       return [];
     }
 
@@ -364,16 +364,16 @@ job_id: job.id,
     if (rawCols !== undefined && rawCols !== null) {
       if (!Array.isArray(rawCols) || rawCols.length === 0) {
         getLogger().error('config', {
-...logCtx,
-          msg: 'source.columns must be a non-empty array when specified, skipping mapping'
-});
+          ...logCtx,
+          msg: 'source.columns must be a non-empty array when specified, skipping mapping',
+        });
         return [];
       }
       if (!rawCols.every(c => typeof c === 'string' && c.trim() !== '')) {
         getLogger().error('config', {
-...logCtx,
-          msg: 'source.columns entries must be non-empty strings, skipping mapping'
-});
+          ...logCtx,
+          msg: 'source.columns entries must be non-empty strings, skipping mapping',
+        });
         return [];
       }
       sourceColumns = rawCols.map(c => c.toUpperCase());

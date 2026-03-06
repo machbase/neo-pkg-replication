@@ -201,7 +201,7 @@ class Worker {
    * 연결 생성 + 전체 실행
    */
   async run(signal) {
-    const { jobId, jobCheckpoint, mapping, tableType, dataTable,
+    const { jobId, mapping, tableType, dataTable,
             srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag } = this;
     const logCtx = {
       job_id: jobId,
@@ -262,13 +262,13 @@ class Worker {
    * 상태 머신: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
    */
   async _runStateMachine({ reader, aliasCache, writer, rowProcessor, shutdownFlag }) {
-    const { jobId, jobCheckpoint, mapping, tableType, dataTable, srcConfig, dstConfig } = this;
+    const { jobId, mapping, tableType, dataTable, srcConfig } = this;
     const exec = mapping.execution;
     const batchSize = exec.query_limit || 5000;
     const ridRangeSize = exec.rid_range_size || 50000;
     const pollIntervalMs = exec.poll_interval_ms || 1000;
     const retry = new RetryHandler(exec.retry || {});
-    const checkpointStore = new CheckpointStore(jobCheckpoint.directory);
+    const checkpointStore = new CheckpointStore(this.jobCheckpoint.directory);
     const logCtx = { job_id: jobId, data_table: dataTable };
 
     // ═══════════════════════════════════════════════════════════
@@ -369,7 +369,6 @@ class Worker {
 
       const maxRidInBatch = maxRid(rows);
       const outRows = [];
-      const outRids = [];
       let droppedNoMeta = 0;
 
       // 각 row 처리
@@ -380,21 +379,14 @@ class Worker {
         if (result.action === 'shutdown') return;
         if (result.action === 'drop') { droppedNoMeta++; continue; }
         outRows.push(result.outRow);
-        outRids.push(row.rid);
       }
 
       if (shutdownFlag.value) return;
 
-      let maxWrittenRid = 0n;
-
       if (outRows.length > 0) {
         const ok = await _appendRows(writer, outRows, retry, shutdownFlag, logCtx);
         if (!ok) return; // exhausted or shutdown
-        maxWrittenRid = outRids.reduce((maxAcc, rid) => rid > maxAcc ? rid : maxAcc, 0n);
       }
-
-      // checkpoint 갱신
-      const effectiveMax = maxWrittenRid > 0n ? maxWrittenRid : maxRidInBatch;
 
       const batchStats = {
         rows_read: rows.length,
@@ -403,12 +395,12 @@ class Worker {
         skipped_exists: 0,
       };
       await checkpointStore.save(jobId, dataTable, {
-        last_success_rid: effectiveMax,
+        last_success_rid: maxRidInBatch,
         source_server: mapping.source.server,
         source_table: mapping.source.table,
       }, batchStats, { on_save_failure: exec.on_save_failure });
 
-      startRid = effectiveMax + 1n;
+      startRid = maxRidInBatch + 1n;
     }
   }
 
