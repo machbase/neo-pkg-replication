@@ -41,7 +41,7 @@ repli-js/
 │   │   ├── integrity_checker.test.js   # IntegrityChecker 단위 테스트 (4개)
 │   │   ├── retry.test.js               # RetryHandler 단위 테스트 (19개)
 │   │   ├── table_info.test.js          # TableSchema/TagAliasCache 단위 테스트 (13개)
-│   │   ├── target_writer.test.js       # Writer 단위 테스트 (5개)
+│   │   ├── target_writer.test.js       # Writer 단위 테스트 (6개)
 │   │   ├── worker.test.js              # Worker 상태 머신 단위 테스트 (19개)
 │   │   └── e2e_scenarios.test.js       # E2E 시나리오 mock 테스트 (8개)
 │   └── integration/
@@ -154,6 +154,7 @@ repli-js/
     - 소스에 없는 컬럼(`!srcNames.has(col.name)`) → `col.columnType.safeNull`로 패딩
     - null/undefined 값 → `col.columnType.safeNull`
     - int64 컬럼 → `toInt64(val)` (BigInt 변환, `db/client.js`에서 import)
+    - float/double 컬럼에서 Infinity / -Infinity / NaN → `col.columnType.safeNull`(0.0) + warn 로그
   - `close()` → 스트림 + client 닫기
 
 ### db/integrity_checker.js
@@ -297,14 +298,14 @@ node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
 ```
 
-현재 테스트 현황: **111 단위 + 19 통합 = 130 pass / 0 fail**
+현재 테스트 현황: **112 단위 + 19 통합 = 131 pass / 0 fail**
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
 - client.test.js: fixDoubleEndian (4개)
 - config.test.js: 설정 검증 (33개)
 - integrity_checker.test.js: IntegrityChecker batchExists (4개)
 - retry.test.js: RetryHandler 백오프 로직 (19개)
 - table_info.test.js: TableSchema/TagAliasCache 빌드/조회 (13개)
-- target_writer.test.js: Writer safeNull 패딩 (5개)
+- target_writer.test.js: Writer safeNull 패딩 + Infinity/NaN 처리 (6개)
 - worker.test.js: Worker 상태 머신 + Job/Replicator (19개)
 - e2e_scenarios.test.js: E2E 시나리오 (8개)
 - tag_replication.test.js: TAG 복제 통합 테스트 (11개)

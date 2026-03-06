@@ -461,6 +461,7 @@ writer.close() → Error|null                          // stream.close() + clien
   - 소스에 없는 컬럼(`!srcNames.has(col.name)`) → `col.columnType.safeNull`로 패딩
   - null/undefined 값 → `col.columnType.safeNull`
   - int64 컬럼 → `toInt64(val)` (BigInt 변환, `db/client.js`에서 import)
+  - float/double 컬럼에서 Infinity / -Infinity / NaN → `col.columnType.safeNull`(0.0) + warn 로그 (`{ col, value, msg }`)
   - 2차원 배열 변환 후 `stream.append()` 호출
 - `close()`: `stream.close()` → `client.close()` 순서. 첫 번째 오류 반환
 

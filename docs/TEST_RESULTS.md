@@ -11,14 +11,14 @@
 
 | 구분 | 파일 수 | 테스트 수 | pass | fail | 실행 시간 |
 |------|---------|----------|------|------|-----------|
-| 단위 테스트 | 9개 | 111개 | **111** | 0 | ~370ms |
+| 단위 테스트 | 9개 | 112개 | **112** | 0 | ~370ms |
 | 통합 테스트 (TAG) | 1개 | 11개 | **11** | 0 | ~51초 |
 | 통합 테스트 (LOG) | 1개 | 8개 | **8** | 0 | ~7초 |
-| **합계** | **11개** | **130개** | **130** | **0** | — |
+| **합계** | **11개** | **131개** | **131** | **0** | — |
 
 ---
 
-## 단위 테스트 (111개 pass)
+## 단위 테스트 (112개 pass)
 
 ```
 node --test tests/unit/*.test.js
@@ -124,7 +124,7 @@ node --test tests/unit/*.test.js
 | 6 | buildLogSchema — LOG 테이블 컬럼 분석 |
 | 7~13 | (추가 케이스 7개) |
 
-### target_writer.test.js — Writer (5개)
+### target_writer.test.js — Writer (6개)
 
 | # | 테스트 항목 |
 |---|------------|
@@ -132,7 +132,8 @@ node --test tests/unit/*.test.js
 | 2 | Scenario C: int64 컬럼 → number를 BigInt로 변환 |
 | 3 | Scenario D: 다양한 타입의 대상 전용 컬럼 → safeNull |
 | 4 | Scenario E: metadata 컬럼 → safeNull 패딩 (TAG 테이블) |
-| 5 | Scenario F: null 소스 값 → safeNull 대체 |
+| 5 | Scenario G: Infinity / NaN → safeNull(0.0) + warn 로그 |
+| 6 | Scenario F: null 소스 값 → safeNull 대체 |
 
 ### worker.test.js — Worker 상태 머신 (19개)
 
