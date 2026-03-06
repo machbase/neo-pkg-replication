@@ -1,7 +1,7 @@
 'use strict';
 
-const { MachbaseClient } = require('./machbase/machbase.js');
-const { buildTagSchema, buildLogSchema } = require('./machbase/schema_builder.js');
+const { MachbaseClient } = require('./db/client.js');
+const { buildTagSchema, buildLogSchema } = require('./db/schema_builder.js');
 const { Worker } = require('./worker/worker.js');
 const { getInstance: getLogger } = require('./logger/logger.js');
 

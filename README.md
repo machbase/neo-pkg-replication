@@ -166,18 +166,20 @@ repli-js/
 ├── app.js               # 진입점
 ├── job_runner.js        # Job 오케스트레이션
 ├── config/config.js     # 설정 로드/검증
-├── worker/
-│   ├── worker.js        # Worker 상태 머신
+├── core/
+│   ├── types.js         # ColumnType, Column, TableSchema (순수 도메인 모델)
 │   └── retry.js         # 재시도 유틸리티
-├── machbase/
-│   ├── machbase.js      # MachbaseClient (endian 우회 포함)
-│   ├── schema_builder.js # 컬럼 메타 + TAG alias cache
+├── db/
+│   ├── client.js        # MachbaseClient (endian 우회 포함)
+│   ├── schema_builder.js # 스키마 빌드 함수
 │   ├── reader.js        # 소스 DB 읽기 (conn 소유)
 │   ├── writer.js        # 대상 DB 쓰기 (conn 소유)
 │   └── integrity_checker.js # 재시작 정합성 검사
-├── file/
-│   ├── file.js          # JSON 파일 I/O (atomic write, BigInt 지원)
-│   └── checkpoint.js    # 체크포인트 관리
+├── worker/
+│   └── worker.js        # Worker 상태 머신
+├── checkpoint/
+│   ├── store.js         # 체크포인트 관리
+│   └── file.js          # JSON 파일 I/O (atomic write, BigInt 지원)
 ├── docs/
 │   ├── PROJECT.md       # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 │   └── ENDIAN_BUG.md    # @machbase/ts-client endian 버그 상세 분석

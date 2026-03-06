@@ -62,9 +62,9 @@ function makeSignal() {
  * MachbaseClient, Reader, Writer, TagAliasCache prototype을 mock하고 복원 함수를 반환
  */
 function setupWorkerPrototypeMocks({ readFn, tagResolveFn, appendFn } = {}) {
-  const machbaseMod = require('../../machbase/machbase.js');
-  const readerMod = require('../../machbase/reader.js');
-  const writerMod = require('../../machbase/writer.js');
+  const machbaseMod = require('../../db/client.js');
+  const readerMod = require('../../db/reader.js');
+  const writerMod = require('../../db/writer.js');
 
   // MachbaseClient connect/close mock
   const origConnect = machbaseMod.MachbaseClient.prototype.connect;
@@ -216,7 +216,7 @@ describe('Worker — RESOLVE_START', () => {
 
   test('체크포인트 있음 → last_success_rid에서 재개', async () => {
     const tmpDir = await makeTmpDir();
-    const CheckpointStore = require('../../file/checkpoint.js');
+    const CheckpointStore = require('../../checkpoint/store.js');
     const store = new CheckpointStore(tmpDir);
 
     await store.save('test-job', '_TAG_DATA_0', {
@@ -282,7 +282,7 @@ describe('Worker — STEADY_REPLICATION', () => {
       const worker = makeTagWorker('test-job-2', tmpDir, {}, shutdownFlag);
       await worker.run(makeSignal());
 
-      const CheckpointStore = require('../../file/checkpoint.js');
+      const CheckpointStore = require('../../checkpoint/store.js');
       const store = new CheckpointStore(tmpDir);
       const { cp } = await store.load('test-job-2', '_TAG_DATA_0');
       assert.equal(cp.last_success_rid, 12n, 'checkpoint = maxRid(12n) — 마지막 성공 RID (inclusive)');
@@ -326,7 +326,7 @@ describe('Worker — STEADY_REPLICATION', () => {
       const worker = makeTagWorker('test-alldrop', tmpDir, {}, shutdownFlag);
       await worker.run(makeSignal());
 
-      const CheckpointStore = require('../../file/checkpoint.js');
+      const CheckpointStore = require('../../checkpoint/store.js');
       const store = new CheckpointStore(tmpDir);
       const { cp } = await store.load('test-alldrop', '_TAG_DATA_0');
       assert.equal(cp.last_success_rid, 5n, 'all-drop: checkpoint = maxRidInBatch(5n) — 마지막 성공 RID (inclusive)');
@@ -378,7 +378,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   test('integrity.enabled=false → STARTUP_INTEGRITY 미실행, 즉시 STEADY 진입', async () => {
     const tmpDir = await makeTmpDir();
 
-    const CheckpointStore = require('../../file/checkpoint.js');
+    const CheckpointStore = require('../../checkpoint/store.js');
     const store = new CheckpointStore(tmpDir);
     await store.save('test-int', '_TAG_DATA_0', {
       last_success_rid: 10n,
@@ -390,7 +390,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     const readCalls = [];
     const integrityCheckCalls = [];
 
-    const IntegrityChecker = require('../../machbase/integrity_checker.js');
+    const IntegrityChecker = require('../../db/integrity_checker.js');
     const origBatchExists = IntegrityChecker.batchExists;
     IntegrityChecker.batchExists = async () => {
       integrityCheckCalls.push(true);
@@ -420,7 +420,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   test('TAG + checkpoint존재 + integrity.enabled → STARTUP_INTEGRITY 수행, first_miss 발견 후 STEADY', async () => {
     const tmpDir = await makeTmpDir();
 
-    const CheckpointStore = require('../../file/checkpoint.js');
+    const CheckpointStore = require('../../checkpoint/store.js');
     const store = new CheckpointStore(tmpDir);
     await store.save('test-int2', '_TAG_DATA_0', {
       last_success_rid: 100n,
@@ -432,7 +432,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     let steadyReadCalls = [];
     let integrityReadDone = false;
 
-    const IntegrityChecker = require('../../machbase/integrity_checker.js');
+    const IntegrityChecker = require('../../db/integrity_checker.js');
     const origBatchExists = IntegrityChecker.batchExists;
     IntegrityChecker.batchExists = async (_conn, _table, rows) => {
       const existSet = new Set();
@@ -486,7 +486,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   test('LOG 테이블 → checkpoint 있어도 STARTUP_INTEGRITY 미수행', async () => {
     const tmpDir = await makeTmpDir();
 
-    const CheckpointStore = require('../../file/checkpoint.js');
+    const CheckpointStore = require('../../checkpoint/store.js');
     const store = new CheckpointStore(tmpDir);
     await store.save('test-log-int', '_LOG_DATA_0', {
       last_success_rid: 50n,
@@ -497,7 +497,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     const shutdownFlag = makeShutdownFlag(30);
     const integrityCheckCalls = [];
 
-    const IntegrityChecker = require('../../machbase/integrity_checker.js');
+    const IntegrityChecker = require('../../db/integrity_checker.js');
     const origBatchExists = IntegrityChecker.batchExists;
     IntegrityChecker.batchExists = async () => {
       integrityCheckCalls.push(true);
@@ -603,9 +603,9 @@ describe('Job — AbortController 전파', () => {
   // Worker prototype을 mock하고 job_runner.js를 재로드해서 실제 코드 경로를 실행한다.
 
   function setupWorkerMocks({ onWorkerRun } = {}) {
-    const machbaseMod = require('../../machbase/machbase.js');
-    const writerMod = require('../../machbase/writer.js');
-    const readerMod = require('../../machbase/reader.js');
+    const machbaseMod = require('../../db/client.js');
+    const writerMod = require('../../db/writer.js');
+    const readerMod = require('../../db/reader.js');
     const workerMod = require('../../worker/worker.js');
 
     const origConnect = machbaseMod.MachbaseClient.prototype.connect;
@@ -646,7 +646,7 @@ describe('Job — AbortController 전파', () => {
   }
 
   test('signal.aborted=true이면 Worker.run()이 connect 호출 없이 즉시 반환됨', async () => {
-    const machbaseMod = require('../../machbase/machbase.js');
+    const machbaseMod = require('../../db/client.js');
     let connectCalled = false;
     const origConnect = machbaseMod.MachbaseClient.prototype.connect;
     machbaseMod.MachbaseClient.prototype.connect = async function() { connectCalled = true; };

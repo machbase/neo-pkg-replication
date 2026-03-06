@@ -2,9 +2,9 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { ColumnType, Column, TableSchema } = require('../../machbase/machbase.js');
-const { TagAliasCache } = require('../../machbase/reader.js');
-const { buildTagSchema, buildLogSchema } = require('../../machbase/schema_builder.js');
+const { ColumnType, Column, TableSchema } = require('../../core/types.js');
+const { TagAliasCache } = require('../../db/reader.js');
+const { buildTagSchema, buildLogSchema } = require('../../db/schema_builder.js');
 
 // ─── TableSchema (순수 DTO) ───────────────────────────────────────────────────
 

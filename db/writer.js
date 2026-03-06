@@ -2,7 +2,7 @@
 
 const { getInstance: getLogger } = require('../logger/logger.js');
 
-const { toInt64 } = require('./machbase.js');
+const { toInt64 } = require('./client.js');
 
 
 class Writer {

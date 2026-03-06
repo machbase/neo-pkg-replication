@@ -11,7 +11,7 @@ const fs = require('fs/promises');
 const os = require('os');
 
 const { Worker } = require('../../worker/worker.js');
-const CheckpointStore = require('../../file/checkpoint.js');
+const CheckpointStore = require('../../checkpoint/store.js');
 
 // ─── 공통 헬퍼 ───────────────────────────────────────────────────────────────
 
@@ -84,14 +84,14 @@ function makeLogSchema() {
 }
 
 function patchIntegrityChecker(batchExistsFn) {
-  const IC = require('../../machbase/integrity_checker.js');
+  const IC = require('../../db/integrity_checker.js');
   const origBatch = IC.batchExists;
   if (batchExistsFn) IC.batchExists = batchExistsFn;
   return () => { IC.batchExists = origBatch; };
 }
 
 function patchMachbaseClient() {
-  const mod = require('../../machbase/machbase.js');
+  const mod = require('../../db/client.js');
   const origConnect = mod.MachbaseClient.prototype.connect;
   const origClose = mod.MachbaseClient.prototype.close;
   mod.MachbaseClient.prototype.connect = async function() {};
@@ -103,7 +103,7 @@ function patchMachbaseClient() {
 }
 
 function patchReader(readFn) {
-  const mod = require('../../machbase/reader.js');
+  const mod = require('../../db/reader.js');
   const origReadAfterRid = mod.Reader.prototype.readAfterRid;
   const origGetMaxRid = mod.Reader.prototype.getMaxRid;
   const origClose = mod.Reader.prototype.close;
@@ -137,7 +137,7 @@ function patchReader(readFn) {
 }
 
 function patchWriter(appendFn) {
-  const { Writer: TW } = require('../../machbase/writer.js');
+  const { Writer: TW } = require('../../db/writer.js');
   const origOpen = TW.prototype.open;
   const origAppend = TW.prototype.append;
   const origClose = TW.prototype.close;
@@ -202,7 +202,7 @@ describe('E2E-02: SIGKILL 후 재시작 — STARTUP_INTEGRITY skip 동작', () =
   test('재시작 시 대상에 이미 존재하는 행은 skipped_exists로 건너뜀', async () => {
     const tmpDir = await makeTmpDir();
     const store = new CheckpointStore(tmpDir);
-    const IC = require('../../machbase/integrity_checker.js');
+    const IC = require('../../db/integrity_checker.js');
 
     await store.save('e2e02', '_TAG_DATA_0', {
       last_success_rid: 1n,

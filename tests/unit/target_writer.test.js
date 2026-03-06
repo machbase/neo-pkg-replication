@@ -2,8 +2,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { Writer } = require('../../machbase/writer.js');
-const { ColumnType } = require('../../machbase/machbase.js');
+const { Writer } = require('../../db/writer.js');
+const { ColumnType } = require('../../core/types.js');
 
 // ─── TableInfo mock 헬퍼 ─────────────────────────────────────────────────────
 

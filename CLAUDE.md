@@ -17,20 +17,22 @@ repli-js/
 ├── config.json                   # 실행 설정 (jobs, mappings, 접속 정보 등)
 ├── config/
 │   └── config.js                 # 설정 파일 로드/검증
-├── worker/
-│   ├── worker.js                 # Worker 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
+├── core/
+│   ├── types.js                  # ColumnType, Column, TableSchema — 순수 도메인 모델 (I/O 없음)
 │   └── retry.js                  # RetryHandler 유틸리티
-├── machbase/
-│   ├── machbase.js               # MachbaseClient, ColumnType, Column, TableSchema, toInt64
-│   ├── schema_builder.js         # buildTagSchema(), buildLogSchema() — 스키마 빌드 함수
+├── db/
+│   ├── client.js                 # MachbaseClient, toInt64 — DB 연결·쿼리 (I/O 계층)
+│   ├── schema_builder.js         # buildTagSchema(), buildLogSchema()
 │   ├── reader.js                 # TagAliasCache, Reader 클래스
 │   ├── writer.js                 # Writer 클래스
 │   └── integrity_checker.js      # IntegrityChecker — batchExists()
+├── worker/
+│   └── worker.js                 # Worker 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
+├── checkpoint/
+│   ├── store.js                  # CheckpointStore — cp 파일 load/save
+│   └── file.js                   # File — JSON atomic read/write (BigInt 지원)
 ├── logger/
 │   └── logger.js                 # Logger 클래스 — 날짜 로테이션, stdout/file 출력
-├── file/
-│   ├── file.js                   # File — JSON atomic read/write (BigInt 지원)
-│   └── checkpoint.js             # CheckpointStore — cp 파일 load/save
 ├── checkpoints/                  # 런타임 생성 — job별 파티션 cp 파일 저장 디렉토리
 ├── tests/
 │   ├── unit/
@@ -39,7 +41,7 @@ repli-js/
 │   │   ├── retry.test.js         # RetryHandler 단위 테스트 (19개)
 │   │   ├── table_info.test.js    # TableSchema/TagAliasCache 단위 테스트 (13개)
 │   │   ├── target_writer.test.js # Writer 단위 테스트 (5개)
-│   │   ├── worker.test.js        # Worker 상태 머신 단위 테스트 (9개)
+│   │   ├── worker.test.js        # Worker 상태 머신 단위 테스트 (25개)
 │   │   └── e2e_scenarios.test.js # E2E 시나리오 mock 테스트 (8개)
 │   └── integration/
 │       ├── tag_replication.test.js # TAG 테이블 통합 테스트 (11개)
@@ -52,7 +54,7 @@ repli-js/
 
 ## 핵심 모듈 상세
 
-### machbase/machbase.js — MachbaseClient
+### db/client.js — MachbaseClient
 
 - `MachbaseClient` 클래스: `@machbase/ts-client` 연결 래퍼
   - `connect()` / `close()` / `query(sql, values?)` / `appendOpen(table, columns)` / `execute(sql)`
@@ -90,9 +92,9 @@ repli-js/
 3. **STEADY_REPLICATION**: 루프 — reader.readAfterRid → aliasCache.resolve(reader.client) → writer.append → cp 저장 → sleep(poll_interval_ms) → shutdown 체크
    - statement ID 고갈 방지: stmtCount 추적, 900 도달 시 srcConn 재생성
 
-### machbase/machbase.js — ColumnType / Column / TableSchema
+### core/types.js — ColumnType / Column / TableSchema
 
-`ColumnType`, `Column`, `TableSchema` 클래스가 `machbase.js`에 정의되어 있다.
+순수 도메인 모델. I/O 의존성 없음.
 
 - `ColumnType` 클래스: Machbase 컬럼 타입 정의 (`code`, `type`, `safeNull`)
   - Static 상수: `SHORT`, `INTEGER`, `LONG`, `ULONG`, `DATETIME`, `FLOAT`, `DOUBLE`, `VARCHAR`, `TEXT`, `CLOB`, `BLOB`, `BINARY`, `IPV4`, `IPV6`, `JSON`, `UNKNOWN`
@@ -104,7 +106,7 @@ repli-js/
   - constructor: `(tableType, logicalTable, columns)` — columns 배열 직접 수신
 - `module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema }`
 
-### machbase/schema_builder.js
+### db/schema_builder.js
 
 스키마 빌드 함수만 담당하는 순수 함수 모듈.
 
@@ -116,7 +118,7 @@ repli-js/
   - `client.getColumnsByTableName(logicalTable)` → 전체 컬럼
 - `module.exports = { buildTagSchema, buildLogSchema }`
 
-### machbase/reader.js
+### db/reader.js
 
 - `TagAliasCache` 클래스: TAG alias 동적 상태 관리 (tag_id → canonical name)
   - Reader와 분리 — job_runner.js가 생성, runDataTableWorker에 직접 전달
@@ -135,7 +137,7 @@ repli-js/
   - 내부적으로 `RID_RANGE` 힌트 SQL 사용
 - `module.exports = { Reader, TagAliasCache }`
 
-### machbase/writer.js
+### db/writer.js
 
 - `Writer` 클래스: 대상 DB 쓰기 담당
   - `new Writer(dstSchema)` → 인스턴스 생성 (schema 소유)
@@ -148,19 +150,19 @@ repli-js/
     - int64 컬럼 → `toInt64(val)` (BigInt 변환, `machbase.js`에서 import)
   - `close()` → 스트림 + client 닫기
 
-### machbase/integrity_checker.js
+### db/integrity_checker.js
 
 - `batchExists(client, table, rows)` → `{ existSet: Set<"canonical\x00timeNs">, err }` (OR-condition 단일 쿼리)
 - `existKey(canonical, timeNs)` → key 문자열
 - statement ID 한계(1024) 대응: 파라미터 없이 인라인 이스케이프 쿼리 사용
 
-### file/checkpoint.js
+### checkpoint/store.js
 
 - `CheckpointStore(directory)`: `load(jobId, dataTable)` / `save(jobId, dataTable, cp, stats)`
 - 파일 경로: `{directory}/{jobId}_{dataTable}.json` (예: `job-1__TAG_DATA_0.json`)
-- 파싱 실패 또는 `source.data_table` 불일치 → `console.error({stage:'checkpoint_io',...})` 후 무효화
+- 파싱 실패 또는 `source.data_table` 불일치 → logger.error({stage:'checkpoint_io',...}) 후 무효화
 
-### file/file.js
+### checkpoint/file.js
 
 - `File(path)`: `read()` / `write(data)` / `exists()` / `update(partial)`
 - atomic write: `.tmp` 파일 → `fs.rename`

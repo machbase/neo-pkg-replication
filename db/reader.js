@@ -2,7 +2,7 @@
 
 const { getInstance: getLogger } = require('../logger/logger.js');
 
-const { MachbaseClient } = require('./machbase.js');
+const { MachbaseClient } = require('./client.js');
 // ─── TagAliasCache ────────────────────────────────────────────────────────────
 
 /**

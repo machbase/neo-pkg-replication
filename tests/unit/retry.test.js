@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const RetryHandler = require('../../worker/retry.js');
+const RetryHandler = require('../../core/retry.js');
 
 // ─── shouldRetry ─────────────────────────────────────────────────────────────
 

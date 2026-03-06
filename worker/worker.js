@@ -1,11 +1,11 @@
 'use strict';
 
-const CheckpointStore = require('../file/checkpoint.js');
-const IntegrityChecker = require('../machbase/integrity_checker.js');
-const RetryHandler = require('./retry.js');
-const { MachbaseClient } = require('../machbase/machbase.js');
-const { Reader, TagAliasCache } = require('../machbase/reader.js');
-const { Writer } = require('../machbase/writer.js');
+const CheckpointStore = require('../checkpoint/store.js');
+const IntegrityChecker = require('../db/integrity_checker.js');
+const RetryHandler = require('../core/retry.js');
+const { MachbaseClient } = require('../db/client.js');
+const { Reader, TagAliasCache } = require('../db/reader.js');
+const { Writer } = require('../db/writer.js');
 const { getInstance: getLogger } = require('../logger/logger.js');
 
 // ─── 상수 ────────────────────────────────────────────────────────────────────

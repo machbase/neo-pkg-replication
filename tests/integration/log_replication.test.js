@@ -23,9 +23,9 @@ const os = require('os');
 const fs = require('fs/promises');
 const path = require('path');
 
-const { MachbaseClient } = require('../../machbase/machbase.js');
-const { buildLogSchema } = require('../../machbase/schema_builder.js');
-const CheckpointStore = require('../../file/checkpoint.js');
+const { MachbaseClient } = require('../../db/client.js');
+const { buildLogSchema } = require('../../db/schema_builder.js');
+const CheckpointStore = require('../../checkpoint/store.js');
 const { Worker } = require('../../worker/worker.js');
 
 // ─── 접속 설정 ────────────────────────────────────────────────────────────────

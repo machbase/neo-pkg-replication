@@ -1,6 +1,6 @@
 'use strict';
 
-const { ColumnType, Column, TableSchema } = require('./machbase.js');
+const { ColumnType, Column, TableSchema } = require('../core/types.js');
 
 /**
  * TAG 테이블 스키마 빌드
