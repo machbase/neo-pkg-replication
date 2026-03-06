@@ -56,34 +56,77 @@ class LogRowProcessor {
 // ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
 
 /**
+ * rows 배열에서 최대 RID 반환 (BigInt)
+ * @param {Array<{ rid: BigInt }>} rows
+ * @returns {BigInt}
+ */
+function maxRid(rows) {
+  return rows.reduce((acc, row) => row.rid > acc ? row.rid : acc, 0n);
+}
+
+/**
+ * 공통 retry 루프: fn()을 retry 설정에 따라 반복 호출
+ *
+ * fn은 다음 중 하나를 반환해야 함:
+ *   { done: true,  value }  → 성공, value를 반환
+ *   { done: false, retryable: boolean, msg?: string } → 재시도 또는 즉시 중단
+ *
+ * @param {object} opts
+ * @param {Function} opts.fn         - async 함수 () => { done, value, retryable, msg }
+ * @param {RetryHandler} opts.retry
+ * @param {{ value: boolean }} opts.shutdownFlag
+ * @param {object} opts.logCtx
+ * @param {string} opts.exhaustedMsg - 재시도 소진 시 에러 메시지
+ * @param {string} [opts.retryMsg]   - 재시도 warn 메시지 프리픽스
+ * @param {string} [opts.phase]      - logCtx 보완용 phase 필드
+ * @returns {{ ok: true, value }|{ ok: false }}
+ */
+async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retryMsg, phase }) {
+  const ctx = phase ? { ...logCtx, phase } : logCtx;
+  let attempt = 0;
+  while (true) {
+    if (shutdownFlag.value) return { ok: false };
+    if (attempt > 0) {
+      if (retry.isExhausted(attempt)) {
+        getLogger().error('worker', { ...ctx, msg: exhaustedMsg });
+        return { ok: false };
+      }
+      const delay = retry.nextDelay(attempt - 1);
+      if (retryMsg) {
+        getLogger().warn('worker', { ...ctx, attempt, msg: `${retryMsg}, delay=${delay}ms` });
+      }
+      const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
+      if (signal === 'shutdown') return { ok: false };
+    }
+    const result = await fn();
+    if (result.done) return { ok: true, value: result.value };
+    if (!result.retryable) {
+      getLogger().error('worker', { ...ctx, msg: result.msg });
+      return { ok: false };
+    }
+    attempt++;
+  }
+}
+
+/**
  * reader.readAfterRid 를 retry 포함하여 호출
  * @returns {Array|null} rows on success, null on shutdown/exhausted (caller must return)
  */
 async function _readBatch(reader, startRid, limit, rangeSize, retry, shutdownFlag, logCtx, phase) {
-  let attempt = 0;
-  while (true) {
-    if (shutdownFlag.value) return null;
-    if (attempt > 0) {
-      if (retry.isExhausted(attempt)) {
-        getLogger().error('worker', { ...logCtx, phase, msg: 'read retry exhausted, skipping mapping' });
-        return null;
-      }
-      const delay = retry.nextDelay(attempt - 1);
-      getLogger().warn('worker', { ...logCtx, phase, attempt, msg: `read retry, delay=${delay}ms` });
-      const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
-      if (signal === 'shutdown') return null;
-    }
-    const { rows, err } = await reader.readAfterRid(startRid, limit, rangeSize);
-    if (err) {
-      if (!retry.shouldRetry(err)) {
-        getLogger().error('worker', { ...logCtx, phase, msg: `non-retryable read error: ${err.message}` });
-        return null;
-      }
-      attempt++;
-      continue;
-    }
-    return rows;
-  }
+  const result = await _withRetry({
+    fn: async () => {
+      const { rows, err } = await reader.readAfterRid(startRid, limit, rangeSize);
+      if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable read error: ${err.message}` };
+      return { done: true, value: rows };
+    },
+    retry,
+    shutdownFlag,
+    logCtx,
+    exhaustedMsg: 'read retry exhausted, skipping mapping',
+    retryMsg: 'read retry',
+    phase,
+  });
+  return result.ok ? result.value : null;
 }
 
 /**
@@ -93,23 +136,20 @@ async function _readBatch(reader, startRid, limit, rangeSize, retry, shutdownFla
  * @returns {undefined} shutdown 또는 retry exhausted — caller must return
  */
 async function _resolveCanonical(aliasCache, client, tagId, tagIdentifier, retry, shutdownFlag, logCtx) {
-  let attempt = 0;
-  while (true) {
-    if (shutdownFlag.value) return undefined;
-    if (attempt > 0) {
-      if (retry.isExhausted(attempt)) {
-        getLogger().error('worker', { ...logCtx, msg: 'resolve canonical retry exhausted, skipping mapping' });
-        return undefined;
-      }
-      const delay = retry.nextDelay(attempt - 1);
-      const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
-      if (signal === 'shutdown') return undefined;
-    }
-    const { canonical, status } = await aliasCache.resolve(client, tagId, tagIdentifier);
-    if (status === 'drop_not_found') return null;
-    if (status === 'retry_error') { attempt++; continue; }
-    return canonical; // 'ok'
-  }
+  const result = await _withRetry({
+    fn: async () => {
+      const { canonical, status } = await aliasCache.resolve(client, tagId, tagIdentifier);
+      if (status === 'drop_not_found') return { done: true, value: null };
+      if (status === 'retry_error') return { done: false, retryable: true };
+      return { done: true, value: canonical }; // 'ok'
+    },
+    retry,
+    shutdownFlag,
+    logCtx,
+    exhaustedMsg: 'resolve canonical retry exhausted, skipping mapping',
+  });
+  if (!result.ok) return undefined;
+  return result.value; // canonical or null
 }
 
 /**
@@ -117,30 +157,19 @@ async function _resolveCanonical(aliasCache, client, tagId, tagIdentifier, retry
  * @returns {boolean} true on success, false on exhausted/shutdown
  */
 async function _appendRows(writer, outRows, retry, shutdownFlag, logCtx) {
-  let attempt = 0;
-  while (true) {
-    if (shutdownFlag.value) return false;
-    if (attempt > 0) {
-      if (retry.isExhausted(attempt)) {
-        getLogger().error('worker', { ...logCtx, msg: 'append retry exhausted, skipping mapping' });
-        return false;
-      }
-      const delay = retry.nextDelay(attempt - 1);
-      getLogger().warn('worker', { ...logCtx, attempt, msg: `append retry, delay=${delay}ms` });
-      const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
-      if (signal === 'shutdown') return false;
-    }
-    const err = await writer.append(outRows);
-    if (err) {
-      if (!retry.shouldRetry(err)) {
-        getLogger().error('worker', { ...logCtx, msg: `non-retryable append error: ${err.message}` });
-        return false;
-      }
-      attempt++;
-      continue;
-    }
-    return true;
-  }
+  const result = await _withRetry({
+    fn: async () => {
+      const err = await writer.append(outRows);
+      if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable append error: ${err.message}` };
+      return { done: true, value: true };
+    },
+    retry,
+    shutdownFlag,
+    logCtx,
+    exhaustedMsg: 'append retry exhausted, skipping mapping',
+    retryMsg: 'append retry',
+  });
+  return result.ok;
 }
 
 // ─── Worker 클래스 ────────────────────────────────────────────────────────────
@@ -338,7 +367,7 @@ class Worker {
         continue;
       }
 
-      const maxRidInBatch = rows.reduce((maxAcc, row) => row.rid > maxAcc ? row.rid : maxAcc, 0n);
+      const maxRidInBatch = maxRid(rows);
       const outRows = [];
       const outRids = [];
       let droppedNoMeta = 0;
@@ -426,7 +455,7 @@ class Worker {
           break;
         }
 
-        const maxRidInBatch = rows.reduce((maxAcc, row) => row.rid > maxAcc ? row.rid : maxAcc, 0n);
+        const maxRidInBatch = maxRid(rows);
         let droppedNoMeta = 0;
 
         // 1단계: 배치 내 모든 row의 canonical 이름 해석

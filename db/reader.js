@@ -110,6 +110,7 @@ class Reader {
       ? cols.filter(c => sourceColumns.includes(c.name))
       : cols;
     this.selectColumnNames = filtered.map(c => c.name.toLowerCase());
+    this.selectColumnNamesUpper = this.selectColumnNames.map(c => c.toUpperCase());
   }
 
   /**
@@ -181,10 +182,10 @@ class Reader {
           continue;
         }
         // data에 _RID 제외한 나머지 컬럼을 UPPERCASE key로 저장
-        // Machbase query()는 컬럼명을 소문자로 반환하므로 toUpperCase()로 변환
+        // Machbase query()는 컬럼명을 소문자로 반환하므로 미리 계산된 uppercase 배열 사용
         const data = {};
-        for (const col of columnNames) {
-          data[col.toUpperCase()] = row[col];
+        for (let i = 0; i < columnNames.length; i++) {
+          data[this.selectColumnNamesUpper[i]] = row[columnNames[i]];
         }
         result.push({
           rid: BigInt(row._RID),

@@ -30,12 +30,13 @@ const { ColumnType, Column, TableSchema } = require('../core/types.js');
 // 모듈 레벨 공유 Buffer여도 재진입 문제 없음.
 const _fixBuf = Buffer.allocUnsafe(8);
 // IEEE 754 double 최소 정규수: 이 값보다 작은 nonzero number는 denormal
-// 현재 DOUBLE 타입(code 20)에만 적용됨. FLOAT(code 16) 지원 시
-// FLT32_MIN_NORMAL(~1.175e-38) 별도 임계값 처리 필요.
 const DOUBLE_MIN_NORMAL = 2.2250738585072014e-308;
+// IEEE 754 float32 최소 정규수
+// FLOAT(code 16) 컬럼이 BE로 저장된 경우 이 임계값으로 감지한다.
+const FLOAT_MIN_NORMAL = 1.1754943508222875e-38;
 
 /**
- * 쿼리 결과 row 배열에서 BE→LE 오독으로 손상된 double 값을 복원한다.
+ * 쿼리 결과 row 배열에서 BE→LE 오독으로 손상된 float/double 값을 복원한다.
  * @param {object[]} rows
  * @returns {object[]}
  */
@@ -44,12 +45,22 @@ function fixDoubleEndian(rows) {
     for (const key of Object.keys(row)) {
       const v = row[key];
       if (typeof v !== 'number') continue;
-      if (v !== 0 && Math.abs(v) < DOUBLE_MIN_NORMAL) {
-        // 라이브러리가 LE로 읽은 바이트를 다시 BE로 해석하면 원래 값이 나온다.
-        // 한계: NaN/Infinity는 이 조건(Math.abs(v) < DOUBLE_MIN_NORMAL)이 false가 되어
-        // 검출되지 않으며, BE로 저장된 정상값이 LE로 읽혀 NaN/Infinity가 된 경우는 복원 불가.
+      if (v === 0 || !isFinite(v)) continue;
+      const abs = Math.abs(v);
+      if (abs < FLOAT_MIN_NORMAL) {
+        // denormal 범위: DOUBLE(8바이트) 또는 FLOAT(4바이트) BE→LE 오독 가능성
+        // DOUBLE 기준으로 먼저 시도한 후, 복원값이 FLOAT_MIN_NORMAL 이상이면 정상 복원된 것으로 판단
         _fixBuf.writeDoubleLE(v, 0);
-        row[key] = _fixBuf.readDoubleBE(0);
+        const asDoubleBE = _fixBuf.readDoubleBE(0);
+        if (Math.abs(asDoubleBE) >= DOUBLE_MIN_NORMAL) {
+          // DOUBLE 컬럼이 BE로 저장된 경우
+          row[key] = asDoubleBE;
+        } else if (abs < FLOAT_MIN_NORMAL) {
+          // FLOAT 컬럼 시도: 라이브러리가 4바이트 LE로 읽었을 가능성
+          // 한계: NaN/Infinity로 변환된 경우 복원 불가
+          _fixBuf.writeFloatLE(v, 0);
+          row[key] = _fixBuf.readFloatBE(0);
+        }
       }
     }
   }

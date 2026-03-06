@@ -21,7 +21,7 @@ class IntegrityChecker {
     if (!rows || rows.length === 0) return { existSet: new Set(), err: null };
 
     if (rows.length > 500) {
-      throw new Error(`batchExists called with ${rows.length} rows (>500). Caller must limit batch size to 500.`);
+      return { existSet: new Set(), err: new Error(`batchExists called with ${rows.length} rows (>500). Caller must limit batch size to 500.`) };
     }
 
     // UNION ALL 방식으로 일괄 조회

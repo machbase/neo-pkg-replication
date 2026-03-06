@@ -15,6 +15,37 @@ class Job {
   }
 
   /**
+   * source.columns 유효성 검증 헬퍼
+   * @returns {true|null} null = 검증 실패 (mapping skip)
+   */
+  _validateSourceColumns(mapping, srcSchema, logCtx) {
+    if (!mapping.source.columns) return true;
+    const actualCols = new Set(srcSchema.columns.map(c => c.name));
+    const unknownCols = mapping.source.columns.filter(c => !actualCols.has(c));
+    if (unknownCols.length > 0) {
+      getLogger().error('job_runner', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping mapping` });
+      return null;
+    }
+    return true;
+  }
+
+  /**
+   * 대상 DB에 단기 접속하여 fn(conn) 실행 후 즉시 반납
+   * @param {object} dstConfig
+   * @param {Function} fn - async (conn) => result
+   * @returns {*} fn의 반환값, 또는 접속 실패 시 null
+   */
+  async _withDstConn(dstConfig, fn) {
+    const tmpDstConn = new MachbaseClient(dstConfig);
+    try {
+      await tmpDstConn.connect();
+      return await fn(tmpDstConn);
+    } finally {
+      await tmpDstConn.close().catch(() => {});
+    }
+  }
+
+  /**
    * mapping의 소스/대상 스키마 수집 (단기 커넥션 사용 후 즉시 반납)
    * @returns {{ tableType, dataTables, srcSchema, dstSchema }}|null  null = 실패
    */
@@ -54,56 +85,29 @@ class Job {
         }
         dataTables = tables.map(t => t.data_table);
 
-        // 소스 TableSchema 생성 (첫 번째 파티션 기준)
         srcSchema = await buildTagSchema(sourceConn, mapping.source.table, tables[0].table_id);
+        if (!this._validateSourceColumns(mapping, srcSchema, logCtx)) return null;
 
-        // source.columns 유효성 검증
-        if (mapping.source.columns) {
-          const actualCols = new Set(srcSchema.columns.map(c => c.name));
-          const unknownCols = mapping.source.columns.filter(c => !actualCols.has(c));
-          if (unknownCols.length > 0) {
-            getLogger().error('job_runner', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping mapping` });
-            return null;
-          }
-        }
-
-        // 대상 TableSchema 생성
-        const tmpDstConn = new MachbaseClient(dstConfig);
-        try {
-          await tmpDstConn.connect();
-          const dstTables = await tmpDstConn.listTagDataTables(mapping.target.table);
+        dstSchema = await this._withDstConn(dstConfig, async (conn) => {
+          const dstTables = await conn.listTagDataTables(mapping.target.table);
           if (dstTables.length === 0) {
             getLogger().error('job_runner', { ...logCtx, msg: `no target data partitions found, skipping mapping` });
             return null;
           }
-          dstSchema = await buildTagSchema(tmpDstConn, mapping.target.table, dstTables[0].table_id);
-        } finally {
-          await tmpDstConn.close().catch(() => {});
-        }
+          return buildTagSchema(conn, mapping.target.table, dstTables[0].table_id);
+        });
+        if (!dstSchema) return null;
       } else {
         // LOG: 논리 테이블을 data_table로 사용
         dataTables = [mapping.source.table];
 
         srcSchema = await buildLogSchema(sourceConn, mapping.source.table);
+        if (!this._validateSourceColumns(mapping, srcSchema, logCtx)) return null;
 
-        // source.columns 유효성 검증
-        if (mapping.source.columns) {
-          const actualCols = new Set(srcSchema.columns.map(c => c.name));
-          const unknownCols = mapping.source.columns.filter(c => !actualCols.has(c));
-          if (unknownCols.length > 0) {
-            getLogger().error('job_runner', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping mapping` });
-            return null;
-          }
-        }
-
-        // 대상 TableSchema 생성
-        const tmpDstConn = new MachbaseClient(dstConfig);
-        try {
-          await tmpDstConn.connect();
-          dstSchema = await buildLogSchema(tmpDstConn, mapping.target.table);
-        } finally {
-          await tmpDstConn.close().catch(() => {});
-        }
+        dstSchema = await this._withDstConn(dstConfig, (conn) =>
+          buildLogSchema(conn, mapping.target.table)
+        );
+        if (!dstSchema) return null;
       }
     } catch (err) {
       getLogger().error('job_runner', { ...logCtx, msg: `discover failed: ${err.message}` });

@@ -25,8 +25,7 @@ class RetryHandler {
    * @returns {boolean}
    */
   shouldRetry(err) {
-    if (err.retryable === false) return false;
-    return true;
+    return err.retryable !== false;
   }
 
   /**

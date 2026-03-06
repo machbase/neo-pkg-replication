@@ -66,7 +66,7 @@ class Writer {
     }
     try {
       const matrix = rows.map(row =>
-        Array.isArray(row) ? row : this.schema.columns.map(col => this._toCell(col, row))
+        this.schema.columns.map(col => this._toCell(col, row))
       );
       await this.stream.append(matrix);
       return null;
