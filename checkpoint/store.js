@@ -2,8 +2,46 @@
 
 const { getInstance: getLogger } = require('../logger/logger.js');
 
+const fs = require('fs/promises');
 const path = require('path');
-const File = require('./file.js');
+
+// ─── 내부 파일 I/O 헬퍼 ──────────────────────────────────────────────────────
+
+const BIGINT_KEYS = new Set(['last_success_rid']);
+
+function _stringify(data) {
+  return JSON.stringify(
+    data,
+    (key, value) => (typeof value === 'bigint' ? value.toString() : value),
+    2
+  );
+}
+
+function _parse(content) {
+  return JSON.parse(content, (key, value) => {
+    if (BIGINT_KEYS.has(key) && typeof value === 'string' && /^\d+$/.test(value)) {
+      return BigInt(value);
+    }
+    return value;
+  });
+}
+
+/**
+ * JSON atomic write (tmp → rename)
+ */
+async function _writeFile(filePath, data) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.hrtime.bigint()}.tmp`;
+  await fs.writeFile(tmpPath, _stringify(data), 'utf-8');
+  try {
+    await fs.rename(tmpPath, filePath);
+  } catch (err) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
+}
+
+// ─── CheckpointStore ──────────────────────────────────────────────────────────
 
 class CheckpointStore {
   constructor(directory) {
@@ -20,41 +58,41 @@ class CheckpointStore {
    * @returns {{ cp: object|null, exists: boolean, err: Error|null }}
    */
   async load(jobId, dataTable) {
-    const file = new File(this._filePath(jobId, dataTable), { bigintKeys: ['last_success_rid'] });
+    const filePath = this._filePath(jobId, dataTable);
 
     let data;
     try {
-      data = await file.read();
+      data = _parse(await fs.readFile(filePath, 'utf-8'));
     } catch (err) {
       if (err.code === 'ENOENT') {
         return { cp: null, exists: false, err: null };
       }
       const msg = err instanceof SyntaxError ? `parse failed: ${err.message}` : `read failed: ${err.message}`;
       getLogger().error('checkpoint_io', {
-job_id: jobId,
+        job_id: jobId,
         data_table: dataTable,
-        msg
-});
+        msg,
+      });
       return { cp: null, exists: false, err };
     }
 
     // source.data_table 불일치 → 손상 처리
     if (data.source?.data_table !== dataTable) {
       getLogger().error('checkpoint_io', {
-job_id: jobId,
+        job_id: jobId,
         data_table: dataTable,
-        msg: `data_table mismatch in file (got: ${data.source?.data_table}), invalidating`
-});
+        msg: `data_table mismatch in file (got: ${data.source?.data_table}), invalidating`,
+      });
       return { cp: null, exists: false, err: new Error('checkpoint data_table mismatch') };
     }
 
     const cp = data.checkpoint;
     if (!cp || typeof cp.last_success_rid !== 'bigint') {
       getLogger().error('checkpoint_io', {
-job_id: jobId,
+        job_id: jobId,
         data_table: dataTable,
-        msg: `invalid checkpoint structure (last_success_rid missing or wrong type), invalidating`
-});
+        msg: `invalid checkpoint structure (last_success_rid missing or wrong type), invalidating`,
+      });
       return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
     }
 
@@ -75,8 +113,6 @@ job_id: jobId,
       throw new TypeError(`last_success_rid must be BigInt, got ${typeof cp.last_success_rid}`);
     }
 
-    const file = new File(this._filePath(jobId, dataTable), { bigintKeys: ['last_success_rid'] });
-
     const data = {
       version: 1,
       job_id: jobId,
@@ -92,23 +128,23 @@ job_id: jobId,
     };
 
     try {
-      await file.write(data);
+      await _writeFile(this._filePath(jobId, dataTable), data);
       getLogger().info('checkpoint_saved', {
-job_id: jobId,
+        job_id: jobId,
         data_table: dataTable,
         last_success_rid: cp.last_success_rid.toString(),
         rows_read: stats?.rows_read ?? 0,
         rows_written: stats?.rows_written ?? 0,
         dropped_no_meta: stats?.dropped_no_meta ?? 0,
-        skipped_exists: stats?.skipped_exists ?? 0
-});
+        skipped_exists: stats?.skipped_exists ?? 0,
+      });
       return null;
     } catch (err) {
       getLogger().error('checkpoint_io', {
-job_id: jobId,
+        job_id: jobId,
         data_table: dataTable,
-        msg: `save failed: ${err.message}`
-});
+        msg: `save failed: ${err.message}`,
+      });
       if (opts?.on_save_failure === 'abort') throw err;
       return err;
     }
