@@ -1,7 +1,7 @@
 # 테스트 결과 보고서
 
 **프로젝트**: repli-js
-**수행일**: 2026-03-05
+**수행일**: 2026-03-06
 **환경**: Node.js v22, CommonJS
 **통합 테스트 DB**: 192.168.1.189:5656 (Machbase, SYS/MANAGER)
 
@@ -11,14 +11,14 @@
 
 | 구분 | 파일 수 | 테스트 수 | pass | fail | 실행 시간 |
 |------|---------|----------|------|------|-----------|
-| 단위 테스트 | 7개 | 101개 | **101** | 0 | ~368ms |
+| 단위 테스트 | 9개 | 111개 | **111** | 0 | ~370ms |
 | 통합 테스트 (TAG) | 1개 | 11개 | **11** | 0 | ~51초 |
 | 통합 테스트 (LOG) | 1개 | 8개 | **8** | 0 | ~7초 |
-| **합계** | **9개** | **120개** | **120** | **0** | — |
+| **합계** | **11개** | **130개** | **130** | **0** | — |
 
 ---
 
-## 단위 테스트 (101개 pass)
+## 단위 테스트 (111개 pass)
 
 ```
 node --test tests/unit/*.test.js
@@ -34,6 +34,15 @@ node --test tests/unit/*.test.js
 | 4 | load: source.data_table 불일치 → `{ exists: false, err }` |
 | 5 | load: JSON 파싱 실패 → `{ exists: false, err }` |
 | 6 | rid = 0n 저장 및 로드 |
+
+### client.test.js — fixDoubleEndian (4개)
+
+| # | 테스트 항목 |
+|---|------------|
+| 1 | 정상 double 값은 변환되지 않음 |
+| 2 | BE로 저장된 double → LE 오독 복원 |
+| 3 | 0, Infinity, NaN은 변환하지 않음 |
+| 4 | number 아닌 값은 변환하지 않음 |
 
 ### config.test.js — ConfigLoader (33개)
 
@@ -94,6 +103,15 @@ node --test tests/unit/*.test.js
 | 15 | sleepOrShutdown: 이미 shutdown이면 즉시 반환 |
 | 16~19 | (추가 케이스 4개) |
 
+### integrity_checker.test.js — IntegrityChecker (4개)
+
+| # | 테스트 항목 |
+|---|------------|
+| 1 | batchExists: 빈 rows → existSet 비어있음, err=null |
+| 2 | batchExists: rows > 500 → `{ err }` 반환 (throw 아님) |
+| 3 | batchExists: 존재하는 row → existSet에 key 포함 |
+| 4 | batchExists: canonical에 null byte → existKey에서 throw |
+
 ### table_info.test.js — TableSchema / TagAliasCache (13개)
 
 | # | 테스트 항목 |
@@ -116,18 +134,20 @@ node --test tests/unit/*.test.js
 | 4 | Scenario E: metadata 컬럼 → safeNull 패딩 (TAG 테이블) |
 | 5 | Scenario F: null 소스 값 → safeNull 대체 |
 
-### worker.test.js — Worker 상태 머신 (9개)
+### worker.test.js — Worker 상태 머신 (19개)
 
 | suite | # | 테스트 항목 |
 |-------|---|------------|
 | RESOLVE_START | 1 | 체크포인트 없음 + start_mode=full → startRid=0n으로 시작 후 빈 배치 대기 후 shutdown |
 | RESOLVE_START | 2 | 체크포인트 있음 → last_success_rid에서 재개 |
 | STEADY_REPLICATION | 3 | TAG 배치 처리 → checkpoint가 maxRid+1로 갱신됨 |
-| STEADY_REPLICATION | 4 | drop_not_found → checkpoint = maxRidInBatch+1 (all-drop 케이스) |
+| STEADY_REPLICATION | 4 | drop_not_found → checkpoint = maxRidInBatch (all-drop 케이스) |
 | STEADY_REPLICATION | 5 | LOG 테이블 → tag_id 변환 없이 그대로 append |
 | STARTUP_INTEGRITY | 6 | integrity.enabled=false → STARTUP_INTEGRITY 미실행, 즉시 STEADY 진입 |
 | STARTUP_INTEGRITY | 7 | TAG + checkpoint존재 + integrity.enabled → STARTUP_INTEGRITY 수행, first_miss 발견 후 STEADY |
 | STARTUP_INTEGRITY | 8 | LOG 테이블 → checkpoint 있어도 STARTUP_INTEGRITY 미수행 |
+| non-retryable | 9 | readAfterRid non-retryable 에러 → Worker 즉시 종료 (retry 없음) |
+| non-retryable | 10 | Writer.append non-retryable 에러 → Worker 즉시 종료 |
 | Job/_discoverMapping | — | 2개 (connect 오류 → null, discover 성공) |
 | Job/AbortController | — | 2개 (signal.aborted 즉시 반환, Worker 에러 → abort 전파) |
 | Job/재시작 | — | 1개 (에러 → abort → 재시작 후 shutdown) |
@@ -215,12 +235,14 @@ node --test tests/integration/log_replication.test.js
 ## 테스트 실행 명령
 
 ```bash
-# 단위 테스트 전체 (101개)
+# 단위 테스트 전체 (111개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
 node --test tests/unit/checkpoint.test.js
+node --test tests/unit/client.test.js
 node --test tests/unit/config.test.js
+node --test tests/unit/integrity_checker.test.js
 node --test tests/unit/retry.test.js
 node --test tests/unit/table_info.test.js
 node --test tests/unit/target_writer.test.js

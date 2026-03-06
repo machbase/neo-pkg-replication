@@ -129,7 +129,7 @@ _TAG_DATA_3  ──┘
 ## 테스트
 
 ```bash
-# 전체 단위 테스트 (87개)
+# 전체 단위 테스트 (111개)
 node --test tests/unit/*.test.js
 
 # 통합 테스트 (실 DB 연결 필요 — 192.168.1.189:5656)
@@ -137,7 +137,7 @@ node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
 ```
 
-현재 87개 단위 테스트 + 19개 통합 테스트 전체 통과.
+현재 111개 단위 테스트 + 19개 통합 테스트 전체 통과.
 
 ## 로그 형식
 
@@ -155,7 +155,7 @@ node --test tests/integration/log_replication.test.js
 
 `@machbase/ts-client@0.9.3`의 쿼리 결과 디코더(`decodeFixedField`)가 `FLT32`/`FLT64` 타입을 항상 Little-Endian으로 읽지만, Machbase TAG 파티션에 따라 서버가 Big-Endian으로 저장하는 경우가 있어 값이 손상된다.
 
-`machbase/machbase.js`의 `fixDoubleEndian()` 함수가 `MachbaseClient.query()` 반환 직후 자동으로 보정한다. denormal(비정규 부동소수점) 판별로 손상 여부를 감지한 뒤 바이트 순서를 뒤집어 재해석한다. 라이브러리 재설치 후에도 프로젝트 코드 내에서 보정이 적용된다.
+`db/client.js`의 `fixDoubleEndian()` 함수가 `MachbaseClient.query()` 반환 직후 자동으로 보정한다. denormal(비정규 부동소수점) 판별로 손상 여부를 감지한 뒤 바이트 순서를 뒤집어 재해석한다. 라이브러리 재설치 후에도 프로젝트 코드 내에서 보정이 적용된다.
 
 상세 분석은 [`docs/ENDIAN_BUG.md`](docs/ENDIAN_BUG.md)를 참고한다.
 
@@ -178,13 +178,12 @@ repli-js/
 ├── worker/
 │   └── worker.js        # Worker 상태 머신
 ├── checkpoint/
-│   ├── store.js         # 체크포인트 관리
-│   └── file.js          # JSON 파일 I/O (atomic write, BigInt 지원)
+│   └── store.js         # 체크포인트 관리 (atomic write, BigInt 지원 내장)
 ├── docs/
 │   ├── PROJECT.md       # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 │   └── ENDIAN_BUG.md    # @machbase/ts-client endian 버그 상세 분석
 ├── checkpoints/         # 런타임 생성 — cp 파일 저장 위치
 └── tests/
-    ├── unit/            # 단위 테스트 (87개)
+    ├── unit/            # 단위 테스트 (111개)
     └── integration/     # 통합 테스트 (19개, 실 DB 필요)
 ```

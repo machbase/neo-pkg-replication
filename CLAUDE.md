@@ -29,20 +29,21 @@ repli-js/
 ├── worker/
 │   └── worker.js                 # Worker 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
 ├── checkpoint/
-│   ├── store.js                  # CheckpointStore — cp 파일 load/save
-│   └── file.js                   # File — JSON atomic read/write (BigInt 지원)
+│   └── store.js                  # CheckpointStore — cp 파일 load/save (atomic write, BigInt 내장)
 ├── logger/
 │   └── logger.js                 # Logger 클래스 — 날짜 로테이션, stdout/file 출력
 ├── checkpoints/                  # 런타임 생성 — job별 파티션 cp 파일 저장 디렉토리
 ├── tests/
 │   ├── unit/
-│   │   ├── checkpoint.test.js    # CheckpointStore 단위 테스트 (6개)
-│   │   ├── config.test.js        # Config 단위 테스트 (33개)
-│   │   ├── retry.test.js         # RetryHandler 단위 테스트 (19개)
-│   │   ├── table_info.test.js    # TableSchema/TagAliasCache 단위 테스트 (13개)
-│   │   ├── target_writer.test.js # Writer 단위 테스트 (5개)
-│   │   ├── worker.test.js        # Worker 상태 머신 단위 테스트 (25개)
-│   │   └── e2e_scenarios.test.js # E2E 시나리오 mock 테스트 (8개)
+│   │   ├── checkpoint.test.js          # CheckpointStore 단위 테스트 (6개)
+│   │   ├── client.test.js              # fixDoubleEndian 단위 테스트 (4개)
+│   │   ├── config.test.js              # Config 단위 테스트 (33개)
+│   │   ├── integrity_checker.test.js   # IntegrityChecker 단위 테스트 (4개)
+│   │   ├── retry.test.js               # RetryHandler 단위 테스트 (19개)
+│   │   ├── table_info.test.js          # TableSchema/TagAliasCache 단위 테스트 (13개)
+│   │   ├── target_writer.test.js       # Writer 단위 테스트 (5개)
+│   │   ├── worker.test.js              # Worker 상태 머신 단위 테스트 (19개)
+│   │   └── e2e_scenarios.test.js       # E2E 시나리오 mock 테스트 (8개)
 │   └── integration/
 │       ├── tag_replication.test.js # TAG 테이블 통합 테스트 (11개)
 │       └── log_replication.test.js # LOG 테이블 통합 테스트 (8개)
@@ -59,38 +60,43 @@ repli-js/
 - `MachbaseClient` 클래스: `@machbase/ts-client` 연결 래퍼
   - `connect()` / `close()` / `query(sql, values?)` / `appendOpen(table, columns)` / `execute(sql)`
   - `query()` 반환 직후 `fixDoubleEndian()` 자동 적용 (BE/LE 혼재 버그 우회)
-  - **카탈로그 메서드** (DB 구조 조회 — `machbase.js`에 집중):
-    - `getTableType(table)` → `{ type: 'TAG'|'LOG'|'UNSUPPORTED' }`
-    - `listTagDataTables(logicalTable)` → `[{ data_table, table_id }]`
+  - **카탈로그 메서드** (DB 구조 조회):
+    - `getTableType(table)` → `{ type: 'TAG'|'LOG'|'UNSUPPORTED' }`. 조회 실패 시 throw.
+    - `listTagDataTables(logicalTable)` → `[{ data_table, table_id }]` (table_id는 BigInt 그대로)
     - `getColumnsByTableName(tableName)` → `[{ NAME, TYPE, ID }]` (META·LOG 컬럼 조회)
-    - `getColumnsByTableId(tableId)` → `[{ NAME, TYPE, ID }]` (DATA 파티션 컬럼 조회)
+    - `getColumnsByTableId(tableId)` → `[{ NAME, TYPE, ID }]` (DATA 파티션, BigInt 파라미터 허용)
 - `toInt64(val)` → BigInt 변환 유틸리티 (writer.js에서 import)
-- `module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema }`
+- `module.exports = { createConnection, QueryError, MachbaseClient, toInt64 }`
 
 ### app.js — 진입점
 
-- `config.json` 로드 후 `JobRunner` 실행
-- `SIGTERM` / `SIGINT` 수신 시 `shutdownFlag.value = true` 설정 → graceful shutdown
+- `config.json` 로드 후 `new Replicator(config).run()` 실행
+- SIGTERM / SIGINT 처리는 `Replicator.run()` 내부에서 담당
 
-### job_runner.js — JobRunner
+### job_runner.js — Replicator / Job / Worker
 
-- `_discoverMapping(mapping, servers, logCtx)` → 소스/대상 스키마 수집 + 검증
-  - src-only 컬럼 검출: 소스에만 있고 대상에 없는 컬럼 → 해당 mapping 스킵
-  - `source.columns` 유효성 검증: schema에 존재하지 않는 컬럼명 → 해당 mapping 스킵
-- `_runMapping()` → DISCOVER → Worker별 독립 연결 생성 → `Promise.all` 병렬 실행
-  - Worker별 독립 `TagAliasCache` 생성 (TAG 전용)
-  - Worker별 독립 `sourceConn` / `targetConn` / `Writer` 인스턴스 사용
+- **Replicator**: SIGTERM/SIGINT → `shutdownFlag.value = true`, shutdown timer 관리
+- **Job**: `while(!shutdown)` 루프
+  - `_discoverMapping(mapping, logCtx)` → 소스/대상 스키마 수집 + 검증 (단기 커넥션)
+    - src-only 컬럼 검출: 소스에만 있고 대상에 없는 컬럼 → 해당 mapping 스킵
+    - `source.columns` 유효성 검증: schema에 존재하지 않는 컬럼명 → 해당 mapping 스킵
+  - `AbortController`로 Worker × N `Promise.all` 병렬 실행
+  - 에러 시 abort → 루프 재시작
+- **Worker**: `signal.aborted || shutdownFlag.value` proxy 생성 → `runDataTableWorker()` 호출
+  - Worker별 독립 `Reader(srcConn)` + `TagAliasCache`(TAG 전용) + `Writer(dstConn)` 생성
+- `module.exports = { Replicator, Job, Worker }`
 
 ### worker/worker.js — Worker 상태 머신
 
-`runDataTableWorker({ jobId, mapping, checkpoint, tableType, dataTable, srcConfig, dstConfig, reader, aliasCache, writer, rowProcessor, shutdownFlag })` 함수. 3단계 상태 전이:
+`runDataTableWorker({ jobId, mapping, tableType, dataTable, srcSchema, dstSchema, srcConfig, dstConfig, reader, aliasCache, writer, shutdownFlag })` 함수. 3단계 상태 전이:
 
 1. **RESOLVE_START**: cp 파일 로드 → `startRid` 결정
    - cp 존재 → `last_success_rid + 1n`
-   - cp 없음/손상 → `start_mode` 기준 (`full`=0n, `now`=Reader.getMaxRid())
-2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 시만): `startRid` 부터 한 배치 읽어 대상 DB에 이미 존재하는 행 확인 → `safe_cp_rid` 산출 후 STEADY 진입
-3. **STEADY_REPLICATION**: 루프 — reader.readAfterRid → aliasCache.resolve(reader.client) → writer.append → cp 저장 → sleep(poll_interval_ms) → shutdown 체크
+   - cp 없음/손상 → `start_mode` 기준 (`full`=0n, `now`=reader.getMaxRid())
+2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 + `integrity.enabled` 시만): `startRid`부터 배치 읽기 → 대상 DB 존재 확인 → `safe_cp_rid` 산출 후 STEADY 진입
+3. **STEADY_REPLICATION**: 루프 — reader.readAfterRid → aliasCache.resolve → writer.append → cp 저장(maxRidInBatch) → sleep(poll_interval_ms) → shutdown 체크
    - statement ID 고갈 방지: stmtCount 추적, 900 도달 시 srcConn 재생성
+- `module.exports = { runDataTableWorker }`
 
 ### core/types.js — ColumnType / Column / TableSchema
 
@@ -104,7 +110,7 @@ repli-js/
   - `category`: `'key'`(TAG의 NAME 컬럼), `'data'`(일반 데이터 컬럼), `'metadata'`(TAG META 추가 속성)
 - `TableSchema` 클래스: 불변 테이블 컬럼 구조 (`tableType`, `logicalTable`, `columns: Column[]`)
   - constructor: `(tableType, logicalTable, columns)` — columns 배열 직접 수신
-- `module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema }`
+- `module.exports = { ColumnType, Column, TableSchema }`
 
 ### db/schema_builder.js
 
@@ -147,7 +153,7 @@ repli-js/
   - `append(rows)` → `_toCell(col, row)`로 각 셀 변환 후 스트림 append
     - 소스에 없는 컬럼(`!srcNames.has(col.name)`) → `col.columnType.safeNull`로 패딩
     - null/undefined 값 → `col.columnType.safeNull`
-    - int64 컬럼 → `toInt64(val)` (BigInt 변환, `machbase.js`에서 import)
+    - int64 컬럼 → `toInt64(val)` (BigInt 변환, `db/client.js`에서 import)
   - `close()` → 스트림 + client 닫기
 
 ### db/integrity_checker.js
@@ -159,14 +165,10 @@ repli-js/
 ### checkpoint/store.js
 
 - `CheckpointStore(directory)`: `load(jobId, dataTable)` / `save(jobId, dataTable, cp, stats)`
-- 파일 경로: `{directory}/{jobId}_{dataTable}.json` (예: `job-1__TAG_DATA_0.json`)
-- 파싱 실패 또는 `source.data_table` 불일치 → logger.error({stage:'checkpoint_io',...}) 후 무효화
-
-### checkpoint/file.js
-
-- `File(path)`: `read()` / `write(data)` / `exists()` / `update(partial)`
-- atomic write: `.tmp` 파일 → `fs.rename`
-- BigInt reviver/replacer 내장
+- 파일 경로: `{directory}/{jobId}__{dataTable}.json` (예: `job-1___TAG_DATA_0.json`)
+- atomic write 내장: `_writeFile()` — `.tmp` 파일 → `fs.rename`
+- BigInt reviver/replacer 내장: `_parse()` / `_stringify()`
+- 파싱 실패 또는 `source.data_table` 불일치 → logger({stage:'checkpoint_io',...}) 후 무효화
 
 ## @machbase/ts-client API 참조
 
@@ -283,7 +285,7 @@ LIMIT 1000
 ## 테스트 실행
 
 ```bash
-# 전체 단위 테스트 (101개)
+# 전체 단위 테스트 (111개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
@@ -295,13 +297,15 @@ node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
 ```
 
-현재 테스트 현황: **101 단위 + 19 통합 = 120 pass / 0 fail**
+현재 테스트 현황: **111 단위 + 19 통합 = 130 pass / 0 fail**
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
+- client.test.js: fixDoubleEndian (4개)
 - config.test.js: 설정 검증 (33개)
+- integrity_checker.test.js: IntegrityChecker batchExists (4개)
 - retry.test.js: RetryHandler 백오프 로직 (19개)
 - table_info.test.js: TableSchema/TagAliasCache 빌드/조회 (13개)
 - target_writer.test.js: Writer safeNull 패딩 (5개)
-- worker.test.js: Worker 상태 머신 + Job/Replicator (25개)
+- worker.test.js: Worker 상태 머신 + Job/Replicator (19개)
 - e2e_scenarios.test.js: E2E 시나리오 (8개)
 - tag_replication.test.js: TAG 복제 통합 테스트 (11개)
 - log_replication.test.js: LOG 복제 통합 테스트 (8개)
