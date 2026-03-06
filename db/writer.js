@@ -56,6 +56,10 @@ class Writer {
       }
       return toInt64(val);
     }
+    if (typeof val === 'number' && !isFinite(val)) {
+      getLogger().warn('writer', { col: col.name, value: String(val), msg: `non-finite float value replaced with null` });
+      return col.columnType.safeNull;
+    }
     return val;
   }
 

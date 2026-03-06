@@ -138,6 +138,38 @@ test('Scenario E: metadata columns get safeNull padding (TAG table)', async () =
   assert.deepEqual(captured[0], ['pump_a', 5000n, 55.5, '']); // LOCATION gets safeNull('')
 });
 
+test('Scenario G: Infinity and NaN float values get safeNull and log warn', async () => {
+  const srcInfo = makeTableInfo([
+    { name: 'NAME',  columnType: ColumnType.VARCHAR, id: 0 },
+    { name: 'TIME',  columnType: ColumnType.DATETIME, id: 1 },
+    { name: 'VALUE', columnType: ColumnType.DOUBLE, id: 2 },
+    { name: 'RATIO', columnType: ColumnType.FLOAT, id: 3 },
+  ]);
+  const dstInfo = makeTableInfo([
+    { name: 'NAME',  columnType: ColumnType.VARCHAR, id: 0 },
+    { name: 'TIME',  columnType: ColumnType.DATETIME, id: 1 },
+    { name: 'VALUE', columnType: ColumnType.DOUBLE, id: 2 },
+    { name: 'RATIO', columnType: ColumnType.FLOAT, id: 3 },
+  ]);
+
+  const writer = new Writer(dstInfo);
+  const captured = [];
+  const mockConn = {
+    appendOpen: async () => ({
+      append: async (matrix) => { captured.push(...matrix); },
+      close: async () => {},
+    }),
+    close: async () => {},
+  };
+
+  await writer.open(mockConn, 'TAG2', srcInfo);
+  const err = await writer.append([{ NAME: 'sensor_g', TIME: 6000n, VALUE: Infinity, RATIO: NaN }]);
+  assert.equal(err, null);
+  assert.equal(captured.length, 1);
+  // Infinity → safeNull(0.0), NaN → safeNull(0.0)
+  assert.deepEqual(captured[0], ['sensor_g', 6000n, 0.0, 0.0]);
+});
+
 test('Scenario F: null source value gets safeNull instead of null', async () => {
   const srcInfo = makeTableInfo([
     { name: 'NAME',  columnType: ColumnType.VARCHAR, id: 0 },
