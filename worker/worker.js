@@ -34,12 +34,24 @@ class TagRowProcessor {
    * @returns {{ action: 'append'|'drop'|'shutdown', outRow?: object }}
    */
   async process(row, aliasCache, client, retry, shutdownFlag, logCtx) {
-    const canonical = await _resolveCanonical(aliasCache, client, row.tagId, this.tagIdentifier, retry, shutdownFlag, logCtx);
-    if (canonical === undefined) return { action: 'shutdown' };
-    if (canonical === null) return { action: 'drop' };
-
-    // canonical name으로 NAME을 덮어씀 (tag_id → canonical 변환)
-    return { action: 'append', outRow: { ...row.data, NAME: canonical } };
+    let attempt = 0;
+    while (true) {
+      if (shutdownFlag.value) return { action: 'shutdown' };
+      if (attempt > 0) {
+        if (retry.isExhausted(attempt)) {
+          getLogger().error('worker', { ...logCtx, msg: 'resolve canonical retry exhausted, skipping mapping' });
+          return { action: 'shutdown' };
+        }
+        const delay = retry.nextDelay(attempt - 1);
+        if (await retry.sleepOrShutdown(delay, shutdownFlag) === 'shutdown') return { action: 'shutdown' };
+      }
+      const { canonical, status } = await aliasCache.resolve(client, row.tagId, this.tagIdentifier);
+      switch (status) {
+        case 'ok':            return { action: 'append', outRow: { ...row.data, NAME: canonical } };
+        case 'drop_not_found': return { action: 'drop' };
+        default:              attempt++; // retry_error
+      }
+    }
   }
 }
 
@@ -127,29 +139,6 @@ async function _readBatch(reader, startRid, limit, rangeSize, retry, shutdownFla
     phase,
   });
   return result.ok ? result.value : null;
-}
-
-/**
- * aliasCache.resolve 를 retry 포함하여 호출 (retry scope B 지원)
- * @returns {string}    ok — canonical tag name
- * @returns {null}      drop_not_found — 이 row를 drop
- * @returns {undefined} shutdown 또는 retry exhausted — caller must return
- */
-async function _resolveCanonical(aliasCache, client, tagId, tagIdentifier, retry, shutdownFlag, logCtx) {
-  const result = await _withRetry({
-    fn: async () => {
-      const { canonical, status } = await aliasCache.resolve(client, tagId, tagIdentifier);
-      if (status === 'drop_not_found') return { done: true, value: null };
-      if (status === 'retry_error') return { done: false, retryable: true };
-      return { done: true, value: canonical }; // 'ok'
-    },
-    retry,
-    shutdownFlag,
-    logCtx,
-    exhaustedMsg: 'resolve canonical retry exhausted, skipping mapping',
-  });
-  if (!result.ok) return undefined;
-  return result.value; // canonical or null
 }
 
 /**

@@ -155,7 +155,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
   const discoverConn = await makeConn();
   let partitions, srcSchema, dstSchema;
   try {
-    partitions = await discoverConn.listTagDataTables(srcTable);
+    partitions = await discoverConn.selectTagDataTables(srcTable);
     if (partitions.length === 0) throw new Error(`No partitions for ${srcTable}`);
     srcSchema = await buildTagSchema(discoverConn, srcTable, partitions[0].table_id);
   } finally {
@@ -165,7 +165,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
   // 대상 스키마 조회
   const dstDiscoverConn = await makeConn();
   try {
-    const dstPartitions = await dstDiscoverConn.listTagDataTables(dstTable);
+    const dstPartitions = await dstDiscoverConn.selectTagDataTables(dstTable);
     if (dstPartitions.length === 0) throw new Error(`No partitions for ${dstTable}`);
     dstSchema = await buildTagSchema(dstDiscoverConn, dstTable, dstPartitions[0].table_id);
   } finally {
@@ -239,7 +239,7 @@ test('TAG-01: 동일 스키마 TAG→TAG 복제 — 행수/value/cp 검증', asy
     const store = new CheckpointStore(tmpDir);
     const pc = await makeConn();
     try {
-      const ps = await pc.listTagDataTables(SRC);
+      const ps = await pc.selectTagDataTables(SRC);
       for (const p of ps) {
         const { exists, cp } = await store.load(jobId, p.data_table);
         if (exists) {
@@ -283,7 +283,7 @@ test('TAG-02: SRC-only additional column → Writer.open 에러, 복제 스킵, 
     const store = new CheckpointStore(tmpDir);
     const pc = await makeConn();
     try {
-      const ps = await pc.listTagDataTables(SRC);
+      const ps = await pc.selectTagDataTables(SRC);
       for (const p of ps) {
         const { exists } = await store.load(jobId, p.data_table);
         assert.equal(exists, false, `복제 스킵 → cp 미저장 (${p.data_table})`);
@@ -453,7 +453,7 @@ test('TAG-07: cp 재시작 — cp 이후 데이터만 복제, cp 갱신', async 
     const pc1 = await makeConn();
     let cp1 = null;
     try {
-      const ps = await pc1.listTagDataTables(SRC);
+      const ps = await pc1.selectTagDataTables(SRC);
       for (const p of ps) {
         const { exists, cp } = await store.load(jobId, p.data_table);
         if (exists) { cp1 = cp; break; }
@@ -480,7 +480,7 @@ test('TAG-07: cp 재시작 — cp 이후 데이터만 복제, cp 갱신', async 
     // cp 갱신 확인
     const pc2 = await makeConn();
     try {
-      const ps = await pc2.listTagDataTables(SRC);
+      const ps = await pc2.selectTagDataTables(SRC);
       for (const p of ps) {
         const { exists, cp: cp2 } = await store.load(jobId, p.data_table);
         if (exists && cp1) {

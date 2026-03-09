@@ -69,7 +69,7 @@ class Job {
     let dstSchema;
 
     try {
-      const result = await sourceConn.getTableType(mapping.source.table);
+      const result = await sourceConn.selectTableType(mapping.source.table);
       tableType = result.type;
 
       if (tableType === 'UNSUPPORTED') {
@@ -78,7 +78,7 @@ class Job {
       }
 
       if (tableType === 'TAG') {
-        const tables = await sourceConn.listTagDataTables(mapping.source.table);
+        const tables = await sourceConn.selectTagDataTables(mapping.source.table);
         if (tables.length === 0) {
           getLogger().error('job_runner', { ...logCtx, msg: `no data partitions found, skipping mapping` });
           return null;
@@ -89,7 +89,7 @@ class Job {
         if (!this._validateSourceColumns(mapping, srcSchema, logCtx)) return null;
 
         dstSchema = await this._withDstConn(dstConfig, async (conn) => {
-          const dstTables = await conn.listTagDataTables(mapping.target.table);
+          const dstTables = await conn.selectTagDataTables(mapping.target.table);
           if (dstTables.length === 0) {
             getLogger().error('job_runner', { ...logCtx, msg: `no target data partitions found, skipping mapping` });
             return null;

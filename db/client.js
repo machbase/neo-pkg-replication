@@ -90,10 +90,10 @@ class MachbaseClient {
     return this.conn.execute(sql);
   }
 
-  async getTableType(table) {
+  async selectTableType(tableName) {
     const rows = await this.query(
       'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ?',
-      [table]
+      [tableName]
     );
     if (!rows || rows.length === 0) return { type: 'UNSUPPORTED' };
     const typeCode = rows[0].TYPE;
@@ -102,8 +102,8 @@ class MachbaseClient {
     return { type: 'UNSUPPORTED' };
   }
 
-  async listTagDataTables(logicalTable) {
-    const pattern = `_${logicalTable}_DATA_%`;
+  async selectTagDataTables(tableName) {
+    const pattern = `_${tableName}_DATA_%`;
     const sql = `
       SELECT m.NAME AS data_table, m.ID AS table_id
       FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m
@@ -119,7 +119,7 @@ class MachbaseClient {
    * @param {string} tableName
    * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
    */
-  async getColumnsByTableName(tableName) {
+  async selectColumnsByTableName(tableName) {
     const sql = `
       SELECT c.NAME, c.TYPE, c.ID
       FROM M$SYS_COLUMNS c, M$SYS_TABLES t
@@ -136,7 +136,7 @@ class MachbaseClient {
    * @param {number|bigint} tableId
    * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
    */
-  async getColumnsByTableId(tableId) {
+  async selectColumnsByTableId(tableId) {
     const sql = `
       SELECT c.NAME, c.TYPE, c.ID
       FROM M$SYS_COLUMNS c
@@ -144,6 +144,40 @@ class MachbaseClient {
       ORDER BY c.ID ASC
     `.trim();
     return this.query(sql, [tableId]);
+  }
+
+  /**
+   * 테이블의 최대 RID 조회
+   * @param {string} table
+   * @returns {Promise<BigInt>} 빈 테이블이면 0n
+   */
+  async selectMaxRid(tableName) {
+    const rows = await this.query(`SELECT MAX(_RID) as max_rid FROM ${tableName}`);
+    const raw = rows?.[0]?.max_rid;
+    return raw == null ? 0n : BigInt(raw);
+  }
+
+  /**
+   * TAG META 테이블 전체 조회
+   * @param {string} logicalTable - 논리 테이블명
+   * @returns {Promise<Array<{ _ID: bigint, name: string }>>}
+   */
+  async selectTagNames(logicalTable) {
+    return this.query(`SELECT _ID, name FROM _${logicalTable}_META`);
+  }
+
+  /**
+   * TAG META 테이블에서 tagId → name 단건 조회
+   * @param {string} logicalTable - 논리 테이블명
+   * @param {number|bigint} tagId - _ID 값
+   * @returns {Promise<string|null>} name, 없으면 null
+   */
+  async selectTagNameByTagId(logicalTable, tagId) {
+    const rows = await this.query(
+      `SELECT name FROM _${logicalTable}_META WHERE _ID = ?`,
+      [tagId]
+    );
+    return rows?.[0]?.name ?? null;
   }
 }
 

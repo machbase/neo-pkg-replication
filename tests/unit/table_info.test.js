@@ -152,8 +152,8 @@ describe('TagAliasCache.load', () => {
 
 function mockClient({ byName = {}, byId = {} } = {}) {
   return {
-    getColumnsByTableName: async (tableName) => byName[tableName] ?? [],
-    getColumnsByTableId: async (tableId) => byId[tableId] ?? [],
+    selectColumnsByTableName: async (tableName) => byName[tableName] ?? [],
+    selectColumnsByTableId: async (tableId) => byId[tableId] ?? [],
   };
 }
 

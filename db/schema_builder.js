@@ -14,7 +14,7 @@ const { ColumnType, Column, TableSchema } = require('../core/types.js');
  */
 async function buildTagSchema(client, logicalTable, dataTableId) {
   const metaTableName = `_${logicalTable}_META`;
-  const metaRows = await client.getColumnsByTableName(metaTableName);
+  const metaRows = await client.selectColumnsByTableName(metaTableName);
 
   const metadataColumns = [];
   for (const r of metaRows) {
@@ -22,7 +22,7 @@ async function buildTagSchema(client, logicalTable, dataTableId) {
     metadataColumns.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'metadata'));
   }
 
-  const dataRows = await client.getColumnsByTableId(dataTableId);
+  const dataRows = await client.selectColumnsByTableId(dataTableId);
   const dataColumns = [];
   for (const r of dataRows) {
     if (r.NAME.startsWith('_')) continue;
@@ -50,7 +50,7 @@ async function buildTagSchema(client, logicalTable, dataTableId) {
  * @returns {Promise<TableSchema>}
  */
 async function buildLogSchema(client, logicalTable) {
-  const rows = await client.getColumnsByTableName(logicalTable);
+  const rows = await client.selectColumnsByTableName(logicalTable);
   const columns = rows.map(r => new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data'));
   return new TableSchema('LOG', logicalTable, columns);
 }
