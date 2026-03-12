@@ -4,7 +4,7 @@
  * LOG 테이블 복제 통합 테스트
  *
  * 전제 조건:
- *   - 192.168.1.189:5656에 Machbase가 실행 중이어야 함
+ *   - 192.168.1.183:5656에 Machbase가 실행 중이어야 함
  *   - SYS/MANAGER 계정으로 접속 가능해야 함
  *
  * 테스트 시나리오:
@@ -24,14 +24,14 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const { MachbaseClient } = require('../../db/client.js');
-const { buildLogSchema } = require('../../db/schema_builder.js');
+const { LogTable } = require('../../db/table.js');
 const CheckpointStore = require('../../checkpoint/store.js');
 const { Worker } = require('../../worker/worker.js');
 
 // ─── 접속 설정 ────────────────────────────────────────────────────────────────
 
 const DB_CONFIG = {
-  host: '192.168.1.189',
+  host: '192.168.1.183',
   port: 5656,
   user: 'SYS',
   password: 'MANAGER',
@@ -70,12 +70,12 @@ async function dropTable(conn, name) {
 }
 
 async function buildLogSchemaPair(srcTable, dstTable) {
-  const sc = await makeConn();
+  const srcLogTable = new LogTable(srcTable, DB_CONFIG);
   let srcSchema;
-  try { srcSchema = await buildLogSchema(sc, srcTable); } finally { await sc.close(); }
-  const dc = await makeConn();
+  try { await srcLogTable.open(false); srcSchema = await srcLogTable.getSchema(); } finally { await srcLogTable.close(); }
+  const dstLogTable = new LogTable(dstTable, DB_CONFIG);
   let dstSchema;
-  try { dstSchema = await buildLogSchema(dc, dstTable); } finally { await dc.close(); }
+  try { await dstLogTable.open(false); dstSchema = await dstLogTable.getSchema(); } finally { await dstLogTable.close(); }
   return { srcSchema, dstSchema };
 }
 

@@ -1,9 +1,9 @@
 # 테스트 결과 보고서
 
 **프로젝트**: repli-js
-**수행일**: 2026-03-06
+**수행일**: 2026-03-12
 **환경**: Node.js v22, CommonJS
-**통합 테스트 DB**: 192.168.1.189:5656 (Machbase, SYS/MANAGER)
+**통합 테스트 DB**: 127.0.0.1:5656 (Machbase, SYS/MANAGER)
 
 ---
 
@@ -11,14 +11,17 @@
 
 | 구분 | 파일 수 | 테스트 수 | pass | fail | 실행 시간 |
 |------|---------|----------|------|------|-----------|
-| 단위 테스트 | 9개 | 112개 | **112** | 0 | ~370ms |
+| 단위 테스트 | 6개 | 92개 | **92** | 0 | ~500ms |
 | 통합 테스트 (TAG) | 1개 | 11개 | **11** | 0 | ~51초 |
 | 통합 테스트 (LOG) | 1개 | 8개 | **8** | 0 | ~7초 |
-| **합계** | **11개** | **131개** | **131** | **0** | — |
+| 통합 테스트 (table) | 1개 | 17개 | **17** | 0 | — |
+| **합계** | **9개** | **128개** | **128** | **0** | — |
+
+> 통합 테스트는 127.0.0.1:5656 DB 접근 가능 시 실행.
 
 ---
 
-## 단위 테스트 (112개 pass)
+## 단위 테스트 (92개 pass)
 
 ```
 node --test tests/unit/*.test.js
@@ -82,7 +85,19 @@ node --test tests/unit/*.test.js
 | 32 | source.columns: `[]` (빈 배열) → mapping 스킵 |
 | 33 | source.columns: `[123]` (비문자열) → mapping 스킵 |
 
-### retry.test.js — RetryHandler (19개)
+### integrity_checker.test.js — TagTable.findFirstMissRow + TagAliasCache (7개)
+
+| # | 테스트 항목 |
+|---|------------|
+| 1 | TagAliasCache.set: tag name에 null byte → throw |
+| 2 | findFirstMissRow: 빈 rows → `{ firstMissIdx: null, err: null }` |
+| 3 | findFirstMissRow: 모든 rows 존재 → `{ firstMissIdx: null, err: null }` |
+| 4 | findFirstMissRow: 첫 번째(idx=0) miss → `{ firstMissIdx: 0, err: null }` |
+| 5 | findFirstMissRow: 중간(idx=1) miss → `{ firstMissIdx: 1, err: null }` |
+| 6 | findFirstMissRow: NAME 컬럼 없는 schema → `{ firstMissIdx: null, err }` |
+| 7 | findFirstMissRow: execute 에러 → `{ firstMissIdx: null, err }` |
+
+### retry.test.js — RetryHandler (15개)
 
 | # | 테스트 항목 |
 |---|------------|
@@ -101,71 +116,38 @@ node --test tests/unit/*.test.js
 | 13 | sleepOrShutdown: 타임아웃 → "timeout" |
 | 14 | sleepOrShutdown: shutdown flag set → "shutdown" |
 | 15 | sleepOrShutdown: 이미 shutdown이면 즉시 반환 |
-| 16~19 | (추가 케이스 4개) |
 
-### integrity_checker.test.js — IntegrityChecker (4개)
-
-| # | 테스트 항목 |
-|---|------------|
-| 1 | batchExists: 빈 rows → existSet 비어있음, err=null |
-| 2 | batchExists: rows > 500 → `{ err }` 반환 (throw 아님) |
-| 3 | batchExists: 존재하는 row → existSet에 key 포함 |
-| 4 | batchExists: canonical에 null byte → existKey에서 throw |
-
-### table_info.test.js — TableSchema / TagAliasCache (13개)
-
-| # | 테스트 항목 |
-|---|------------|
-| 1 | TableSchema — 컬럼 구조 빌드 및 조회 |
-| 2 | Column — 메타정보 저장 |
-| 3 | TagAliasCache.resolve — cache hit / miss / drop_not_found / retry_error |
-| 4 | TagAliasCache.load — 전체 alias 일괄 로드 |
-| 5 | buildTagSchema — TAG 테이블 컬럼 분석 |
-| 6 | buildLogSchema — LOG 테이블 컬럼 분석 |
-| 7~13 | (추가 케이스 7개) |
-
-### target_writer.test.js — Writer (6개)
-
-| # | 테스트 항목 |
-|---|------------|
-| 1 | Scenario A: 대상 전용 컬럼 → safeNull 패딩 |
-| 2 | Scenario C: int64 컬럼 → number를 BigInt로 변환 |
-| 3 | Scenario D: 다양한 타입의 대상 전용 컬럼 → safeNull |
-| 4 | Scenario E: metadata 컬럼 → safeNull 패딩 (TAG 테이블) |
-| 5 | Scenario G: Infinity / NaN → safeNull(0.0) + warn 로그 |
-| 6 | Scenario F: null 소스 값 → safeNull 대체 |
-
-### worker.test.js — Worker 상태 머신 (19개)
+### worker.test.js — Worker 상태 머신 + E2E mock 시나리오 (27개)
 
 | suite | # | 테스트 항목 |
 |-------|---|------------|
-| RESOLVE_START | 1 | 체크포인트 없음 + start_mode=full → startRid=0n으로 시작 후 빈 배치 대기 후 shutdown |
-| RESOLVE_START | 2 | 체크포인트 있음 → last_success_rid에서 재개 |
-| STEADY_REPLICATION | 3 | TAG 배치 처리 → checkpoint가 maxRid+1로 갱신됨 |
-| STEADY_REPLICATION | 4 | drop_not_found → checkpoint = maxRidInBatch (all-drop 케이스) |
+| RESOLVE_START | 1 | 체크포인트 없음 + start_mode=full → startRid=0n으로 시작 |
+| RESOLVE_START | 2 | 체크포인트 있음 → last_success_rid+1에서 재개 |
+| STEADY_REPLICATION | 3 | TAG 배치 처리 → checkpoint = maxRidInBatch |
+| STEADY_REPLICATION | 4 | drop_not_found → checkpoint = maxRidInBatch (1행 남는 케이스) |
 | STEADY_REPLICATION | 5 | LOG 테이블 → tag_id 변환 없이 그대로 append |
-| STARTUP_INTEGRITY | 6 | integrity.enabled=false → STARTUP_INTEGRITY 미실행, 즉시 STEADY 진입 |
-| STARTUP_INTEGRITY | 7 | TAG + checkpoint존재 + integrity.enabled → STARTUP_INTEGRITY 수행, first_miss 발견 후 STEADY |
-| STARTUP_INTEGRITY | 8 | LOG 테이블 → checkpoint 있어도 STARTUP_INTEGRITY 미수행 |
-| non-retryable | 9 | readAfterRid non-retryable 에러 → Worker 즉시 종료 (retry 없음) |
-| non-retryable | 10 | Writer.append non-retryable 에러 → Worker 즉시 종료 |
-| Job/_discoverMapping | — | 2개 (connect 오류 → null, discover 성공) |
-| Job/AbortController | — | 2개 (signal.aborted 즉시 반환, Worker 에러 → abort 전파) |
-| Job/재시작 | — | 1개 (에러 → abort → 재시작 후 shutdown) |
-| Replicator/run() | — | 4개 (disabled job 제외, 빈 jobs, 병렬 실행, job 에러 격리) |
-
-### e2e_scenarios.test.js — E2E 시나리오 mock 테스트 (8개)
-
-| suite | 테스트 항목 |
-|-------|------------|
-| E2E-02 | SIGKILL 후 재시작 — 대상에 이미 존재하는 행은 skipped_exists로 건너뜀 |
-| E2E-03 | SIGTERM graceful — 배치 처리 도중 shutdown → 현재 배치 완료 후 cp 갱신 |
-| E2E-03 | SLEEP 중 shutdown → 즉시 깨어나 종료 |
-| E2E-05 | LOG + cp존재 + integrity=true → STARTUP_INTEGRITY 미수행, tag_id 변환 없이 기록 |
-| E2E-06 | append 첫 호출 실패(retryable) → retry 후 성공, 정상 복제 |
-| E2E-06 | retry max_attempts 초과 → mapping skip (Worker 종료) |
-| E2E-07 | cp 파일 손상 → start_mode=full → startRid=0n, stage=checkpoint_io 로그 |
-| E2E-07 | (추가 케이스 1개) |
+| STARTUP_INTEGRITY | 6 | integrity.enabled=false → STARTUP_INTEGRITY 미실행 |
+| STARTUP_INTEGRITY | 7 | TAG + cp존재 + integrity.enabled → first_miss 발견 후 STEADY |
+| STARTUP_INTEGRITY | 8 | LOG → checkpoint 있어도 STARTUP_INTEGRITY 미수행 |
+| non-retryable | 9 | read non-retryable 에러 → Worker 즉시 종료 |
+| non-retryable | 10 | append non-retryable 에러 → Worker 즉시 종료 |
+| Job/_discoverMapping | 11 | connect 오류 → null 반환 |
+| Job/_discoverMapping | 12 | discover 성공 → `{ tableType, dataTables, srcSchema, dstSchema }` |
+| Job/AbortController | 13 | signal.aborted=true → open 호출 없이 즉시 반환 |
+| Job/AbortController | 14 | Worker_0 에러 → abort → Worker_1의 signal.aborted=true |
+| Job/재시작 | 15 | Worker 에러 → abort → 재시작 후 shutdown → 정상 종료 |
+| Replicator/run() | 16 | disabled job은 실행되지 않음 |
+| Replicator/run() | 17 | enabled job 없음 → 즉시 완료 |
+| Replicator/run() | 18 | 여러 job 병렬 실행 — 독립적 실행 및 완료 |
+| Replicator/run() | 19 | 한 job 에러 → 다른 job 실행에 영향 없음 |
+| E2E/TAG 기본 | 20 | full start → steady: startRid=0n, 배치 후 checkpoint 갱신 |
+| E2E/LOG 기본 | 21 | LOG: tag_id 변환 없이 그대로 append |
+| E2E/resume | 22 | checkpoint 저장 후 재시작 → startRid = last_success_rid + 1 |
+| E2E/drop_not_found | 23 | read()가 drop_not_found 제외한 rows 반환 확인 |
+| E2E/read 에러 | 24 | read 에러 → retry 없이 즉시 Worker 종료 |
+| E2E/append retry | 25 | append 에러(retryable) → retry 후 복구 |
+| E2E/shutdown | 26 | shutdown 신호 → 즉시 종료 |
+| E2E/poll 대기 | 27 | 빈 배치 → poll interval 대기 후 재읽기 |
 
 ---
 
@@ -175,7 +157,7 @@ node --test tests/unit/*.test.js
 node --test tests/integration/tag_replication.test.js
 ```
 
-**대상 DB**: 192.168.1.189:5656 / 실행 시간: ~51초
+**대상 DB**: 127.0.0.1:5656 / 실행 시간: ~51초
 
 | # | 테스트 ID | 항목 | 결과 |
 |---|-----------|------|------|
@@ -191,17 +173,6 @@ node --test tests/integration/tag_replication.test.js
 | 10 | TAG-09 | STARTUP_INTEGRITY — 재시작 시 중복 없이 복제 | pass |
 | 11 | TAG-10 | LOG 테이블은 cp+integrity=true여도 STARTUP_INTEGRITY 미수행 | pass |
 
-### 주요 검증 내용
-
-- **TAG-01**: 소스 3행 삽입 → 대상 3행 복제, sensor_a/b/c value 정확도 확인, cp 저장 확인
-- **TAG-02**: SRC 추가 컬럼(quality DOUBLE)이 DST에 없을 때 src-only 컬럼 검출 → 복제 스킵 → DST 0행, cp 미저장
-- **TAG-03**: DST 추가 컬럼(temperature DOUBLE)이 SRC에 없을 때 → 0.0(safeNull)으로 패딩하여 복제
-- **TAG-04**: 동일 컬럼명 타입 불일치(DOUBLE↔VARCHAR) → Machbase 암묵적 변환으로 2행 복제 성공
-- **TAG-07**: 2차 재시작 시 cp 이후 신규 데이터(batch2_a)만 추가 복제, 총 3행 확인
-- **TAG-08**: prefix="SRC_" 적용 → DST name에 "SRC_sensor_a", "SRC_sensor_b" 확인
-- **TAG-09**: 1차 복제 → 2차 재시작 시 STARTUP_INTEGRITY 수행 → 대상 확인(all confirmed) → STEADY → 중복 없이 2행 유지
-- **TAG-10**: LOG 테이블 + integrity=true → STARTUP_INTEGRITY 로그 미출력 확인
-
 ---
 
 ## 통합 테스트 — LOG 테이블 (8개 pass)
@@ -210,7 +181,7 @@ node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
 ```
 
-**대상 DB**: 192.168.1.189:5656 / 실행 시간: ~7초
+**대상 DB**: 127.0.0.1:5656 / 실행 시간: ~7초
 
 | # | 테스트 ID | 항목 | 결과 |
 |---|-----------|------|------|
@@ -223,20 +194,42 @@ node --test tests/integration/log_replication.test.js
 | 7 | LOG-06 | start_mode=now — 기존 데이터 복제 안 함 | pass |
 | 8 | LOG-07 | cp 재시작 — cp 이후 데이터만 복제, cp 갱신 | pass |
 
-### 주요 검증 내용
+---
 
-- **LOG-01**: 소스 3행 삽입 → 대상 3행 복제, sensor_a/b/c value 정확도 확인, last_success_rid > 0 확인
-- **LOG-02**: SRC 추가 컬럼(quality DOUBLE)이 DST에 없을 때 → 에러 throw 확인, DST 0행, cp 미저장
-- **LOG-03**: DST 추가 컬럼(status VARCHAR) → ''(safeNull)으로 패딩하여 복제
-- **LOG-04**: 동일 컬럼명 타입 불일치(DOUBLE↔VARCHAR) → 2행 복제 확인
-- **LOG-07**: 1차 2행 복제 후 cp 저장, 신규 1행 추가 후 2차 재시작 → 총 3행, cp 갱신(rid 증가) 확인
+## 통합 테스트 — LogTable/TagTable/TagDataTable (17개)
+
+```
+node --test tests/integration/table.test.js
+```
+
+**대상 DB**: 127.0.0.1:5656
+
+| # | 테스트 ID | 항목 |
+|---|-----------|------|
+| 1 | cleanup | 이전 테스트에서 남은 REPLI_TBL_ 테이블 정리 |
+| 2 | LogTable-01 | getSchema() — M$SYS_COLUMNS 조회 |
+| 3 | LogTable-02 | getSchema() — TableSchema 반환 |
+| 4 | LogTable-03 | getMaxRid() — 빈 테이블은 0n 이하 |
+| 5 | LogTable-04 | append() — 데이터 삽입 후 read()로 검증 |
+| 6 | LogTable-05 | read() — RID 기반 배치 읽기 |
+| 7 | LogTable-06 | getMaxRid() — 데이터 삽입 후 양수 |
+| 8 | TagTable-01 | getSchema() — META + DATA 컬럼 조합 |
+| 9 | TagTable-02 | getDataTables() — 파티션 목록 반환 |
+| 10 | TagTable-03 | append() — 데이터 삽입 후 조회 검증 |
+| 11 | TagTable-04 | metadata 컬럼 포함 append — location 값 저장 확인 |
+| 12 | TagDataTable-05 | loadTagAliasCache() — _TAG_META 로드 후 내부 캐시 구성 |
+| 13 | TagDataTable-06 | read() — loadTagAliasCache 후 NAME이 canonical name으로 반환 |
+| 14 | TagDataTable-01 | getMaxRid() — 빈 파티션은 BigInt 반환 |
+| 15 | TagDataTable-02 | read() — 데이터 삽입 후 RID 기반 읽기 |
+| 16 | TagDataTable-03 | getMaxRid() — 데이터 삽입 후 양수 |
+| 17 | TagDataTable-04 | read() — metadata 컬럼은 결과에 포함되지 않음 |
 
 ---
 
 ## 테스트 실행 명령
 
 ```bash
-# 단위 테스트 전체 (111개)
+# 단위 테스트 전체 (92개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
@@ -245,12 +238,10 @@ node --test tests/unit/client.test.js
 node --test tests/unit/config.test.js
 node --test tests/unit/integrity_checker.test.js
 node --test tests/unit/retry.test.js
-node --test tests/unit/table_info.test.js
-node --test tests/unit/target_writer.test.js
 node --test tests/unit/worker.test.js
-node --test tests/unit/e2e_scenarios.test.js
 
-# 통합 테스트 (실 DB 연결 필요 — 192.168.1.189:5656)
+# 통합 테스트 (실 DB 연결 필요 — 127.0.0.1:5656)
 node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
+node --test tests/integration/table.test.js
 ```

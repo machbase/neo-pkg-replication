@@ -10,9 +10,9 @@ const { toInt64 } = require('./client.js');
  * @returns {*}
  */
 function _toCell(col, val) {
-  if (val == null) return col.columnType.safeNull;
-  if (col.columnType.type === 'int64') return toInt64(val);
-  if (typeof val === 'number' && !isFinite(val)) return col.columnType.safeNull;
+  if (val == null) return col.safeNull();
+  if (col.dataType() === 'int64') return toInt64(val);
+  if (typeof val === 'number' && !isFinite(val)) return col.safeNull();
   return val;
 }
 

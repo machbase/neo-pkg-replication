@@ -4,7 +4,7 @@
  * db/table.js 통합 테스트
  *
  * 전제 조건:
- *   - 192.168.1.189:5656에 Machbase가 실행 중이어야 함
+ *   - 192.168.1.183:5656에 Machbase가 실행 중이어야 함
  *   - SYS/MANAGER 계정으로 접속 가능해야 함
  */
 
@@ -16,7 +16,7 @@ const { MachbaseClient } = require('../../db/client.js');
 // ─── 접속 설정 ────────────────────────────────────────────────────────────────
 
 const DB_CONFIG = {
-  host: '192.168.1.189',
+  host: '192.168.1.183',
   port: 5656,
   user: 'SYS',
   password: 'MANAGER',

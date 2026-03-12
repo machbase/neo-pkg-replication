@@ -129,15 +129,16 @@ _TAG_DATA_3  ──┘
 ## 테스트
 
 ```bash
-# 전체 단위 테스트 (111개)
+# 전체 단위 테스트 (92개)
 node --test tests/unit/*.test.js
 
-# 통합 테스트 (실 DB 연결 필요 — 192.168.1.189:5656)
+# 통합 테스트 (실 DB 연결 필요 — 127.0.0.1:5656)
 node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
+node --test tests/integration/table.test.js
 ```
 
-현재 111개 단위 테스트 + 19개 통합 테스트 전체 통과.
+현재 92개 단위 테스트 pass. 통합 테스트는 실 DB 연결 시 pass.
 
 ## 로그 형식
 
@@ -171,10 +172,8 @@ repli-js/
 │   └── retry.js         # 재시도 유틸리티
 ├── db/
 │   ├── client.js        # MachbaseClient (endian 우회 포함)
-│   ├── schema_builder.js # 스키마 빌드 함수
-│   ├── reader.js        # 소스 DB 읽기 (conn 소유)
-│   ├── writer.js        # 대상 DB 쓰기 (conn 소유)
-│   └── integrity_checker.js # 재시작 정합성 검사
+│   ├── stream.js        # MachbaseStream, _toCell (append 스트림 래퍼)
+│   └── table.js         # LogTable, TagTable, TagDataTable, TagAliasCache
 ├── worker/
 │   └── worker.js        # Worker 상태 머신
 ├── checkpoint/
@@ -184,6 +183,6 @@ repli-js/
 │   └── ENDIAN_BUG.md    # @machbase/ts-client endian 버그 상세 분석
 ├── checkpoints/         # 런타임 생성 — cp 파일 저장 위치
 └── tests/
-    ├── unit/            # 단위 테스트 (111개)
-    └── integration/     # 통합 테스트 (19개, 실 DB 필요)
+    ├── unit/            # 단위 테스트 (92개)
+    └── integration/     # 통합 테스트 (36개, 실 DB 필요)
 ```

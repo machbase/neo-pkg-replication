@@ -1,7 +1,7 @@
 'use strict';
 
 const { MachbaseClient } = require('./db/client.js');
-const { buildTagSchema, buildLogSchema } = require('./db/schema_builder.js');
+const { TagTable, LogTable } = require('./db/table.js');
 const { Worker } = require('./worker/worker.js');
 const { getInstance: getLogger } = require('./logger/logger.js');
 
@@ -30,22 +30,6 @@ class Job {
   }
 
   /**
-   * 대상 DB에 단기 접속하여 fn(conn) 실행 후 즉시 반납
-   * @param {object} dstConfig
-   * @param {Function} fn - async (conn) => result
-   * @returns {*} fn의 반환값, 또는 접속 실패 시 null
-   */
-  async _withDstConn(dstConfig, fn) {
-    const tmpDstConn = new MachbaseClient(dstConfig);
-    try {
-      await tmpDstConn.connect();
-      return await fn(tmpDstConn);
-    } finally {
-      await tmpDstConn.close().catch(() => {});
-    }
-  }
-
-  /**
    * mapping의 소스/대상 스키마 수집 (단기 커넥션 사용 후 즉시 반납)
    * @returns {{ tableType, dataTables, srcSchema, dstSchema }}|null  null = 실패
    */
@@ -54,23 +38,21 @@ class Job {
     const srcConfig = servers[mapping.source.server];
     const dstConfig = servers[mapping.target.server];
 
-    let sourceConn;
-    try {
-      sourceConn = new MachbaseClient(srcConfig);
-      await sourceConn.connect();
-    } catch (err) {
-      getLogger().error('job_runner', { ...logCtx, msg: `source connect failed: ${err.message}` });
-      return null;
-    }
-
     let tableType;
     let dataTables;
     let srcSchema;
     let dstSchema;
 
     try {
-      const result = await sourceConn.selectTableType(mapping.source.table);
-      tableType = result.type;
+      // 테이블 타입 조회 (단기 커넥션)
+      const tmpConn = new MachbaseClient(srcConfig);
+      try {
+        await tmpConn.connect();
+        const result = await tmpConn.selectTableType(mapping.source.table);
+        tableType = result.type;
+      } finally {
+        await tmpConn.close().catch(() => {});
+      }
 
       if (tableType === 'UNSUPPORTED') {
         getLogger().error('job_runner', { ...logCtx, msg: `unsupported table type, skipping mapping` });
@@ -78,45 +60,61 @@ class Job {
       }
 
       if (tableType === 'TAG') {
-        const tables = await sourceConn.selectTagDataTables(mapping.source.table);
-        if (tables.length === 0) {
-          getLogger().error('job_runner', { ...logCtx, msg: `no data partitions found, skipping mapping` });
-          return null;
+        // 소스 스키마
+        const srcTagTable = new TagTable(mapping.source.table, srcConfig);
+        try {
+          await srcTagTable.client.connect();
+          const srcTables = await srcTagTable.getDataTables();
+          if (srcTables.length === 0) {
+            getLogger().error('job_runner', { ...logCtx, msg: `no data partitions found, skipping mapping` });
+            return null;
+          }
+          dataTables = srcTables.map(t => t.data_table);
+          srcSchema = await srcTagTable.getSchema(srcTables[0].table_id);
+        } finally {
+          await srcTagTable.client.close().catch(() => {});
         }
-        dataTables = tables.map(t => t.data_table);
 
-        srcSchema = await buildTagSchema(sourceConn, mapping.source.table, tables[0].table_id);
         if (!this._validateSourceColumns(mapping, srcSchema, logCtx)) return null;
 
-        dstSchema = await this._withDstConn(dstConfig, async (conn) => {
-          const dstTables = await conn.selectTagDataTables(mapping.target.table);
+        // 대상 스키마
+        const dstTagTable = new TagTable(mapping.target.table, dstConfig);
+        try {
+          await dstTagTable.client.connect();
+          const dstTables = await dstTagTable.getDataTables();
           if (dstTables.length === 0) {
             getLogger().error('job_runner', { ...logCtx, msg: `no target data partitions found, skipping mapping` });
             return null;
           }
-          return buildTagSchema(conn, mapping.target.table, dstTables[0].table_id);
-        });
-        if (!dstSchema) return null;
+          dstSchema = await dstTagTable.getSchema(dstTables[0].table_id);
+        } finally {
+          await dstTagTable.client.close().catch(() => {});
+        }
       } else {
         // LOG: 논리 테이블을 data_table로 사용
         dataTables = [mapping.source.table];
 
-        srcSchema = await buildLogSchema(sourceConn, mapping.source.table);
+        const srcLogTable = new LogTable(mapping.source.table, srcConfig);
+        try {
+          await srcLogTable.client.connect();
+          srcSchema = await srcLogTable.getSchema();
+        } finally {
+          await srcLogTable.client.close().catch(() => {});
+        }
+
         if (!this._validateSourceColumns(mapping, srcSchema, logCtx)) return null;
 
-        dstSchema = await this._withDstConn(dstConfig, (conn) =>
-          buildLogSchema(conn, mapping.target.table)
-        );
-        if (!dstSchema) return null;
+        const dstLogTable = new LogTable(mapping.target.table, dstConfig);
+        try {
+          await dstLogTable.client.connect();
+          dstSchema = await dstLogTable.getSchema();
+        } finally {
+          await dstLogTable.client.close().catch(() => {});
+        }
       }
     } catch (err) {
       getLogger().error('job_runner', { ...logCtx, msg: `discover failed: ${err.message}` });
       return null;
-    } finally {
-      // DISCOVER 완료 후 sourceConn 즉시 반납
-      await sourceConn.close().catch(err =>
-        getLogger().error('job_runner', { ...logCtx, msg: `sourceConn.close after discover failed: ${err.message}` })
-      );
     }
 
     // src에만 있는 컬럼 검출 — metadata 카테고리는 제외 (Writer가 safeNull로 패딩)

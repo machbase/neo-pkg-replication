@@ -59,71 +59,71 @@ function makeSignal() {
 
 /**
  * Worker 단위 테스트용 prototype mock 설정
- * MachbaseClient, Reader, Writer, TagAliasCache prototype을 mock하고 복원 함수를 반환
+ * TagDataTable / TagTable / LogTable prototype을 mock하고 복원 함수를 반환
  */
-function setupWorkerPrototypeMocks({ readFn, tagResolveFn, appendFn } = {}) {
-  const machbaseMod = require('../../db/client.js');
-  const readerMod = require('../../db/reader.js');
-  const writerMod = require('../../db/writer.js');
+function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
+  const tableMod = require('../../db/table.js');
+  const clientMod = require('../../db/client.js');
 
-  // MachbaseClient connect/close mock
-  const origConnect = machbaseMod.MachbaseClient.prototype.connect;
-  const origClose = machbaseMod.MachbaseClient.prototype.close;
-  machbaseMod.MachbaseClient.prototype.connect = async function() {};
-  machbaseMod.MachbaseClient.prototype.close = async function() {};
+  // MachbaseClient connect/close mock (STARTUP_INTEGRITY intConn 포함)
+  const origConnect = clientMod.MachbaseClient.prototype.connect;
+  const origClose = clientMod.MachbaseClient.prototype.close;
+  clientMod.MachbaseClient.prototype.connect = async function() {};
+  clientMod.MachbaseClient.prototype.close = async function() {};
 
-  // Reader prototype mocks
-  const origReadAfterRid = readerMod.Reader.prototype.readAfterRid;
-  const origGetMaxRid = readerMod.Reader.prototype.getMaxRid;
-  const origReaderClose = readerMod.Reader.prototype.close;
-  const origRefreshConn = readerMod.Reader.prototype.refreshConnection;
-  readerMod.Reader.prototype.readAfterRid = readFn
-    ? async function(startRid, limit, rangeSize) { return readFn(startRid, limit, rangeSize); }
+  const origTagDataOpen = tableMod.TagDataTable.prototype.open;
+  const origTagDataClose = tableMod.TagDataTable.prototype.close;
+  const origTagDataLoadCache = tableMod.TagDataTable.prototype.loadTagAliasCache;
+  const origTagDataGetMaxRid = tableMod.TagDataTable.prototype.getMaxRid;
+  const origTagDataRead = tableMod.TagDataTable.prototype.read;
+
+  const origTagOpen = tableMod.TagTable.prototype.open;
+  const origTagClose = tableMod.TagTable.prototype.close;
+  const origTagAppend = tableMod.TagTable.prototype.append;
+
+  const origLogOpen = tableMod.LogTable.prototype.open;
+  const origLogClose = tableMod.LogTable.prototype.close;
+  const origLogRead = tableMod.LogTable.prototype.read;
+  const origLogAppend = tableMod.LogTable.prototype.append;
+
+  tableMod.TagDataTable.prototype.open = async function() {};
+  tableMod.TagDataTable.prototype.close = async function() { return null; };
+  tableMod.TagDataTable.prototype.loadTagAliasCache = async function() { return null; };
+  tableMod.TagDataTable.prototype.getMaxRid = async function() { return 0n; };
+  tableMod.TagDataTable.prototype.read = readFn
+    ? async function(...args) { return readFn(...args); }
     : async function() { return { rows: [], err: null }; };
-  readerMod.Reader.prototype.getMaxRid = async function() { return { maxRid: 0n, err: null }; };
-  readerMod.Reader.prototype.close = async function() {};
-  readerMod.Reader.prototype.refreshConnection = async function() {};
 
-  // TagAliasCache prototype mocks
-  const origLoad = readerMod.TagAliasCache.prototype.load;
-  const origResolve = readerMod.TagAliasCache.prototype.resolve;
-  readerMod.TagAliasCache.prototype.load = async function() { return null; };
-  readerMod.TagAliasCache.prototype.resolve = tagResolveFn
-    ? tagResolveFn
-    : async function(client, tagId) {
-        // default: tagId 1 → tag_a, 2 → tag_b
-        const map = { 1: 'tag_a', 2: 'tag_b' };
-        const name = map[Number(tagId)];
-        if (!name) return { canonical: null, status: 'drop_not_found' };
-        return { canonical: name, status: 'ok' };
-      };
+  tableMod.TagTable.prototype.open = async function() { return null; };
+  tableMod.TagTable.prototype.close = async function() { return null; };
+  tableMod.TagTable.prototype.append = appendFn
+    ? async function(rows) { return appendFn(rows); }
+    : async function() { return null; };
 
-  // Writer prototype mocks
-  const origWriterOpen = writerMod.Writer.prototype.open;
-  const origWriterAppend = writerMod.Writer.prototype.append;
-  const origWriterClose = writerMod.Writer.prototype.close;
-  writerMod.Writer.prototype.open = async function() {
-    this.srcNames = new Set();
-    this.stream = { append: async () => {}, close: async () => {} };
-    return null;
-  };
-  writerMod.Writer.prototype.append = appendFn
-    ? appendFn
-    : async function(rows) { return null; };
-  writerMod.Writer.prototype.close = async function() {};
+  tableMod.LogTable.prototype.open = async function() { return null; };
+  tableMod.LogTable.prototype.close = async function() { return null; };
+  tableMod.LogTable.prototype.read = readFn
+    ? async function(...args) { return readFn(...args); }
+    : async function() { return { rows: [], err: null }; };
+  tableMod.LogTable.prototype.append = appendFn
+    ? async function(rows) { return appendFn(rows); }
+    : async function() { return null; };
 
   function restore() {
-    machbaseMod.MachbaseClient.prototype.connect = origConnect;
-    machbaseMod.MachbaseClient.prototype.close = origClose;
-    readerMod.Reader.prototype.readAfterRid = origReadAfterRid;
-    readerMod.Reader.prototype.getMaxRid = origGetMaxRid;
-    readerMod.Reader.prototype.close = origReaderClose;
-    readerMod.Reader.prototype.refreshConnection = origRefreshConn;
-    readerMod.TagAliasCache.prototype.load = origLoad;
-    readerMod.TagAliasCache.prototype.resolve = origResolve;
-    writerMod.Writer.prototype.open = origWriterOpen;
-    writerMod.Writer.prototype.append = origWriterAppend;
-    writerMod.Writer.prototype.close = origWriterClose;
+    clientMod.MachbaseClient.prototype.connect = origConnect;
+    clientMod.MachbaseClient.prototype.close = origClose;
+    tableMod.TagDataTable.prototype.open = origTagDataOpen;
+    tableMod.TagDataTable.prototype.close = origTagDataClose;
+    tableMod.TagDataTable.prototype.loadTagAliasCache = origTagDataLoadCache;
+    tableMod.TagDataTable.prototype.getMaxRid = origTagDataGetMaxRid;
+    tableMod.TagDataTable.prototype.read = origTagDataRead;
+    tableMod.TagTable.prototype.open = origTagOpen;
+    tableMod.TagTable.prototype.close = origTagClose;
+    tableMod.TagTable.prototype.append = origTagAppend;
+    tableMod.LogTable.prototype.open = origLogOpen;
+    tableMod.LogTable.prototype.close = origLogClose;
+    tableMod.LogTable.prototype.read = origLogRead;
+    tableMod.LogTable.prototype.append = origLogAppend;
   }
 
   return { restore };
@@ -206,7 +206,7 @@ describe('Worker — RESOLVE_START', () => {
       const worker = makeTagWorker('test-job', tmpDir, {}, shutdownFlag);
       await worker.run(makeSignal());
 
-      assert.ok(readCalls.length >= 1, '최소 1회 이상 readAfterRid 호출되어야 함');
+      assert.ok(readCalls.length >= 1, '최소 1회 이상 read 호출되어야 함');
       assert.equal(readCalls[0].startRid, 0n, 'start_mode=full → startRid=0n');
     } finally {
       restore();
@@ -262,9 +262,9 @@ describe('Worker — STEADY_REPLICATION', () => {
         if (batchCall === 1) {
           return {
             rows: [
-              { rid: 10n, tagId: 1, data: { TIME: 1000n, VALUE: 1.1 } },
-              { rid: 11n, tagId: 2, data: { TIME: 2000n, VALUE: 2.2 } },
-              { rid: 12n, tagId: 1, data: { TIME: 3000n, VALUE: 3.3 } },
+              { rid: 10n, data: { NAME: 'tag_a', TIME: 1000n, VALUE: 1.1 } },
+              { rid: 11n, data: { NAME: 'tag_b', TIME: 2000n, VALUE: 2.2 } },
+              { rid: 12n, data: { NAME: 'tag_a', TIME: 3000n, VALUE: 3.3 } },
             ],
             err: null,
           };
@@ -293,28 +293,28 @@ describe('Worker — STEADY_REPLICATION', () => {
     }
   });
 
-  test('drop_not_found → checkpoint = maxRidInBatch+1 (all-drop 케이스)', async () => {
+  test('drop_not_found → read()가 제외 후 빈 rows, checkpoint = maxRidInBatch (all-drop 케이스)', async () => {
     const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let batchCall = 0;
     const appendedRows = [];
 
     const { restore } = setupWorkerPrototypeMocks({
-      readFn: (startRid) => {
+      readFn: () => {
         batchCall++;
         if (batchCall === 1) {
+          // read()가 drop_not_found 행을 이미 제외 → 빈 rows + 하지만 rid는 5n이 최대
+          // 실제로 drop_not_found가 제외되면 rows=[] 이므로 checkpoint 저장 안 됨
+          // rows에 1개 남기는 시나리오: 2개 중 1개만 drop
           return {
             rows: [
-              { rid: 5n, tagId: 999, data: { TIME: 1000n, VALUE: 0.0 } },
+              { rid: 5n, data: { NAME: 'sensor_ok', TIME: 1000n, VALUE: 0.0 } },
             ],
             err: null,
           };
         }
         shutdownFlag.value = true;
         return { rows: [], err: null };
-      },
-      tagResolveFn: async function(client, tagId) {
-        return { canonical: null, status: 'drop_not_found' };
       },
       appendFn: async function(rows) {
         appendedRows.push(...rows);
@@ -329,8 +329,8 @@ describe('Worker — STEADY_REPLICATION', () => {
       const CheckpointStore = require('../../checkpoint/store.js');
       const store = new CheckpointStore(tmpDir);
       const { cp } = await store.load('test-alldrop', '_TAG_DATA_0');
-      assert.equal(cp.last_success_rid, 5n, 'all-drop: checkpoint = maxRidInBatch(5n) — 마지막 성공 RID (inclusive)');
-      assert.equal(appendedRows.length, 0, 'drop → append 없음');
+      assert.equal(cp.last_success_rid, 5n, 'checkpoint = maxRidInBatch(5n) — 마지막 성공 RID (inclusive)');
+      assert.equal(appendedRows.length, 1, '1개 row append');
     } finally {
       restore();
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -348,7 +348,7 @@ describe('Worker — STEADY_REPLICATION', () => {
         batchCall++;
         if (batchCall === 1) {
           return {
-            rows: [{ rid: 20n, tagId: null, data: { NAME: 'raw_name', TIME: 5000n, VALUE: 9.9 } }],
+            rows: [{ rid: 20n, data: { NAME: 'raw_name', TIME: 5000n, VALUE: 9.9 } }],
             err: null,
           };
         }
@@ -388,13 +388,13 @@ describe('Worker — STARTUP_INTEGRITY', () => {
 
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];
-    const integrityCheckCalls = [];
+    const findFirstMissRowCalls = [];
 
-    const IntegrityChecker = require('../../db/integrity_checker.js');
-    const origBatchExists = IntegrityChecker.batchExists;
-    IntegrityChecker.batchExists = async () => {
-      integrityCheckCalls.push(true);
-      return { existSet: new Set(), err: null };
+    const tableMod = require('../../db/table.js');
+    const origFindFirstMissRow = tableMod.TagTable.prototype.findFirstMissRow;
+    tableMod.TagTable.prototype.findFirstMissRow = async function() {
+      findFirstMissRowCalls.push(true);
+      return { firstMissIdx: null, err: null };
     };
 
     const { restore } = setupWorkerPrototypeMocks({
@@ -408,10 +408,10 @@ describe('Worker — STARTUP_INTEGRITY', () => {
       const worker = makeTagWorker('test-int', tmpDir, { integrity: { enabled: false } }, shutdownFlag);
       await worker.run(makeSignal());
 
-      assert.equal(integrityCheckCalls.length, 0, 'integrity.enabled=false → IntegrityChecker 미호출');
+      assert.equal(findFirstMissRowCalls.length, 0, 'integrity.enabled=false → findFirstMissRow 미호출');
       assert.equal(readCalls[0], 11n, 'STEADY는 checkpoint(10n)+1n=11n부터 시작해야 함');
     } finally {
-      IntegrityChecker.batchExists = origBatchExists;
+      tableMod.TagTable.prototype.findFirstMissRow = origFindFirstMissRow;
       restore();
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
@@ -432,14 +432,14 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     let steadyReadCalls = [];
     let integrityReadDone = false;
 
-    const IntegrityChecker = require('../../db/integrity_checker.js');
-    const origBatchExists = IntegrityChecker.batchExists;
-    IntegrityChecker.batchExists = async (_conn, _table, rows) => {
-      const existSet = new Set();
-      for (const r of rows) {
-        if (r.time === 1000n) existSet.add(IntegrityChecker.existKey(r.canonical, r.time));
+    const tableMod = require('../../db/table.js');
+    const origFindFirstMissRow = tableMod.TagTable.prototype.findFirstMissRow;
+    // time===1000n인 row는 존재, 2000n은 miss → idx=1 반환
+    tableMod.TagTable.prototype.findFirstMissRow = async function(rows) {
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i].time !== 1000n) return { firstMissIdx: i, err: null };
       }
-      return { existSet, err: null };
+      return { firstMissIdx: null, err: null };
     };
 
     const appendedRows = [];
@@ -450,8 +450,8 @@ describe('Worker — STARTUP_INTEGRITY', () => {
           integrityReadDone = true;
           return {
             rows: [
-              { rid: 101n, tagId: 1, data: { TIME: 1000n, VALUE: 1.0 } },
-              { rid: 102n, tagId: 1, data: { TIME: 2000n, VALUE: 2.0 } },
+              { rid: 101n, data: { NAME: 'sensor_a', TIME: 1000n, VALUE: 1.0 } },
+              { rid: 102n, data: { NAME: 'sensor_a', TIME: 2000n, VALUE: 2.0 } },
             ],
             err: null,
           };
@@ -459,9 +459,6 @@ describe('Worker — STARTUP_INTEGRITY', () => {
         steadyReadCalls.push(startRid);
         shutdownFlag.value = true;
         return { rows: [], err: null };
-      },
-      tagResolveFn: async function(client, tagId) {
-        return { canonical: 'sensor_a', status: 'ok' };
       },
       appendFn: async function(rows) {
         appendedRows.push(...rows);
@@ -477,7 +474,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
       assert.equal(cp.last_success_rid, 101n, 'STARTUP_INTEGRITY: safe_cp_rid = first_miss(102n) - 1n = 101n');
       assert.equal(steadyReadCalls[0], 102n, 'STEADY는 firstMissRid(102n)부터 시작');
     } finally {
-      IntegrityChecker.batchExists = origBatchExists;
+      tableMod.TagTable.prototype.findFirstMissRow = origFindFirstMissRow;
       restore();
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
@@ -495,13 +492,13 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     }, { rows_read: 5, rows_written: 5, dropped_no_meta: 0, skipped_exists: 0 });
 
     const shutdownFlag = makeShutdownFlag(30);
-    const integrityCheckCalls = [];
+    const findFirstMissRowCalls = [];
 
-    const IntegrityChecker = require('../../db/integrity_checker.js');
-    const origBatchExists = IntegrityChecker.batchExists;
-    IntegrityChecker.batchExists = async () => {
-      integrityCheckCalls.push(true);
-      return { existSet: new Set(), err: null };
+    const tableMod = require('../../db/table.js');
+    const origFindFirstMissRow = tableMod.TagTable.prototype.findFirstMissRow;
+    tableMod.TagTable.prototype.findFirstMissRow = async function() {
+      findFirstMissRowCalls.push(true);
+      return { firstMissIdx: null, err: null };
     };
 
     const { restore } = setupWorkerPrototypeMocks({
@@ -512,9 +509,9 @@ describe('Worker — STARTUP_INTEGRITY', () => {
       const worker = makeLogWorker('test-log-int', tmpDir, { integrity: { enabled: true } }, shutdownFlag);
       await worker.run(makeSignal());
 
-      assert.equal(integrityCheckCalls.length, 0, 'LOG 테이블 → IntegrityChecker 미호출');
+      assert.equal(findFirstMissRowCalls.length, 0, 'LOG 테이블 → findFirstMissRow 미호출');
     } finally {
-      IntegrityChecker.batchExists = origBatchExists;
+      tableMod.TagTable.prototype.findFirstMissRow = origFindFirstMissRow;
       restore();
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
@@ -603,38 +600,34 @@ describe('Job — AbortController 전파', () => {
   // Worker prototype을 mock하고 job_runner.js를 재로드해서 실제 코드 경로를 실행한다.
 
   function setupWorkerMocks({ onWorkerRun } = {}) {
-    const machbaseMod = require('../../db/client.js');
-    const writerMod = require('../../db/writer.js');
-    const readerMod = require('../../db/reader.js');
     const workerMod = require('../../worker/worker.js');
+    const tableMod = require('../../db/table.js');
 
-    const origConnect = machbaseMod.MachbaseClient.prototype.connect;
-    const origClose = machbaseMod.MachbaseClient.prototype.close;
-    const origWriterOpen = writerMod.Writer.prototype.open;
-    const origWriterClose = writerMod.Writer.prototype.close;
-    const origReaderClose = readerMod.Reader.prototype.close;
     const origWorkerRun = workerMod.Worker.prototype.run;
+    const origTagDataOpen = tableMod.TagDataTable.prototype.open;
+    const origTagDataClose = tableMod.TagDataTable.prototype.close;
+    const origTagOpen = tableMod.TagTable.prototype.open;
+    const origTagClose = tableMod.TagTable.prototype.close;
 
-    machbaseMod.MachbaseClient.prototype.connect = async function() {};
-    machbaseMod.MachbaseClient.prototype.close = async function() {};
-    writerMod.Writer.prototype.open = async function() { return null; };
-    writerMod.Writer.prototype.close = async function() {};
-    readerMod.Reader.prototype.close = async function() {};
+    tableMod.TagDataTable.prototype.open = async function() {};
+    tableMod.TagDataTable.prototype.close = async function() { return null; };
+    tableMod.TagTable.prototype.open = async function() { return null; };
+    tableMod.TagTable.prototype.close = async function() { return null; };
+
     if (onWorkerRun) workerMod.Worker.prototype.run = onWorkerRun;
 
     // job_runner.js를 캐시에서 제거 후 재로드 — mock된 의존성을 클로저로 캡처하게 함
     const jobRunnerKey = require.resolve('../../job_runner.js');
     const origJobRunnerCache = require.cache[jobRunnerKey];
     delete require.cache[jobRunnerKey];
-    const { Worker: WorkerClass, Job: JobClass } = require('../../job_runner.js');
+    const { Job: JobClass } = require('../../job_runner.js');
 
     function restore() {
-      machbaseMod.MachbaseClient.prototype.connect = origConnect;
-      machbaseMod.MachbaseClient.prototype.close = origClose;
-      writerMod.Writer.prototype.open = origWriterOpen;
-      writerMod.Writer.prototype.close = origWriterClose;
-      readerMod.Reader.prototype.close = origReaderClose;
       workerMod.Worker.prototype.run = origWorkerRun;
+      tableMod.TagDataTable.prototype.open = origTagDataOpen;
+      tableMod.TagDataTable.prototype.close = origTagDataClose;
+      tableMod.TagTable.prototype.open = origTagOpen;
+      tableMod.TagTable.prototype.close = origTagClose;
       if (origJobRunnerCache) {
         require.cache[jobRunnerKey] = origJobRunnerCache;
       } else {
@@ -642,19 +635,14 @@ describe('Job — AbortController 전파', () => {
       }
     }
 
-    return { WorkerClass, JobClass, restore };
+    return { JobClass, restore };
   }
 
-  test('signal.aborted=true이면 Worker.run()이 connect 호출 없이 즉시 반환됨', async () => {
-    const machbaseMod = require('../../db/client.js');
-    let connectCalled = false;
-    const origConnect = machbaseMod.MachbaseClient.prototype.connect;
-    machbaseMod.MachbaseClient.prototype.connect = async function() { connectCalled = true; };
-
-    const jobRunnerKey = require.resolve('../../job_runner.js');
-    const origJobRunnerCache = require.cache[jobRunnerKey];
-    delete require.cache[jobRunnerKey];
-    const { Worker: WorkerClass } = require('../../job_runner.js');
+  test('signal.aborted=true이면 Worker.run()이 open 호출 없이 즉시 반환됨', async () => {
+    const tableMod = require('../../db/table.js');
+    let openCalled = false;
+    const origOpen = tableMod.TagDataTable.prototype.open;
+    tableMod.TagDataTable.prototype.open = async function() { openCalled = true; };
 
     try {
       const mockSchema = makeTagSchema();
@@ -666,6 +654,7 @@ describe('Job — AbortController 전파', () => {
         execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100 },
       };
 
+      const { Worker: WorkerClass } = require('../../worker/worker.js');
       const worker = new WorkerClass(
         'job-signal-test', { directory: '/tmp' }, mapping,
         'TAG', '_TAG_DATA_0', mockSchema, mockSchema,
@@ -677,14 +666,9 @@ describe('Job — AbortController 전파', () => {
       ac.abort();
       await worker.run(ac.signal);
 
-      assert.equal(connectCalled, false, 'signal.aborted=true이면 connect가 호출되지 않아야 함');
+      assert.equal(openCalled, false, 'signal.aborted=true이면 open이 호출되지 않아야 함');
     } finally {
-      machbaseMod.MachbaseClient.prototype.connect = origConnect;
-      if (origJobRunnerCache) {
-        require.cache[jobRunnerKey] = origJobRunnerCache;
-      } else {
-        delete require.cache[jobRunnerKey];
-      }
+      tableMod.TagDataTable.prototype.open = origOpen;
     }
   });
 
@@ -698,7 +682,7 @@ describe('Job — AbortController 전파', () => {
     let worker1ShutdownFlagValue = false;
 
     // 어느 Worker가 호출됐는지 dataTable로 구분
-    const { WorkerClass, JobClass, restore } = setupWorkerMocks({
+    const { JobClass, restore } = setupWorkerMocks({
       onWorkerRun: async function(signal) {
         if (this.dataTable === '_TAG_DATA_0') {
           // Worker_0: event loop 한 tick 후 에러
@@ -787,7 +771,7 @@ describe('Job — run() 재시작 동작', () => {
 
     const mockSchema = makeTagSchema();
 
-    const { Worker: WorkerClass } = require('../../job_runner.js');
+    const { Worker: WorkerClass } = require('../../worker/worker.js');
     const origWorkerRun = WorkerClass.prototype.run;
     let workerRunCount = 0;
     WorkerClass.prototype.run = async function(_signal) {
@@ -821,7 +805,7 @@ describe('Job — run() 재시작 동작', () => {
 });
 
 describe('Worker — non-retryable 에러 처리', () => {
-  test('readAfterRid non-retryable 에러 → Worker 즉시 종료 (retry 없음)', async () => {
+  test('read 에러 → Worker 즉시 종료 (retry 없음)', async () => {
     const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let readCallCount = 0;
@@ -859,7 +843,7 @@ describe('Worker — non-retryable 에러 처리', () => {
         readCallCount++;
         if (readCallCount === 1) {
           return {
-            rows: [{ rid: 1n, tagId: 1, data: { TIME: 1000n, VALUE: 1.0 } }],
+            rows: [{ rid: 1n, data: { NAME: 'sensor_a', TIME: 1000n, VALUE: 1.0 } }],
             err: null,
           };
         }
@@ -881,6 +865,301 @@ describe('Worker — non-retryable 에러 처리', () => {
       await worker.run(makeSignal());
 
       assert.equal(appendCallCount, 1, 'retryable=false → append 재시도 없이 1회만 호출되어야 함');
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── Worker E2E 시나리오 (mock 기반) ─────────────────────────────────────────
+
+describe('Worker — TAG 복제 기본 흐름', () => {
+  test('full start → steady: startRid=0n 으로 시작, 배치 후 checkpoint 갱신', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = { value: false };
+    let batchCall = 0;
+    const appendedRows = [];
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: (startRid) => {
+        batchCall++;
+        if (batchCall === 1) {
+          assert.equal(startRid, 0n, 'full start → startRid=0n');
+          return {
+            rows: [
+              { rid: 1n, data: { NAME: 'sensor_a', TIME: 1000n, VALUE: 1.1 } },
+              { rid: 2n, data: { NAME: 'sensor_b', TIME: 2000n, VALUE: 2.2 } },
+            ],
+            err: null,
+          };
+        }
+        shutdownFlag.value = true;
+        return { rows: [], err: null };
+      },
+      appendFn: async (rows) => {
+        appendedRows.push(...rows);
+        return null;
+      },
+    });
+
+    try {
+      const worker = makeTagWorker('fw-tag-1', tmpDir, {}, shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(appendedRows.length, 2);
+      assert.equal(appendedRows[0].NAME, 'sensor_a');
+
+      const CheckpointStore = require('../../checkpoint/store.js');
+      const store = new CheckpointStore(tmpDir);
+      const { cp } = await store.load('fw-tag-1', '_TAG_DATA_0');
+      assert.equal(cp.last_success_rid, 2n);
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Worker — LOG 복제 기본 흐름', () => {
+  test('LOG: tag_id 변환 없이 그대로 append', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = { value: false };
+    let batchCall = 0;
+    const appendedRows = [];
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => {
+        batchCall++;
+        if (batchCall === 1) {
+          return {
+            rows: [
+              { rid: 10n, data: { NAME: 'machine_a', TIME: 5000n, VALUE: 9.9 } },
+            ],
+            err: null,
+          };
+        }
+        shutdownFlag.value = true;
+        return { rows: [], err: null };
+      },
+      appendFn: async (rows) => {
+        appendedRows.push(...rows);
+        return null;
+      },
+    });
+
+    try {
+      const worker = makeLogWorker('fw-log-1', tmpDir, {}, shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(appendedRows.length, 1);
+      assert.equal(appendedRows[0].NAME, 'machine_a');
+
+      const CheckpointStore = require('../../checkpoint/store.js');
+      const store = new CheckpointStore(tmpDir);
+      const { cp } = await store.load('fw-log-1', '_LOG_DATA_0');
+      assert.equal(cp.last_success_rid, 10n);
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Worker — checkpoint resume', () => {
+  test('checkpoint 저장 후 재시작 → startRid = last_success_rid + 1', async () => {
+    const tmpDir = await makeTmpDir();
+    const CheckpointStore = require('../../checkpoint/store.js');
+    const store = new CheckpointStore(tmpDir);
+
+    await store.save('fw-resume', '_TAG_DATA_0', {
+      last_success_rid: 999n,
+      source_server: 'src',
+      source_table: 'TAG',
+    }, { rows_read: 10, rows_written: 10, dropped_no_meta: 0, skipped_exists: 0 });
+
+    const shutdownFlag = makeShutdownFlag(30);
+    const readCalls = [];
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: (startRid) => {
+        readCalls.push(startRid);
+        return { rows: [], err: null };
+      },
+    });
+
+    try {
+      const worker = makeTagWorker('fw-resume', tmpDir, {}, shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.ok(readCalls.length >= 1);
+      assert.equal(readCalls[0], 1000n, 'checkpoint 999n → startRid=1000n');
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Worker — drop_not_found', () => {
+  test('read()가 drop_not_found 제외한 rows 반환 → 배치 rows.length로 확인', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = { value: false };
+    let batchCall = 0;
+    const appendedRows = [];
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => {
+        batchCall++;
+        if (batchCall === 1) {
+          return {
+            rows: [
+              { rid: 5n, data: { NAME: 'sensor_ok', TIME: 1000n, VALUE: 1.0 } },
+            ],
+            err: null,
+          };
+        }
+        shutdownFlag.value = true;
+        return { rows: [], err: null };
+      },
+      appendFn: async (rows) => {
+        appendedRows.push(...rows);
+        return null;
+      },
+    });
+
+    try {
+      const worker = makeTagWorker('fw-drop', tmpDir, {}, shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(appendedRows.length, 1, 'drop_not_found 제외 후 1개만 append');
+      assert.equal(appendedRows[0].NAME, 'sensor_ok');
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Worker — read 에러', () => {
+  test('read 에러 → retry 없이 즉시 Worker 종료', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = { value: false };
+    let readCallCount = 0;
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => {
+        readCallCount++;
+        const err = new Error('read failure');
+        return { rows: [], err };
+      },
+    });
+
+    try {
+      const worker = makeTagWorker('fw-read-err', tmpDir,
+        { retry: { max_attempts: 5, base_delay_ms: 5, max_delay_ms: 20 } },
+        shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(readCallCount, 1, 'read 실패 → retry 없이 1회만 호출 후 Worker 종료');
+      assert.equal(shutdownFlag.value, false, 'shutdownFlag는 변경되지 않아야 함');
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Worker — append 에러 retry', () => {
+  test('append 에러(retryable) → retry 후 복구', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = { value: false };
+    let batchCall = 0;
+    let appendAttempt = 0;
+    const appendedRows = [];
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => {
+        batchCall++;
+        if (batchCall === 1) {
+          return {
+            rows: [{ rid: 10n, data: { NAME: 'sensor_a', TIME: 5000n, VALUE: 9.9 } }],
+            err: null,
+          };
+        }
+        shutdownFlag.value = true;
+        return { rows: [], err: null };
+      },
+      appendFn: async (rows) => {
+        appendAttempt++;
+        if (appendAttempt === 1) {
+          const err = new Error('Connection refused');
+          err.code = 'ECONNREFUSED';
+          return err;
+        }
+        appendedRows.push(...rows);
+        return null;
+      },
+    });
+
+    try {
+      const worker = makeTagWorker('fw-append-retry', tmpDir,
+        { retry: { max_attempts: 5, base_delay_ms: 5, max_delay_ms: 20 } },
+        shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(appendAttempt, 2, 'append 1회 실패 후 retry → 총 2회 시도');
+      assert.equal(appendedRows.length, 1, '복구 후 1개 append');
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Worker — shutdown 신호', () => {
+  test('shutdown 신호 처리 — 즉시 종료', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = makeShutdownFlag(10);
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => ({ rows: [], err: null }),
+    });
+
+    const startTime = Date.now();
+
+    try {
+      const worker = makeTagWorker('fw-shutdown', tmpDir, { poll_interval_ms: 5000 }, shutdownFlag);
+      await worker.run(makeSignal());
+
+      const elapsed = Date.now() - startTime;
+      assert.ok(elapsed < 500, `shutdown 후 즉시 종료되어야 함 (elapsed: ${elapsed}ms)`);
+    } finally {
+      restore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Worker — 빈 배치 poll 대기', () => {
+  test('빈 배치 → poll interval 대기 후 다시 읽기', async () => {
+    const tmpDir = await makeTmpDir();
+    const shutdownFlag = { value: false };
+    let readCallCount = 0;
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => {
+        readCallCount++;
+        if (readCallCount >= 2) shutdownFlag.value = true;
+        return { rows: [], err: null };
+      },
+    });
+
+    try {
+      const worker = makeTagWorker('fw-poll', tmpDir, { poll_interval_ms: 10 }, shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.ok(readCallCount >= 2, '빈 배치 후 poll 대기 → 재읽기 확인');
     } finally {
       restore();
       await fs.rm(tmpDir, { recursive: true, force: true });

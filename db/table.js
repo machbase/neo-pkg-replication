@@ -26,6 +26,9 @@ class TagAliasCache {
    * @param {string} name
    */
   set(tagId, name) {
+    if (name.includes('\x00')) {
+      throw new Error(`tag name contains null byte: ${JSON.stringify(name)}`);
+    }
     this._map.set(BigInt(tagId), name);
   }
 
@@ -92,7 +95,7 @@ class LogTable {
    */
   async getSchema() {
     const rows = await this.getColumns();
-    const columns = rows.map(r => new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data'));
+    const columns = rows.map(r => new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data', r.LENGTH ?? 0));
     return new TableSchema('LOG', this.logicalTable, columns);
   }
 
@@ -116,7 +119,7 @@ class LogTable {
       return this.stream.open(
         this.client,
         this.logicalTable,
-        this.schema.columns.map(c => ({ name: c.name, type: c.columnType.type }))
+        this.schema.columns.map(c => ({ name: c.name, type: c.dataType() }))
       );
     }
     return null;
@@ -200,14 +203,76 @@ class LogTable {
     const matrix = rows.map(row =>
       this.schema.columns.map(col => {
         const val = row[col.name];
-        if (col.columnType.type === 'int64' && typeof val === 'number' && !Number.isInteger(val))
-          getLogger().warn('table', { msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` });
-        else if (typeof val === 'number' && !isFinite(val))
-          getLogger().warn('table', { col: col.name, value: String(val), msg: `non-finite float value replaced with null` });
+        if (val != null) {
+          if (col.dataType() === 'int64' && typeof val === 'number' && !Number.isInteger(val))
+            getLogger().warn('table', { msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` });
+          else if (typeof val === 'number' && !isFinite(val))
+            getLogger().warn('table', { col: col.name, value: String(val), msg: `non-finite float value replaced with null` });
+        }
         return _toCell(col, val);
       })
     );
     return this.stream.append(matrix);
+  }
+
+  /**
+   * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
+   * @param {Array<{ canonical: string, time: bigint }>} rows
+   * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
+   * @returns {{ firstMissIdx: number|null, err: Error|null }}
+   */
+  async findFirstMissRow(rows, client) {
+    if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
+
+    const chk = '_repli_chk';
+    const lkp = '_repli_lkp';
+    const nameCol = this.schema.columns.find(c => c.name === 'NAME');
+    if (!nameCol) return { firstMissIdx: null, err: new Error(`findFirstMissRow: NAME column not found in schema for '${this.logicalTable}'`) };
+    const nameDdlType = nameCol.sqlType();
+
+    try {
+      await client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
+      await client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
+
+      const stream = new MachbaseStream();
+      const openErr = await stream.open(client, chk, [
+        { name: 'IDX',  type: 'int32'    },
+        { name: 'NAME', type: 'varchar'  },
+        { name: 'TIME', type: 'datetime' },
+      ]);
+      if (openErr) return { firstMissIdx: null, err: openErr };
+      const appendErr = await stream.append(rows.map((r, i) => [i, String(r.canonical), BigInt(r.time)]));
+      const closeErr  = await stream.close();
+      if (appendErr) return { firstMissIdx: null, err: appendErr };
+      if (closeErr)  return { firstMissIdx: null, err: closeErr };
+
+      await client.execute(
+        `INSERT INTO ${lkp} ` +
+        `SELECT t.NAME, t.TIME FROM ${this.logicalTable} t, ${chk} c ` +
+        `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
+      );
+
+      const result = await client.query(
+        `SELECT IDX FROM (` +
+          `SELECT c.IDX, t.NAME AS T_NAME ` +
+          `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
+        `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
+      );
+
+      if (!result || result.length === 0) return { firstMissIdx: null, err: null };
+      return { firstMissIdx: result[0].IDX, err: null };
+
+    } catch (err) {
+      getLogger().error('table', { table: this.logicalTable, msg: err.message });
+      return { firstMissIdx: null, err };
+    } finally {
+      await client.execute(`DROP TABLE ${chk}`).catch(e =>
+        getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` })
+      );
+      await client.execute(`DROP TABLE ${lkp}`).catch(e =>
+        getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` })
+      );
+    }
   }
 }
 
@@ -259,7 +324,7 @@ class TagTable {
     const metadataColumns = [];
     for (const r of metaRows) {
       if (r.NAME.startsWith('_') || r.NAME === 'NAME') continue;
-      metadataColumns.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'metadata'));
+      metadataColumns.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'metadata', r.LENGTH ?? 0));
     }
 
     const dataRows = await this.getDataColumns(dataTableId);
@@ -270,7 +335,7 @@ class TagTable {
         ? ColumnType.VARCHAR
         : ColumnType.fromCode(r.TYPE);
       const category = r.NAME.toLowerCase() === 'name' ? 'key' : 'data';
-      dataColumns.push(new Column(r.NAME, columnType, r.ID, category));
+      dataColumns.push(new Column(r.NAME, columnType, r.ID, category, r.LENGTH ?? 0));
     }
 
     if (dataColumns.length === 0) {
@@ -308,7 +373,7 @@ class TagTable {
       return this.stream.open(
         this.client,
         this.logicalTable,
-        this.schema.columns.map(c => ({ name: c.name, type: c.columnType.type }))
+        this.schema.columns.map(c => ({ name: c.name, type: c.dataType() }))
       );
     }
     return null;
@@ -363,14 +428,76 @@ class TagTable {
     const matrix = rows.map(row =>
       this.schema.columns.map(col => {
         const val = row[col.name];
-        if (col.columnType.type === 'int64' && typeof val === 'number' && !Number.isInteger(val))
-          getLogger().warn('table', { msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` });
-        else if (typeof val === 'number' && !isFinite(val))
-          getLogger().warn('table', { col: col.name, value: String(val), msg: `non-finite float value replaced with null` });
+        if (val != null) {
+          if (col.dataType() === 'int64' && typeof val === 'number' && !Number.isInteger(val))
+            getLogger().warn('table', { msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` });
+          else if (typeof val === 'number' && !isFinite(val))
+            getLogger().warn('table', { col: col.name, value: String(val), msg: `non-finite float value replaced with null` });
+        }
         return _toCell(col, val);
       })
     );
     return this.stream.append(matrix);
+  }
+
+  /**
+   * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
+   * @param {Array<{ canonical: string, time: bigint }>} rows
+   * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
+   * @returns {{ firstMissIdx: number|null, err: Error|null }}
+   */
+  async findFirstMissRow(rows, client) {
+    if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
+
+    const chk = '_repli_chk';
+    const lkp = '_repli_lkp';
+    const nameCol = this.schema.columns.find(c => c.name === 'NAME');
+    if (!nameCol) return { firstMissIdx: null, err: new Error(`findFirstMissRow: NAME column not found in schema for '${this.logicalTable}'`) };
+    const nameDdlType = nameCol.sqlType();
+
+    try {
+      await client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
+      await client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
+
+      const stream = new MachbaseStream();
+      const openErr = await stream.open(client, chk, [
+        { name: 'IDX',  type: 'int32'    },
+        { name: 'NAME', type: 'varchar'  },
+        { name: 'TIME', type: 'datetime' },
+      ]);
+      if (openErr) return { firstMissIdx: null, err: openErr };
+      const appendErr = await stream.append(rows.map((r, i) => [i, String(r.canonical), BigInt(r.time)]));
+      const closeErr  = await stream.close();
+      if (appendErr) return { firstMissIdx: null, err: appendErr };
+      if (closeErr)  return { firstMissIdx: null, err: closeErr };
+
+      await client.execute(
+        `INSERT INTO ${lkp} ` +
+        `SELECT t.NAME, t.TIME FROM ${this.logicalTable} t, ${chk} c ` +
+        `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
+      );
+
+      const result = await client.query(
+        `SELECT IDX FROM (` +
+          `SELECT c.IDX, t.NAME AS T_NAME ` +
+          `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
+        `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
+      );
+
+      if (!result || result.length === 0) return { firstMissIdx: null, err: null };
+      return { firstMissIdx: result[0].IDX, err: null };
+
+    } catch (err) {
+      getLogger().error('table', { table: this.logicalTable, msg: err.message });
+      return { firstMissIdx: null, err };
+    } finally {
+      await client.execute(`DROP TABLE ${chk}`).catch(e =>
+        getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` })
+      );
+      await client.execute(`DROP TABLE ${lkp}`).catch(e =>
+        getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` })
+      );
+    }
   }
 }
 
@@ -459,14 +586,14 @@ class TagDataTable {
    * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} [tagIdentifier=null]
    * @returns {{ rows: Array<{ rid: BigInt, data: object }>, err: Error|null }}
    */
-  async read(startRid, limit = 1000, rangeSize = 50000, tagIdentifier = null) {
+  async read(startRid, limit = 1000, rangeSize = 50000, tagIdentifier = null, sourceColumns = null) {
     const tableName = this.dataTable;
-    const columnNames = this.schema.columns
-      .filter(c => c.category !== 'metadata')
-      .map(c => c.name.toLowerCase());
-    const columnNamesUpper = this.schema.columns
-      .filter(c => c.category !== 'metadata')
-      .map(c => c.name);
+    const cols = this.schema.columns.filter(c => c.category !== 'metadata');
+    const filtered = sourceColumns
+      ? cols.filter(c => sourceColumns.includes(c.name))
+      : cols;
+    const columnNames = filtered.map(c => c.name.toLowerCase());
+    const columnNamesUpper = filtered.map(c => c.name);
 
     let endRid = startRid + BigInt(rangeSize);
     try {
@@ -496,7 +623,13 @@ class TagDataTable {
           const tagId = data.NAME;
           let { canonical, status } = this.aliasCache.resolve(tagId, tagIdentifier);
           if (status === 'drop_not_found' && this.logicalTable) {
-            const name = await this.client.selectTagNameByTagId(this.logicalTable, tagId);
+            let name;
+            try {
+              name = await this.client.selectTagNameByTagId(this.logicalTable, tagId);
+            } catch (lookupErr) {
+              getLogger().error('table', { msg: `selectTagNameByTagId failed: ${lookupErr.message}` });
+              return { rows: [], err: lookupErr };
+            }
             if (name == null) continue;
             this.aliasCache.set(tagId, name);
             ({ canonical, status } = this.aliasCache.resolve(tagId, tagIdentifier));
@@ -514,4 +647,4 @@ class TagDataTable {
   }
 }
 
-module.exports = { LogTable, TagTable, TagDataTable };
+module.exports = { TagAliasCache, LogTable, TagTable, TagDataTable };

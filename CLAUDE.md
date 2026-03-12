@@ -12,22 +12,20 @@ Machbase TAG/LOG 테이블 간 데이터 복제(replication) 도구.
 
 ```
 repli-js/
-├── app.js                        # 진입점 — JobRunner 실행, SIGTERM/SIGINT 처리
-├── job_runner.js                 # JobRunner — mapping별 Worker 병렬 실행 오케스트레이션
+├── app.js                        # 진입점 — ConfigLoader → Replicator 실행
+├── job_runner.js                 # Replicator, Job — Worker 병렬 실행 오케스트레이션
 ├── config.json                   # 실행 설정 (jobs, mappings, 접속 정보 등)
 ├── config/
-│   └── config.js                 # 설정 파일 로드/검증
+│   └── config.js                 # ConfigLoader — 설정 파일 로드/검증
 ├── core/
 │   ├── types.js                  # ColumnType, Column, TableSchema — 순수 도메인 모델 (I/O 없음)
 │   └── retry.js                  # RetryHandler 유틸리티
 ├── db/
 │   ├── client.js                 # MachbaseClient, toInt64 — DB 연결·쿼리 (I/O 계층)
-│   ├── schema_builder.js         # buildTagSchema(), buildLogSchema()
-│   ├── reader.js                 # TagAliasCache, Reader 클래스
-│   ├── writer.js                 # Writer 클래스
-│   └── integrity_checker.js      # IntegrityChecker — batchExists()
+│   ├── stream.js                 # MachbaseStream, _toCell — append 스트림 래퍼
+│   └── table.js                  # TagAliasCache, LogTable, TagTable, TagDataTable
 ├── worker/
-│   └── worker.js                 # Worker 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
+│   └── worker.js                 # Worker 클래스 — 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
 ├── checkpoint/
 │   └── store.js                  # CheckpointStore — cp 파일 load/save (atomic write, BigInt 내장)
 ├── logger/
@@ -38,15 +36,13 @@ repli-js/
 │   │   ├── checkpoint.test.js          # CheckpointStore 단위 테스트 (6개)
 │   │   ├── client.test.js              # fixDoubleEndian 단위 테스트 (4개)
 │   │   ├── config.test.js              # Config 단위 테스트 (33개)
-│   │   ├── integrity_checker.test.js   # IntegrityChecker 단위 테스트 (4개)
+│   │   ├── integrity_checker.test.js   # TagTable.findFirstMissRow 단위 테스트 (7개)
 │   │   ├── retry.test.js               # RetryHandler 단위 테스트 (19개)
-│   │   ├── table_info.test.js          # TableSchema/TagAliasCache 단위 테스트 (13개)
-│   │   ├── target_writer.test.js       # Writer 단위 테스트 (6개)
-│   │   ├── worker.test.js              # Worker 상태 머신 단위 테스트 (19개)
-│   │   └── e2e_scenarios.test.js       # E2E 시나리오 mock 테스트 (8개)
+│   │   └── worker.test.js              # Worker 상태 머신 + Job/Replicator + E2E mock 시나리오 (27개)
 │   └── integration/
-│       ├── tag_replication.test.js # TAG 테이블 통합 테스트 (11개)
-│       └── log_replication.test.js # LOG 테이블 통합 테스트 (8개)
+│       ├── tag_replication.test.js     # TAG 테이블 통합 테스트 (11개)
+│       ├── log_replication.test.js     # LOG 테이블 통합 테스트 (8개)
+│       └── table.test.js               # LogTable/TagTable/TagDataTable 통합 테스트 (17개)
 ├── docs/
 │   ├── PROJECT.md                # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 │   └── ENDIAN_BUG.md             # @machbase/ts-client endian 버그 상세 분석
@@ -55,121 +51,128 @@ repli-js/
 
 ## 핵심 모듈 상세
 
-### db/client.js — MachbaseClient
-
-- `MachbaseClient` 클래스: `@machbase/ts-client` 연결 래퍼
-  - `connect()` / `close()` / `query(sql, values?)` / `appendOpen(table, columns)` / `execute(sql)`
-  - `query()` 반환 직후 `fixDoubleEndian()` 자동 적용 (BE/LE 혼재 버그 우회)
-  - **카탈로그 메서드** (DB 구조 조회):
-    - `getTableType(table)` → `{ type: 'TAG'|'LOG'|'UNSUPPORTED' }`. 조회 실패 시 throw.
-    - `listTagDataTables(logicalTable)` → `[{ data_table, table_id }]` (table_id는 BigInt 그대로)
-    - `getColumnsByTableName(tableName)` → `[{ NAME, TYPE, ID }]` (META·LOG 컬럼 조회)
-    - `getColumnsByTableId(tableId)` → `[{ NAME, TYPE, ID }]` (DATA 파티션, BigInt 파라미터 허용)
-- `toInt64(val)` → BigInt 변환 유틸리티 (writer.js에서 import)
-- `module.exports = { createConnection, QueryError, MachbaseClient, toInt64 }`
-
 ### app.js — 진입점
 
-- `config.json` 로드 후 `new Replicator(config).run()` 실행
+- `ConfigLoader.load(configPath)` → `initLogger(config.logging)` → `new Replicator(config).run()`
 - SIGTERM / SIGINT 처리는 `Replicator.run()` 내부에서 담당
 
-### job_runner.js — Replicator / Job / Worker
+### config/config.js — ConfigLoader
+
+- `ConfigLoader.load(filePath)` → config 객체 반환
+- version 3 필수 검증, servers/jobs 구조 검증
+- `_processJob()`: job별 checkpoint 디렉토리, execution_defaults 처리
+- `_processMapping()`: source.columns UPPERCASE 정규화, tag_identifier/retry/integrity 검증
+- `_mergeExecution(...layers)`: job defaults → source.execution → mapping.execution 우선순위 merge
+
+### job_runner.js — Replicator / Job
 
 - **Replicator**: SIGTERM/SIGINT → `shutdownFlag.value = true`, shutdown timer 관리
+  - `shutdown_timeout_ms`: 활성 job 중 최댓값 사용 (기본 30000ms)
+  - `module.exports = { Replicator, Job, Worker }`
 - **Job**: `while(!shutdown)` 루프
   - `_discoverMapping(mapping, logCtx)` → 소스/대상 스키마 수집 + 검증 (단기 커넥션)
-    - src-only 컬럼 검출: 소스에만 있고 대상에 없는 컬럼 → 해당 mapping 스킵
-    - `source.columns` 유효성 검증: schema에 존재하지 않는 컬럼명 → 해당 mapping 스킵
+    - TAG: `TagTable.getDataTables()` → `TagTable.getSchema(dataTableId)` 호출
+    - LOG: `LogTable.getSchema()` 호출
+    - src-only 컬럼 검출 (metadata 제외): 소스에만 있는 컬럼 → 해당 mapping 스킵
+    - `source.columns` 유효성 검증: schema에 없는 컬럼명 → 해당 mapping 스킵
   - `AbortController`로 Worker × N `Promise.all` 병렬 실행
-  - 에러 시 abort → 루프 재시작
-- **Worker**: `signal.aborted || shutdownFlag.value` proxy 생성 → `runDataTableWorker()` 호출
-  - Worker별 독립 `Reader(srcConn)` + `TagAliasCache`(TAG 전용) + `Writer(dstConn)` 생성
-- `module.exports = { Replicator, Job, Worker }`
+  - Worker 에러 시 abort → 루프 재시작
 
-### worker/worker.js — Worker 상태 머신
+### worker/worker.js — Worker 클래스
 
-`runDataTableWorker({ jobId, mapping, tableType, dataTable, srcSchema, dstSchema, srcConfig, dstConfig, reader, aliasCache, writer, shutdownFlag })` 함수. 3단계 상태 전이:
+`Worker(jobId, jobCheckpoint, mapping, tableType, dataTable, srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag)` 클래스. `run(signal)` 메서드에서 3단계 상태 전이:
 
 1. **RESOLVE_START**: cp 파일 로드 → `startRid` 결정
    - cp 존재 → `last_success_rid + 1n`
-   - cp 없음/손상 → `start_mode` 기준 (`full`=0n, `now`=reader.getMaxRid())
-2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 + `integrity.enabled` 시만): `startRid`부터 배치 읽기 → 대상 DB 존재 확인 → `safe_cp_rid` 산출 후 STEADY 진입
-3. **STEADY_REPLICATION**: 루프 — reader.readAfterRid → aliasCache.resolve → writer.append → cp 저장(maxRidInBatch) → sleep(poll_interval_ms) → shutdown 체크
-   - statement ID 고갈 방지: stmtCount 추적, 900 도달 시 srcConn 재생성
-- `module.exports = { runDataTableWorker }`
+   - cp 없음 → `start_mode` 기준 (`full`=0n, `now`=srcTable.getMaxRid()+1n, `rid_after`=BigInt(exec.rid_after))
+   - TAG 테이블: `srcTable.loadTagAliasCache()` 로드
+2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 + `integrity.enabled !== false` 시만):
+   - `startRid`부터 배치 읽기 → `dstTable.findFirstMissRow()` 대상 DB 존재 확인 (VOLATILE TABLE + JOIN)
+   - first miss 발견 → `safe_cp_rid` 저장 후 STEADY 진입
+   - 배치마다 신규 `MachbaseClient(dstConfig)` 생성 (statement ID 소진 방지)
+3. **STEADY_REPLICATION**: 루프 — `srcTable.read()` → `dstTable.append()` → cp 저장(maxRidInBatch) → sleep(poll_interval_ms)
+   - `stmtCount` 추적, 900 도달 시 `srcTable.close()` + `srcTable.open()` (연결 재생성)
+   - AbortSignal과 shutdownFlag를 합산하는 `effectiveShutdownFlag` proxy 사용
+- `module.exports = { Worker }`
 
 ### core/types.js — ColumnType / Column / TableSchema
 
 순수 도메인 모델. I/O 의존성 없음.
 
 - `ColumnType` 클래스: Machbase 컬럼 타입 정의 (`code`, `type`, `safeNull`)
-  - Static 상수: `SHORT`, `INTEGER`, `LONG`, `ULONG`, `DATETIME`, `FLOAT`, `DOUBLE`, `VARCHAR`, `TEXT`, `CLOB`, `BLOB`, `BINARY`, `IPV4`, `IPV6`, `JSON`, `UNKNOWN`
+  - Static 상수: `SHORT`, `USHORT`, `INTEGER`, `UINTEGER`, `LONG`, `ULONG`, `DATETIME`, `FLOAT`, `DOUBLE`, `VARCHAR`, `TEXT`, `CLOB`, `BLOB`, `BINARY`, `IPV4`, `IPV6`, `JSON`, `UNKNOWN`
   - `safeNull`: append 패딩용 타입 안전 null 대체값 (int32→`0`, int64/datetime→`0n`, float→`0.0`, string→`''`)
   - `ColumnType.fromCode(code)` → M$SYS_COLUMNS.TYPE 코드로 인스턴스 반환
 - `Column` 클래스: 테이블 컬럼 메타정보 (`name`, `columnType`, `id`, `category`)
   - `category`: `'key'`(TAG의 NAME 컬럼), `'data'`(일반 데이터 컬럼), `'metadata'`(TAG META 추가 속성)
 - `TableSchema` 클래스: 불변 테이블 컬럼 구조 (`tableType`, `logicalTable`, `columns: Column[]`)
-  - constructor: `(tableType, logicalTable, columns)` — columns 배열 직접 수신
+  - constructor: `(tableType, logicalTable, columns)`
 - `module.exports = { ColumnType, Column, TableSchema }`
 
-### db/schema_builder.js
+### db/client.js — MachbaseClient
 
-스키마 빌드 함수만 담당하는 순수 함수 모듈.
+- `MachbaseClient` 클래스: `@machbase/ts-client` 연결 래퍼
+  - `connect()` / `close()` / `query(sql, values?)` / `appendOpen(table, columns)` / `execute(sql)`
+  - `query()` 반환 직후 `fixDoubleEndian()` 자동 적용 (BE/LE 혼재 버그 우회)
+  - **카탈로그 메서드** (DB 구조 조회):
+    - `selectTableType(table)` → `{ type: 'TAG'|'LOG'|'UNSUPPORTED' }`
+    - `selectTagDataTables(logicalTable)` → `[{ data_table, table_id }]` (table_id는 BigInt 그대로)
+    - `selectColumnsByTableName(tableName)` → `[{ NAME, TYPE, ID }]` (META·LOG 컬럼 조회)
+    - `selectColumnsByTableId(tableId)` → `[{ NAME, TYPE, ID }]` (DATA 파티션, BigInt 파라미터 허용)
+    - `selectMaxRid(tableName)` → `BigInt` (빈 테이블이면 `0n`)
+    - `selectTagNames(logicalTable)` → `[{ _ID, name }]` (TAG META 전체 조회)
+    - `selectTagNameByTagId(logicalTable, tagId)` → `string|null` (단건 조회)
+- `toInt64(val)` → BigInt 변환 유틸리티 (stream.js에서 import)
+- `module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema }`
 
-- `buildTagSchema(client, logicalTable, dataTableId)` → `Promise<TableSchema>`
-  - `client.getColumnsByTableName(_META)` → metadata columns
-  - `client.getColumnsByTableId(dataTableId)` → data columns (NAME 컬럼은 VARCHAR 타입으로 오버라이드)
-  - columns = dataColumns(NAME 포함) + metadataColumns
-- `buildLogSchema(client, logicalTable)` → `Promise<TableSchema>`
-  - `client.getColumnsByTableName(logicalTable)` → 전체 컬럼
-- `module.exports = { buildTagSchema, buildLogSchema }`
+### db/stream.js — MachbaseStream / _toCell
 
-### db/reader.js
+- `_toCell(col, val)` → append 가능한 형태로 셀 변환 (순수 변환, 로그 없음)
+  - null/undefined → `col.columnType.safeNull`
+  - int64 → `toInt64(val)` (BigInt 변환)
+  - non-finite float → `col.columnType.safeNull`
+- `MachbaseStream` 클래스: appendOpen 스트림 생명주기 래퍼 (client 생명주기는 호출자 관리)
+  - `open(client, table, columns)` → `Error|null`
+  - `append(matrix)` → `Error|null`
+  - `close()` → `Error|null`
+- `module.exports = { MachbaseStream, _toCell }`
 
-- `TagAliasCache` 클래스: TAG alias 동적 상태 관리 (tag_id → canonical name)
-  - Reader와 분리 — job_runner.js가 생성, runDataTableWorker에 직접 전달
-  - `new TagAliasCache(logicalTable)` → Worker별 독립 인스턴스
-  - `load(client)` → 전체 alias 일괄 로드
-  - `resolve(client, tagId, tagIdentifier)` → Read-through cache, `{ canonical, status }` 반환
-    - `status`: `'ok'` | `'drop_not_found'` | `'retry_error'`
-  - `size` getter
-- `Reader` 클래스: 소스 DB 읽기 담당 (aliasCache 소유하지 않음)
-  - `new Reader(schema, client, dataTable, sourceColumns = null)`
-    - `selectColumnNames`: 생성자에서 1회 계산 (metadata category 제외 + sourceColumns 필터)
-    - `sourceColumns`: UPPERCASE 허용 컬럼명 배열. `null`이면 전체 데이터 컬럼 SELECT.
-  - `readAfterRid(startRid, limit, rangeSize)` → `{ rows, err }`
-  - `getMaxRid()` → `{ maxRid, err }` (인스턴스 메서드)
-  - `refreshConnection(config)` → statement ID 고갈 시 연결 교체
-  - 내부적으로 `RID_RANGE` 힌트 SQL 사용
-- `module.exports = { Reader, TagAliasCache }`
+### db/table.js — TagAliasCache / LogTable / TagTable / TagDataTable
 
-### db/writer.js
-
-- `Writer` 클래스: 대상 DB 쓰기 담당
-  - `new Writer(dstSchema)` → 인스턴스 생성 (schema 소유)
-  - `open(client, table, srcSchema)` → appendOpen 스트림 초기화
-    - `srcNames: Set<string>` 구성 (소스 컬럼명 UPPERCASE Set)
-    - client 소유권 획득 — close() 시 함께 닫힘
-  - `append(rows)` → `_toCell(col, row)`로 각 셀 변환 후 스트림 append
-    - 소스에 없는 컬럼(`!srcNames.has(col.name)`) → `col.columnType.safeNull`로 패딩
-    - null/undefined 값 → `col.columnType.safeNull`
-    - int64 컬럼 → `toInt64(val)` (BigInt 변환, `db/client.js`에서 import)
-    - float/double 컬럼에서 Infinity / -Infinity / NaN → `col.columnType.safeNull`(0.0) + warn 로그
-  - `close()` → 스트림 + client 닫기
-
-### db/integrity_checker.js
-
-- `batchExists(client, table, rows)` → `{ existSet: Set<"canonical\x00timeNs">, err }` (OR-condition 단일 쿼리)
-- `existKey(canonical, timeNs)` → key 문자열
-- statement ID 한계(1024) 대응: 파라미터 없이 인라인 이스케이프 쿼리 사용
+- `TagAliasCache` 클래스: TAG alias 캐시 (tag_id → canonical name)
+  - `set(tagId, name)` / `get(tagId)` / `size` getter
+    - `set()`: name에 `\x00` 포함 시 throw (existSet key 충돌 방지)
+  - `resolve(tagId, tagIdentifier)` → `{ canonical, status: 'ok'|'drop_not_found' }` (캐시에서만 조회)
+  - `TagAliasCache._applyIdentifier(tagName, tagIdentifier)` → prefix/suffix/none 변환
+- `LogTable` 클래스: LOG 테이블의 스키마 조회 + read + append 담당
+  - `constructor(logicalTable, config)` → `MachbaseClient` 내부 생성
+  - `getSchema()` → `Promise<TableSchema>`
+  - `open(useStream?)` / `close()` → DB 연결 + 선택적 append 스트림 열기/닫기
+  - `read(startRid, limit?, rangeSize?)` → `{ rows: [{rid, data}], err }`
+  - `append(rows)` → `Error|null`
+  - `getMaxRid()` → `Promise<BigInt>`
+- `TagTable` 클래스: TAG 논리 테이블의 스키마 조회 + append 담당
+  - `constructor(logicalTable, config)` → `MachbaseClient` 내부 생성
+  - `getSchema(dataTableId)` → `Promise<TableSchema>` (META + DATA 파티션 두 곳 조회)
+  - `getDataTables()` → `Promise<[{ data_table, table_id }]>`
+  - `open(useStream?)` / `close()` / `append(rows)` / `read()` — LogTable과 동일한 인터페이스
+- `TagDataTable` 클래스: TAG 데이터 파티션 단위 읽기 담당
+  - `constructor(dataTable, config)` → `logicalTable`을 `dataTable`에서 역산
+  - `loadTagAliasCache()` → `_TAG_META` 전체 로드 후 내부 `aliasCache` 구성
+  - `read(startRid, limit?, rangeSize?, tagIdentifier?, sourceColumns?)` → `{ rows, err }`
+    - `aliasCache` 설정 시 tagId → canonical name resolve
+    - `drop_not_found` 행: 단건 DB 조회 후 캐시 갱신, 그래도 없으면 제외
+  - `getMaxRid()` / `open()` / `close()`
+- `module.exports = { TagAliasCache, LogTable, TagTable, TagDataTable }`
 
 ### checkpoint/store.js
 
-- `CheckpointStore(directory)`: `load(jobId, dataTable)` / `save(jobId, dataTable, cp, stats)`
-- 파일 경로: `{directory}/{jobId}__{dataTable}.json` (예: `job-1___TAG_DATA_0.json`)
-- atomic write 내장: `_writeFile()` — `.tmp` 파일 → `fs.rename`
-- BigInt reviver/replacer 내장: `_parse()` / `_stringify()`
-- 파싱 실패 또는 `source.data_table` 불일치 → logger({stage:'checkpoint_io',...}) 후 무효화
+- `CheckpointStore(directory)`: `load(jobId, dataTable)` / `save(jobId, dataTable, cp, stats, opts?)`
+- 파일 경로: `{directory}/{jobId}{dataTable}.json` (예: `job-1_TAG_DATA_0.json`)
+- atomic write 내장: `_writeFile()` — `.{hrtime}.tmp` 파일 → `fs.rename`
+- BigInt reviver/replacer 내장: `_parse()` / `_stringify()` (`last_success_rid` 키만 BigInt 복원)
+- `source.data_table` 불일치 또는 파싱 실패 → logger 후 `{ cp: null, exists: false }` 반환
+- `opts.on_save_failure === 'abort'` 시 저장 실패를 throw로 전파
 
 ## @machbase/ts-client API 참조
 
@@ -228,22 +231,33 @@ repli-js/
     "src": { "host": "...", "port": 5656, "user": "sys", "password": "manager" },
     "dst": { "host": "...", "port": 5656, "user": "sys", "password": "manager" }
   },
+  "logging": {
+    "level": "info",
+    "stdout": true,
+    "file": { "enabled": false, "directory": "./logs" }
+  },
   "replication": {
     "jobs": [{
       "id": "job-1",
+      "enabled": true,
+      "shutdown_timeout_ms": 30000,
       "checkpoint": { "directory": "./checkpoints" },
+      "execution_defaults": {},
       "mappings": [{
         "mapping_id": "map-1",
         "source": {
           "server": "src",
           "table": "TAG",
-          "columns": ["TIME", "VALUE"]
+          "columns": ["TIME", "VALUE"],
+          "tag_identifier": { "mode": "none" }
         },
         "target": { "server": "dst", "table": "TAG" },
         "execution": {
           "start_mode": "full",
           "poll_interval_ms": 1000,
           "query_limit": 1000,
+          "rid_range_size": 50000,
+          "on_save_failure": "continue",
           "integrity": { "enabled": true },
           "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
         }
@@ -254,9 +268,19 @@ repli-js/
 ```
 
 `source.columns` 필드:
-- 미지정(`null`) → 소스 테이블의 모든 데이터 컬럼 SELECT (기존 동작)
+- 미지정(`null`) → 소스 테이블의 모든 데이터 컬럼 SELECT
 - `["TIME", "VALUE"]` → 지정된 컬럼만 SELECT (대소문자 무관, 내부적으로 UPPERCASE 정규화)
 - 빈 배열(`[]`) 또는 비문자열 항목 → config 검증 오류, 해당 mapping 스킵
+
+`source.tag_identifier` 필드:
+- `{ "mode": "none" }` → 태그명 그대로 사용 (기본값)
+- `{ "mode": "prefix", "value": "site1/" }` → 태그명 앞에 prefix 추가
+- `{ "mode": "suffix", "value": "_copy" }` → 태그명 뒤에 suffix 추가
+
+`execution.start_mode` 필드:
+- `"full"` → RID 0부터 전체 복제
+- `"now"` → 현재 최대 RID+1부터 시작 (이전 데이터 무시)
+- `"rid_after"` → `rid_after` 값 이후부터 시작 (`rid_after` 필드 필수)
 
 ## Machbase TAG 테이블 내부 구조
 
@@ -267,9 +291,9 @@ repli-js/
 
 RID_RANGE 힌트 예시:
 ```sql
-SELECT /*+ RID_RANGE(_TAG_DATA_0, 0, 10000) */ d._RID, m.name, d.time, d.value
-FROM _TAG_DATA_0 d, _TAG_META m
-WHERE d.name = m._ID
+SELECT /*+ RID_RANGE(_TAG_DATA_0, 0, 50000) */ _RID, name, time, value
+FROM _TAG_DATA_0
+WHERE _RID >= 0
 LIMIT 1000
 ```
 
@@ -286,37 +310,40 @@ LIMIT 1000
 ## 테스트 실행
 
 ```bash
-# 전체 단위 테스트 (111개)
+# 단위 테스트
 node --test tests/unit/*.test.js
 
-# 개별 파일
-node --test tests/unit/worker.test.js
-node --test tests/unit/e2e_scenarios.test.js
-
-# 통합 테스트 (실 DB 연결 필요 — 192.168.1.189:5656)
+# 통합 테스트 (실 DB 연결 필요 — 127.0.0.1:5656)
 node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
+node --test tests/integration/table.test.js
 ```
 
-현재 테스트 현황: **112 단위 + 19 통합 = 131 pass / 0 fail**
+현재 테스트 현황: **92 단위 = 92 pass / 0 fail** (`node --test tests/unit/*.test.js`)
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
 - client.test.js: fixDoubleEndian (4개)
 - config.test.js: 설정 검증 (33개)
-- integrity_checker.test.js: IntegrityChecker batchExists (4개)
-- retry.test.js: RetryHandler 백오프 로직 (19개)
-- table_info.test.js: TableSchema/TagAliasCache 빌드/조회 (13개)
-- target_writer.test.js: Writer safeNull 패딩 + Infinity/NaN 처리 (6개)
-- worker.test.js: Worker 상태 머신 + Job/Replicator (19개)
-- e2e_scenarios.test.js: E2E 시나리오 (8개)
+- integrity_checker.test.js: TagTable.findFirstMissRow (7개)
+- retry.test.js: RetryHandler 백오프 로직 (15개)
+- worker.test.js: Worker 상태 머신 + Job/Replicator + E2E mock 시나리오 (27개)
 - tag_replication.test.js: TAG 복제 통합 테스트 (11개)
 - log_replication.test.js: LOG 복제 통합 테스트 (8개)
+- table.test.js: LogTable/TagTable/TagDataTable 통합 테스트 (17개)
 
 ## 실행 방법
 
 ```bash
-node app.js
+node app.js [config.json 경로]  # 경로 미지정 시 ./config.json 사용
 ```
+
+## @machbase/ts-client double endian 버그 우회 (중요)
+
+- **버그**: `decodeFixedField()`가 FLT32/FLT64를 항상 `readFloatLE`/`readDoubleLE`로 읽음
+- **현상**: TAG 파티션에 따라 BE로 저장된 값을 LE로 읽어 denormal(극소값) 발생
+- **우회**: `db/client.js`의 `fixDoubleEndian()` — `MachbaseClient.query()` 반환 직전 자동 적용
+  - `FLOAT_MIN_NORMAL(1.175e-38)` 미만 nonzero → DOUBLE BE→LE 복원 시도, 실패 시 FLOAT 시도
+  - 상세: `docs/ENDIAN_BUG.md`
 
 ## 알려진 한계 / TODO
 
-1. `on_save_failure="abort"` 미구현 — 현재 "continue"와 동일하게 동작
+1. `on_save_failure="abort"` → checkpoint 저장 실패 시 throw 전파는 구현됨. Worker 레벨 abort 처리는 미구현.

@@ -10,13 +10,13 @@
   },
   "servers": {
     "src": {
-      "host": "192.168.1.189",
+      "host": "192.168.1.183",
       "port": 5656,
       "user": "SYS",
       "password": "MANAGER"
     },
     "dst": {
-      "host": "192.168.1.189",
+      "host": "192.168.1.183",
       "port": 5656,
       "user": "SYS",
       "password": "MANAGER"
@@ -46,7 +46,7 @@
             "source": {
               "server": "src",
               "table": "TAG",
-              "columns": ["NAME", "TIME", "VALUE", "txt"]
+              "columns": ["name"]
             },
             "target": {
               "server": "dst",

@@ -121,7 +121,7 @@ class MachbaseClient {
    */
   async selectColumnsByTableName(tableName) {
     const sql = `
-      SELECT c.NAME, c.TYPE, c.ID
+      SELECT c.NAME, c.TYPE, c.ID, c.LENGTH
       FROM M$SYS_COLUMNS c, M$SYS_TABLES t
       WHERE c.TABLE_ID = t.ID AND t.NAME = ?
         AND c.ID < 65534
@@ -138,7 +138,7 @@ class MachbaseClient {
    */
   async selectColumnsByTableId(tableId) {
     const sql = `
-      SELECT c.NAME, c.TYPE, c.ID
+      SELECT c.NAME, c.TYPE, c.ID, c.LENGTH
       FROM M$SYS_COLUMNS c
       WHERE c.TABLE_ID = ? AND c.ID > 0 AND c.ID < 65534
       ORDER BY c.ID ASC

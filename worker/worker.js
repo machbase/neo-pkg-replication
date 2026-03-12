@@ -1,69 +1,20 @@
 'use strict';
 
 const CheckpointStore = require('../checkpoint/store.js');
-const IntegrityChecker = require('../db/integrity_checker.js');
 const RetryHandler = require('../core/retry.js');
 const { MachbaseClient } = require('../db/client.js');
-const { Reader, TagAliasCache } = require('../db/reader.js');
-const { Writer } = require('../db/writer.js');
+const { TagDataTable, TagTable, LogTable } = require('../db/table.js');
 const { getInstance: getLogger } = require('../logger/logger.js');
 
 // ─── 상수 ────────────────────────────────────────────────────────────────────
 
 // Statement ID 고갈 방지 임계값: ts-client는 쿼리마다 statement ID를 소비하고
-// 서버 한도는 1024. readAfterRid는 배치당 2개 쿼리(MAX + SELECT)를 사용하므로
+// 서버 한도는 1024. read는 배치당 2개 쿼리(MAX + SELECT)를 사용하므로
 // 이 임계값에 도달하면 연결을 재생성한다.
 const STMT_REFRESH_THRESHOLD = 900;
 
-// STARTUP_INTEGRITY 배치 크기 상한: batchExists는 OR 절로 존재 확인하므로
-// SQL 크기 제한을 위해 500으로 제한한다.
+// STARTUP_INTEGRITY 배치 크기 상한: VOLATILE TABLE에 한 번에 INSERT할 행 수 제한
 const INTEGRITY_BATCH_LIMIT = 500;
-
-// ─── Row 처리 전략 클래스 ──────────────────────────────────────────────────────
-
-/**
- * TAG 테이블용 row 처리기
- * tag_id → canonical 이름 변환 후 append 준비
- */
-class TagRowProcessor {
-  constructor(tagIdentifier) {
-    this.tagIdentifier = tagIdentifier;
-  }
-
-  /**
-   * @returns {{ action: 'append'|'drop'|'shutdown', outRow?: object }}
-   */
-  async process(row, aliasCache, client, retry, shutdownFlag, logCtx) {
-    let attempt = 0;
-    while (true) {
-      if (shutdownFlag.value) return { action: 'shutdown' };
-      if (attempt > 0) {
-        if (retry.isExhausted(attempt)) {
-          getLogger().error('worker', { ...logCtx, msg: 'resolve canonical retry exhausted, skipping mapping' });
-          return { action: 'shutdown' };
-        }
-        const delay = retry.nextDelay(attempt - 1);
-        if (await retry.sleepOrShutdown(delay, shutdownFlag) === 'shutdown') return { action: 'shutdown' };
-      }
-      const { canonical, status } = await aliasCache.resolve(client, row.tagId, this.tagIdentifier);
-      switch (status) {
-        case 'ok':            return { action: 'append', outRow: { ...row.data, NAME: canonical } };
-        case 'drop_not_found': return { action: 'drop' };
-        default:              attempt++; // retry_error
-      }
-    }
-  }
-}
-
-/**
- * LOG 테이블용 row 처리기
- * tag_id 변환 없이 그대로 사용
- */
-class LogRowProcessor {
-  async process(row) {
-    return { action: 'append', outRow: row.data };
-  }
-}
 
 // ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
 
@@ -118,27 +69,6 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
     }
     attempt++;
   }
-}
-
-/**
- * reader.readAfterRid 를 retry 포함하여 호출
- * @returns {Array|null} rows on success, null on shutdown/exhausted (caller must return)
- */
-async function _readBatch(reader, startRid, limit, rangeSize, retry, shutdownFlag, logCtx, phase) {
-  const result = await _withRetry({
-    fn: async () => {
-      const { rows, err } = await reader.readAfterRid(startRid, limit, rangeSize);
-      if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable read error: ${err.message}` };
-      return { done: true, value: rows };
-    },
-    retry,
-    shutdownFlag,
-    logCtx,
-    exhaustedMsg: 'read retry exhausted, skipping mapping',
-    retryMsg: 'read retry',
-    phase,
-  });
-  return result.ok ? result.value : null;
 }
 
 /**
@@ -205,44 +135,40 @@ class Worker {
       get value() { return signal.aborted || shutdownFlag.value; },
     };
 
-    const tagIdentifier = mapping.source.tag_identifier || { mode: 'none', value: '' };
-    const rowProcessor = tableType === 'TAG'
-      ? new TagRowProcessor(tagIdentifier)
-      : new LogRowProcessor();
-
-    const aliasCache = tableType === 'TAG' ? new TagAliasCache(mapping.source.table) : null;
-
-    const wSrcConn = new MachbaseClient(srcConfig);
-    const wDstConn = new MachbaseClient(dstConfig);
-    const reader = new Reader(srcSchema, wSrcConn, dataTable, mapping.source.columns);
-    const writer = new Writer(dstSchema);
+    let srcTable, dstTable;
+    if (tableType === 'TAG') {
+      srcTable = new TagDataTable(dataTable, srcConfig);
+      srcTable.setSchema(srcSchema);
+      dstTable = new TagTable(mapping.target.table, dstConfig);
+      dstTable.setSchema(dstSchema);
+    } else {
+      srcTable = new LogTable(dataTable, srcConfig);
+      srcTable.setSchema(srcSchema);
+      dstTable = new LogTable(mapping.target.table, dstConfig);
+      dstTable.setSchema(dstSchema);
+    }
 
     try {
-      await wSrcConn.connect();
-      await wDstConn.connect();
+      await srcTable.open();
 
-      const openErr = await writer.open(wDstConn, mapping.target.table, srcSchema);
+      const openErr = await dstTable.open(true);
       if (openErr) {
-        getLogger().error('worker', { ...logCtx, msg: `Writer.open failed: ${openErr.message}` });
-        await wDstConn.close().catch(() => {});
-        await wSrcConn.close().catch(() => {});
+        getLogger().error('worker', { ...logCtx, msg: `dstTable.open failed: ${openErr.message}` });
+        await srcTable.close();
         return;
       }
 
-      // open() 성공 시 dstConn 소유권은 Writer로 이전
       await this._runStateMachine({
-        reader,
-        aliasCache,
-        writer,
-        rowProcessor,
+        srcTable,
+        dstTable,
         shutdownFlag: effectiveShutdownFlag,
       });
     } finally {
-      await writer.close().catch(err =>
-        getLogger().error('worker', { ...logCtx, msg: `writer.close failed: ${err.message}` })
+      await dstTable.close().catch(err =>
+        getLogger().error('worker', { ...logCtx, msg: `dstTable.close failed: ${err.message}` })
       );
-      await reader.close().catch(err =>
-        getLogger().error('worker', { ...logCtx, msg: `reader.close failed: ${err.message}` })
+      await srcTable.close().catch(err =>
+        getLogger().error('worker', { ...logCtx, msg: `srcTable.close failed: ${err.message}` })
       );
     }
   }
@@ -250,12 +176,14 @@ class Worker {
   /**
    * 상태 머신: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
    */
-  async _runStateMachine({ reader, aliasCache, writer, rowProcessor, shutdownFlag }) {
-    const { jobId, mapping, tableType, dataTable, srcConfig } = this;
+  async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
+    const { jobId, mapping, tableType, dataTable } = this;
     const exec = mapping.execution;
     const batchSize = exec.query_limit || 5000;
     const ridRangeSize = exec.rid_range_size || 50000;
     const pollIntervalMs = exec.poll_interval_ms || 1000;
+    const sourceColumns = mapping.source.columns || null;
+    const tagIdentifier = mapping.source.tag_identifier || { mode: 'none', value: '' };
     const retry = new RetryHandler(exec.retry || {});
     const checkpointStore = new CheckpointStore(this.jobCheckpoint.directory);
     const logCtx = { job_id: jobId, data_table: dataTable };
@@ -273,12 +201,13 @@ class Worker {
     } else {
       const startMode = exec.start_mode || 'full';
       if (startMode === 'now') {
-        const { maxRid, err } = await reader.getMaxRid();
-        if (err) {
+        try {
+          const maxRidVal = await srcTable.getMaxRid();
+          startRid = maxRidVal + 1n;
+        } catch (err) {
           getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (start_mode=now), skipping mapping: ${err.message}` });
           return;
         }
-        startRid = maxRid + 1n;
       } else if (startMode === 'rid_after') {
         startRid = BigInt(exec.rid_after || 0);
       } else {
@@ -287,11 +216,11 @@ class Worker {
       getLogger().info('worker', { ...logCtx, msg: `start_mode=${startMode}, start_rid=${startRid}` });
     }
 
-    // TAG alias map 로드
-    if (aliasCache && aliasCache.size === 0) {
-      const loadErr = await aliasCache.load(reader.client);
+    // TAG alias cache 로드
+    if (tableType === 'TAG') {
+      const loadErr = await srcTable.loadTagAliasCache();
       if (loadErr) {
-        getLogger().warn('worker', { ...logCtx, msg: `aliasCache.load failed, falling back to per-row DB lookup: ${loadErr.message}` });
+        getLogger().warn('worker', { ...logCtx, msg: `loadTagAliasCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
     }
 
@@ -307,9 +236,10 @@ class Worker {
     if (doIntegrity) {
       const result = await this._runStartupIntegrity({
         startRid,
-        reader,
-        aliasCache,
-        rowProcessor,
+        srcTable,
+        dstTable,
+        tagIdentifier,
+        sourceColumns,
         batchSize,
         ridRangeSize,
         retry,
@@ -330,10 +260,11 @@ class Worker {
     let stmtCount = 0;
 
     while (!shutdownFlag.value) {
-      // Statement ID 한도 체크 — srcConfig가 있을 때만 재생성 가능
-      if (srcConfig && stmtCount >= STMT_REFRESH_THRESHOLD) {
+      // Statement ID 한도 체크
+      if (stmtCount >= STMT_REFRESH_THRESHOLD) {
         try {
-          await reader.refreshConnection(srcConfig);
+          await srcTable.close();
+          await srcTable.open();
           stmtCount = 0;
           getLogger().info('worker', { ...logCtx, msg: 'sourceConn refreshed (statement ID threshold)' });
         } catch (refreshErr) {
@@ -343,10 +274,13 @@ class Worker {
       }
 
       // 소스 배치 읽기
-      const rows = await _readBatch(reader, startRid, batchSize, ridRangeSize, retry, shutdownFlag, logCtx, 'STEADY');
-      if (rows === null) return; // exhausted or shutdown
+      const { rows, err: readErr } = await srcTable.read(startRid, batchSize, ridRangeSize, tagIdentifier, sourceColumns);
+      if (readErr) {
+        getLogger().error('worker', { ...logCtx, phase: 'STEADY', msg: `read failed: ${readErr.message}` });
+        return;
+      }
 
-      // readAfterRid는 MAX(_RID) + SELECT = 2개 쿼리 소비
+      // read는 MAX(_RID) + SELECT = 2개 쿼리 소비
       stmtCount += 2;
 
       if (rows.length === 0) {
@@ -357,23 +291,13 @@ class Worker {
       }
 
       const maxRidInBatch = maxRid(rows);
-      const outRows = [];
-      let droppedNoMeta = 0;
-
-      // 각 row 처리
-      for (const row of rows) {
-        if (shutdownFlag.value) return;
-
-        const result = await rowProcessor.process(row, aliasCache, reader.client, retry, shutdownFlag, logCtx);
-        if (result.action === 'shutdown') return;
-        if (result.action === 'drop') { droppedNoMeta++; continue; }
-        outRows.push(result.outRow);
-      }
+      const outRows = rows.map(row => row.data);
+      const droppedNoMeta = 0; // drop_not_found 행은 srcTable.read()가 이미 제외
 
       if (shutdownFlag.value) return;
 
       if (outRows.length > 0) {
-        const ok = await _appendRows(writer, outRows, retry, shutdownFlag, logCtx);
+        const ok = await _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx);
         if (!ok) return; // exhausted or shutdown
       }
 
@@ -400,9 +324,10 @@ class Worker {
    */
   async _runStartupIntegrity({
     startRid,
-    reader,
-    aliasCache,
-    rowProcessor,
+    srcTable,
+    dstTable,
+    tagIdentifier,
+    sourceColumns,
     batchSize,
     ridRangeSize,
     retry,
@@ -425,9 +350,13 @@ class Worker {
       try {
         await intConn.connect();
 
-        // 소스 배치 읽기
-        const rows = await _readBatch(reader, integrityRid, integrityBatchSize, ridRangeSize, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY');
-        if (rows === null) { shouldReturn = true; break; } // exhausted or shutdown
+        // 소스 배치 읽기 (drop_not_found 행은 srcTable.read()가 이미 제외)
+        const { rows, err: readErr } = await srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, tagIdentifier, sourceColumns);
+        if (readErr) {
+          getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readErr.message}` });
+          shouldReturn = true;
+          break;
+        }
 
         if (rows.length === 0) {
           // 소스의 모든 데이터가 대상에 존재함 → STEADY 진입
@@ -437,52 +366,38 @@ class Worker {
         }
 
         const maxRidInBatch = maxRid(rows);
-        let droppedNoMeta = 0;
 
-        // 1단계: 배치 내 모든 row의 canonical 이름 해석
-        const resolved = []; // { rid, canonical, time }
-        for (const row of rows) {
-          if (shutdownFlag.value) { shouldReturn = true; break; }
-          const result = await rowProcessor.process(row, aliasCache, reader.client, retry, shutdownFlag, logCtx);
-          if (result.action === 'shutdown') { shouldReturn = true; break; }
-          if (result.action === 'drop') { droppedNoMeta++; continue; }
-          resolved.push({ rid: row.rid, canonical: result.outRow.NAME, time: row.data.TIME });
-        }
-        if (shouldReturn) break;
+        // 1단계: 배치 내 모든 row의 resolved 목록 구성 (read()가 이미 drop 제외)
+        const resolved = rows.map(row => ({ rid: row.rid, canonical: row.data.NAME, time: row.data.TIME }));
+
         if (shutdownFlag.value) { shouldReturn = true; break; }
 
-        // 2단계: 배치 일괄 EXISTS 확인 (statement 1회 소비)
-        let existSet;
-        if (resolved.length === 0) {
-          existSet = new Set();
-        } else {
-          const { existSet: _existSet, err: batchErr } = await IntegrityChecker.batchExists(intConn, mapping.target.table, resolved);
-          if (batchErr) {
-            getLogger().error('worker', { ...logCtx, msg: `batchExists failed: ${batchErr.message}` });
-            shouldReturn = true;
-            break;
-          }
-          existSet = _existSet;
+        // 2단계: VOLATILE TABLE + JOIN으로 첫 번째 miss row 탐색
+        const { firstMissIdx, err: batchErr } = resolved.length === 0
+          ? { firstMissIdx: null, err: null }
+          : await dstTable.findFirstMissRow(resolved, intConn);
+
+        if (batchErr) {
+          getLogger().error('worker', { ...logCtx, msg: `findFirstMissRow failed: ${batchErr.message}` });
+          shouldReturn = true;
+          break;
         }
         if (shutdownFlag.value) { shouldReturn = true; break; }
 
-        // 3단계: 첫 번째 miss row 탐색 (rid 순서 유지)
         let firstMissRid = null;
         let skippedExists = 0;
-        for (const row of resolved) {
-          const key = IntegrityChecker.existKey(row.canonical, row.time);
-          if (!existSet.has(key)) {
-            firstMissRid = row.rid;
-            break;
-          }
-          skippedExists++;
+        if (firstMissIdx !== null) {
+          firstMissRid = resolved[firstMissIdx].rid;
+          skippedExists = firstMissIdx;
+        } else {
+          skippedExists = resolved.length;
         }
         if (shutdownFlag.value) { shouldReturn = true; break; }
 
         const batchStats = {
           rows_read: rows.length,
           rows_written: 0,
-          dropped_no_meta: droppedNoMeta,
+          dropped_no_meta: 0,
           skipped_exists: skippedExists,
         };
 
@@ -501,7 +416,7 @@ class Worker {
           break;
         }
 
-        // 배치 내 모든 row가 존재하거나 drop → 다음 배치로 진행
+        // 배치 내 모든 row가 존재 → 다음 배치로 진행
         await checkpointStore.save(jobId, dataTable, {
           last_success_rid: maxRidInBatch,
           source_server: mapping.source.server,
@@ -521,4 +436,4 @@ class Worker {
   }
 }
 
-module.exports = { Worker, TagRowProcessor, LogRowProcessor };
+module.exports = { Worker };

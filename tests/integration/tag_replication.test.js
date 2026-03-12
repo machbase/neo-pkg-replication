@@ -4,7 +4,7 @@
  * TAG 테이블 복제 통합 테스트
  *
  * 전제 조건:
- *   - 192.168.1.189:5656에 Machbase가 실행 중이어야 함
+ *   - 192.168.1.183:5656에 Machbase가 실행 중이어야 함
  *   - SYS/MANAGER 계정으로 접속 가능해야 함
  *
  * 테스트 시나리오:
@@ -27,14 +27,14 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const { MachbaseClient } = require('../../db/client.js');
-const { buildTagSchema, buildLogSchema } = require('../../db/schema_builder.js');
+const { TagTable, LogTable } = require('../../db/table.js');
 const CheckpointStore = require('../../checkpoint/store.js');
 const { Worker } = require('../../worker/worker.js');
 
 // ─── 접속 설정 ────────────────────────────────────────────────────────────────
 
 const DB_CONFIG = {
-  host: '192.168.1.189',
+  host: '192.168.1.183',
   port: 5656,
   user: 'SYS',
   password: 'MANAGER',
@@ -152,24 +152,26 @@ function baseMapping(srcTable, dstTable, overrides = {}) {
  */
 async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides = {}) {
   // 소스 파티션 조회
-  const discoverConn = await makeConn();
+  const srcTagTable = new TagTable(srcTable, DB_CONFIG);
   let partitions, srcSchema, dstSchema;
   try {
-    partitions = await discoverConn.selectTagDataTables(srcTable);
+    await srcTagTable.open(false);
+    partitions = await srcTagTable.getDataTables();
     if (partitions.length === 0) throw new Error(`No partitions for ${srcTable}`);
-    srcSchema = await buildTagSchema(discoverConn, srcTable, partitions[0].table_id);
+    srcSchema = await srcTagTable.getSchema(partitions[0].table_id);
   } finally {
-    await discoverConn.close();
+    await srcTagTable.close();
   }
 
   // 대상 스키마 조회
-  const dstDiscoverConn = await makeConn();
+  const dstTagTable = new TagTable(dstTable, DB_CONFIG);
   try {
-    const dstPartitions = await dstDiscoverConn.selectTagDataTables(dstTable);
+    await dstTagTable.open(false);
+    const dstPartitions = await dstTagTable.getDataTables();
     if (dstPartitions.length === 0) throw new Error(`No partitions for ${dstTable}`);
-    dstSchema = await buildTagSchema(dstDiscoverConn, dstTable, dstPartitions[0].table_id);
+    dstSchema = await dstTagTable.getSchema(dstPartitions[0].table_id);
   } finally {
-    await dstDiscoverConn.close();
+    await dstTagTable.close();
   }
 
   // src-only 컬럼 검출 (job_runner._discoverMapping 로직과 동일)
@@ -592,12 +594,12 @@ describe('TAG-10: LOG 테이블은 cp+integrity=true여도 STARTUP_INTEGRITY 미
 
     // LOG 테이블 스키마 빌드
     async function runLogWorker() {
-      const sc = await makeConn();
+      const srcLogTable = new LogTable(SRC, DB_CONFIG);
       let srcSchema;
-      try { srcSchema = await buildLogSchema(sc, SRC); } finally { await sc.close(); }
-      const dc = await makeConn();
+      try { await srcLogTable.open(false); srcSchema = await srcLogTable.getSchema(); } finally { await srcLogTable.close(); }
+      const dstLogTable = new LogTable(DST, DB_CONFIG);
       let dstSchema;
-      try { dstSchema = await buildLogSchema(dc, DST); } finally { await dc.close(); }
+      try { await dstLogTable.open(false); dstSchema = await dstLogTable.getSchema(); } finally { await dstLogTable.close(); }
 
       const mapping = {
         ...baseMapping(SRC, DST, { integrity: { enabled: true } }),
