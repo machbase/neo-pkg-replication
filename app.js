@@ -10,7 +10,12 @@ const configPath = process.argv[2] || path.join(__dirname, 'config.json');
 ConfigLoader.load(configPath)
   .then(config => {
     initLogger(config.logging);
-    return new Replicator(config).run();
+    const replicator = new Replicator(config, configPath);
+    if (config.api?.enabled) {
+      const { ApiServer } = require('./api/server.js');
+      new ApiServer(replicator, configPath).start(config.api.port);
+    }
+    return replicator.run();
   })
   .catch(err => {
     getLogger().error('app', { msg: err.message });

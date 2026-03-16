@@ -127,7 +127,6 @@ function makeShutdownFlag(timeoutMs = 500) {
 
 function baseMapping(srcTable, dstTable, overrides = {}) {
   return {
-    mapping_id: 'tag-test',
     source: { server: 'src', table: srcTable, tag_identifier: { mode: 'none', value: '' }, columns: null },
     target: { server: 'dst', table: dstTable },
     execution: {
@@ -152,24 +151,24 @@ function baseMapping(srcTable, dstTable, overrides = {}) {
  */
 async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides = {}) {
   // 소스 파티션 조회
-  const srcTagTable = new TagTable(srcTable, DB_CONFIG);
+  const srcTagTable = new TagTable(DB_CONFIG, srcTable);
   let partitions, srcSchema, dstSchema;
   try {
     await srcTagTable.open(false);
     partitions = await srcTagTable.getDataTables();
     if (partitions.length === 0) throw new Error(`No partitions for ${srcTable}`);
-    srcSchema = await srcTagTable.getSchema(partitions[0].table_id);
+    srcSchema = await srcTagTable.getSchema();
   } finally {
     await srcTagTable.close();
   }
 
   // 대상 스키마 조회
-  const dstTagTable = new TagTable(dstTable, DB_CONFIG);
+  const dstTagTable = new TagTable(DB_CONFIG, dstTable);
   try {
     await dstTagTable.open(false);
     const dstPartitions = await dstTagTable.getDataTables();
     if (dstPartitions.length === 0) throw new Error(`No partitions for ${dstTable}`);
-    dstSchema = await dstTagTable.getSchema(dstPartitions[0].table_id);
+    dstSchema = await dstTagTable.getSchema();
   } finally {
     await dstTagTable.close();
   }
@@ -193,9 +192,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
 
   for (const part of partitions) {
     const worker = new Worker(
-      jobId,
-      { directory: tmpDir },
-      mapping,
+      { ...mapping, id: jobId, checkpoint: { directory: tmpDir } },
       'TAG',
       part.data_table,
       srcSchema,
@@ -607,9 +604,7 @@ describe('TAG-10: LOG 테이블은 cp+integrity=true여도 STARTUP_INTEGRITY 미
       };
 
       const worker = new Worker(
-        jobId,
-        { directory: tmpDir },
-        mapping,
+        { ...mapping, id: jobId, checkpoint: { directory: tmpDir } },
         'LOG',
         SRC,
         srcSchema,

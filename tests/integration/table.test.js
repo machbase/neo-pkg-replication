@@ -239,12 +239,12 @@ test('TagTable-01: getSchema() — META + DATA 컬럼 조합', async () => {
       `CREATE TAG TABLE ${TABLE} (name VARCHAR(64) PRIMARY KEY, time DATETIME BASETIME, value DOUBLE SUMMARIZED) METADATA (location VARCHAR(32))`
     );
 
-    const table = new TagTable(TABLE, DB_CONFIG);
+    const table = new TagTable(DB_CONFIG, TABLE);
     try {
       const dataTables = await table.getDataTables();
       assert.ok(dataTables.length > 0, '파티션 존재');
 
-      const schema = await table.getSchema(dataTables[0].table_id);
+      const schema = await table.getSchema();
       assert.equal(schema.tableType, 'TAG');
       assert.equal(schema.logicalTable, TABLE);
 
@@ -276,12 +276,11 @@ test('TagTable-02: getDataTables() — 파티션 목록 반환', async () => {
       `CREATE TAG TABLE ${TABLE} (name VARCHAR(64) PRIMARY KEY, time DATETIME BASETIME, value DOUBLE SUMMARIZED)`
     );
 
-    const table = new TagTable(TABLE, DB_CONFIG);
+    const table = new TagTable(DB_CONFIG, TABLE);
     try {
       const dataTables = await table.getDataTables();
       assert.ok(dataTables.length > 0, '파티션 1개 이상');
       assert.ok(dataTables[0].data_table.includes(TABLE), `파티션명에 테이블명 포함 (실제: ${dataTables[0].data_table})`);
-      assert.ok(typeof dataTables[0].table_id === 'bigint', 'table_id는 BigInt');
     } finally {
       await table.close();
     }
@@ -299,9 +298,8 @@ test('TagTable-03: append() — 데이터 삽입 후 조회 검증', async () =>
       `CREATE TAG TABLE ${TABLE} (name VARCHAR(64) PRIMARY KEY, time DATETIME BASETIME, value DOUBLE SUMMARIZED)`
     );
 
-    const table = new TagTable(TABLE, DB_CONFIG);
-    const dataTables = await table.getDataTables();
-    const schema = await table.getSchema(dataTables[0].table_id);
+    const table = new TagTable(DB_CONFIG, TABLE);
+    const schema = await table.getSchema();
     table.setSchema(schema);
     await table.open(true);
     try {
@@ -314,7 +312,7 @@ test('TagTable-03: append() — 데이터 삽입 후 조회 검증', async () =>
       await table.close();
     }
 
-    const readTable = new TagTable(TABLE, DB_CONFIG);
+    const readTable = new TagTable(DB_CONFIG, TABLE);
     readTable.setSchema(schema);
     await readTable.open();
     try {
@@ -340,9 +338,8 @@ test('TagTable-04: metadata 컬럼 포함 append — location 값 저장 확인'
       `CREATE TAG TABLE ${TABLE} (name VARCHAR(64) PRIMARY KEY, time DATETIME BASETIME, value DOUBLE SUMMARIZED) METADATA (location VARCHAR(32))`
     );
 
-    const table = new TagTable(TABLE, DB_CONFIG);
-    const dataTables = await table.getDataTables();
-    const schema = await table.getSchema(dataTables[0].table_id);
+    const table = new TagTable(DB_CONFIG, TABLE);
+    const schema = await table.getSchema();
     table.setSchema(schema);
     await table.open(true);
     try {
@@ -354,7 +351,7 @@ test('TagTable-04: metadata 컬럼 포함 append — location 값 저장 확인'
       await table.close();
     }
 
-    const readTable = new TagTable(TABLE, DB_CONFIG);
+    const readTable = new TagTable(DB_CONFIG, TABLE);
     readTable.setSchema(schema);
     await readTable.open();
     try {
@@ -380,9 +377,9 @@ test('TagDataTable-05: loadTagAliasCache() — _TAG_META 로드 후 내부 캐�
     );
 
     // 데이터 삽입 (tag name 등록)
-    const tagTable = new TagTable(TABLE, DB_CONFIG);
+    const tagTable = new TagTable(DB_CONFIG, TABLE);
     const dataTables = await tagTable.getDataTables();
-    const schema = await tagTable.getSchema(dataTables[0].table_id);
+    const schema = await tagTable.getSchema();
     tagTable.setSchema(schema);
     await tagTable.open(true);
     await tagTable.append([
@@ -418,9 +415,9 @@ test('TagDataTable-06: read() — loadTagAliasCache 후 NAME이 canonical name�
     );
 
     // 데이터 삽입
-    const tagTable = new TagTable(TABLE, DB_CONFIG);
+    const tagTable = new TagTable(DB_CONFIG, TABLE);
     const dataTables = await tagTable.getDataTables();
-    const schema = await tagTable.getSchema(dataTables[0].table_id);
+    const schema = await tagTable.getSchema();
     tagTable.setSchema(schema);
     await tagTable.open(true);
     await tagTable.append([{ NAME: 'sensor_x', TIME: nowNs(0), VALUE: 5.5 }]);
@@ -461,7 +458,7 @@ test('TagDataTable-01: getMaxRid() — 빈 파티션은 BigInt 반환', async ()
       `CREATE TAG TABLE ${TABLE} (name VARCHAR(64) PRIMARY KEY, time DATETIME BASETIME, value DOUBLE SUMMARIZED)`
     );
 
-    const tagTable = new TagTable(TABLE, DB_CONFIG);
+    const tagTable = new TagTable(DB_CONFIG, TABLE);
     const dataTables = await tagTable.getDataTables();
     await tagTable.close();
 
@@ -489,9 +486,9 @@ test('TagDataTable-02: read() — 데이터 삽입 후 RID 기반 읽기 (전체
     );
 
     // 데이터 삽입 (TagTable 사용)
-    const tagTable = new TagTable(TABLE, DB_CONFIG);
+    const tagTable = new TagTable(DB_CONFIG, TABLE);
     const dataTables = await tagTable.getDataTables();
-    const schema = await tagTable.getSchema(dataTables[0].table_id);
+    const schema = await tagTable.getSchema();
     tagTable.setSchema(schema);
     await tagTable.open(true);
     await tagTable.append([
@@ -535,9 +532,9 @@ test('TagDataTable-03: getMaxRid() — 데이터 삽입 후 데이터 있는 파
     );
 
     // 데이터 삽입
-    const tagTable = new TagTable(TABLE, DB_CONFIG);
+    const tagTable = new TagTable(DB_CONFIG, TABLE);
     const dataTables = await tagTable.getDataTables();
-    const schema = await tagTable.getSchema(dataTables[0].table_id);
+    const schema = await tagTable.getSchema();
     tagTable.setSchema(schema);
     await tagTable.open(true);
     await tagTable.append([{ NAME: 'x', TIME: nowNs(0), VALUE: 1.0 }]);
@@ -572,9 +569,9 @@ test('TagDataTable-04: read() — metadata 컬럼은 결과에 포함되지 않�
     );
 
     // 데이터 삽입
-    const tagTable = new TagTable(TABLE, DB_CONFIG);
+    const tagTable = new TagTable(DB_CONFIG, TABLE);
     const dataTables = await tagTable.getDataTables();
-    const schema = await tagTable.getSchema(dataTables[0].table_id);
+    const schema = await tagTable.getSchema();
     tagTable.setSchema(schema);
     await tagTable.open(true);
     await tagTable.append([{ NAME: 'loc_a', TIME: nowNs(0), VALUE: 7.7 }]);

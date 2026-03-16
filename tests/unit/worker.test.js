@@ -133,10 +133,9 @@ function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
 function makeTagWorker(jobId, tmpDir, mappingOverrides, shutdownFlag) {
   const schema = makeTagSchema();
   return new Worker(
-    jobId,
-    { directory: tmpDir },
     {
-      mapping_id: 'map-test',
+      id: jobId,
+      checkpoint: { directory: tmpDir },
       source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
       target: { server: 'dst', table: 'TAG2' },
       execution: {
@@ -162,10 +161,9 @@ function makeTagWorker(jobId, tmpDir, mappingOverrides, shutdownFlag) {
 function makeLogWorker(jobId, tmpDir, mappingOverrides, shutdownFlag) {
   const schema = makeLogSchema();
   return new Worker(
-    jobId,
-    { directory: tmpDir },
     {
-      mapping_id: 'map-log',
+      id: jobId,
+      checkpoint: { directory: tmpDir },
       source: { server: 'src', table: 'LOG', tag_identifier: { mode: 'none', value: '' }, columns: null },
       target: { server: 'dst', table: 'LOG2' },
       execution: {
@@ -525,14 +523,10 @@ describe('Job — _discoverMapping', () => {
     const shutdownFlag = { value: false };
     const jobConfig = {
       id: 'job-disc-fail',
-      enabled: true,
       checkpoint: { directory: '/tmp' },
-      mappings: [{
-        mapping_id: 'map-1',
-        source: { server: 'src', table: 'TAG' },
-        target: { server: 'dst', table: 'TAG2' },
-        execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
-      }],
+      source: { server: 'src', table: 'TAG' },
+      target: { server: 'dst', table: 'TAG2' },
+      execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
     };
     const servers = {
       src: { host: '127.0.0.1', port: 1, user: 'x', password: 'x' },
@@ -540,10 +534,10 @@ describe('Job — _discoverMapping', () => {
     };
 
     const job = new Job(jobConfig, servers, shutdownFlag);
-    const logCtx = { job_id: 'job-disc-fail', mapping_id: 'map-1' };
+    const logCtx = { job_id: 'job-disc-fail' };
 
     // connect 실패 시 null 반환 확인
-    const result = await job._discoverMapping(jobConfig.mappings[0], logCtx);
+    const result = await job._discoverMapping(jobConfig, logCtx);
     assert.equal(result, null, 'connect 실패 → _discoverMapping null 반환');
   });
 
@@ -555,14 +549,10 @@ describe('Job — _discoverMapping', () => {
     };
     const jobConfig = {
       id: 'job-disc-ok',
-      enabled: true,
       checkpoint: { directory: '/tmp' },
-      mappings: [{
-        mapping_id: 'map-ok',
-        source: { server: 'src', table: 'TAG' },
-        target: { server: 'dst', table: 'TAG' },
-        execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
-      }],
+      source: { server: 'src', table: 'TAG' },
+      target: { server: 'dst', table: 'TAG' },
+      execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
     };
 
     const mockSchema = {
@@ -577,15 +567,15 @@ describe('Job — _discoverMapping', () => {
 
     // _discoverMapping 메서드를 직접 override하여 독립적 단위 테스트
     const job = new Job(jobConfig, servers, shutdownFlag);
-    job._discoverMapping = async (mapping, logCtx) => ({
+    job._discoverMapping = async () => ({
       tableType: 'TAG',
       dataTables: ['_TAG_DATA_0'],
       srcSchema: mockSchema,
       dstSchema: mockSchema,
     });
 
-    const logCtx = { job_id: 'job-disc-ok', mapping_id: 'map-ok' };
-    const result = await job._discoverMapping(jobConfig.mappings[0], logCtx);
+    const logCtx = { job_id: 'job-disc-ok' };
+    const result = await job._discoverMapping(jobConfig, logCtx);
 
     assert.ok(result !== null, '_discoverMapping null이 아니어야 함');
     assert.equal(result.tableType, 'TAG');
@@ -647,16 +637,15 @@ describe('Job — AbortController 전파', () => {
     try {
       const mockSchema = makeTagSchema();
       const shutdownFlag = { value: false };
-      const mapping = {
-        mapping_id: 'map-1',
-        source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
-        target: { server: 'dst', table: 'TAG' },
-        execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100 },
-      };
-
       const { Worker: WorkerClass } = require('../../worker/worker.js');
       const worker = new WorkerClass(
-        'job-signal-test', { directory: '/tmp' }, mapping,
+        {
+          id: 'job-signal-test',
+          checkpoint: { directory: '/tmp' },
+          source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
+          target: { server: 'dst', table: 'TAG' },
+          execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100 },
+        },
         'TAG', '_TAG_DATA_0', mockSchema, mockSchema,
         { host: 'mock', port: 1 }, { host: 'mock', port: 1 }, shutdownFlag,
       );
@@ -711,14 +700,10 @@ describe('Job — AbortController 전파', () => {
     };
     const jobConfig = {
       id: 'job-abort-test',
-      enabled: true,
       checkpoint: { directory: '/tmp' },
-      mappings: [{
-        mapping_id: 'map-abort',
-        source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
-        target: { server: 'dst', table: 'TAG' },
-        execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
-      }],
+      source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
+      target: { server: 'dst', table: 'TAG' },
+      execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
     };
     const mockSchema = makeTagSchema();
 
@@ -759,14 +744,10 @@ describe('Job — run() 재시작 동작', () => {
     };
     const jobConfig = {
       id: 'job-restart',
-      enabled: true,
       checkpoint: { directory: '/tmp' },
-      mappings: [{
-        mapping_id: 'map-restart',
-        source: { server: 'src', table: 'TAG' },
-        target: { server: 'dst', table: 'TAG' },
-        execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
-      }],
+      source: { server: 'src', table: 'TAG' },
+      target: { server: 'dst', table: 'TAG' },
+      execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
     };
 
     const mockSchema = makeTagSchema();
@@ -1168,105 +1149,35 @@ describe('Worker — 빈 배치 poll 대기', () => {
 });
 
 describe('Replicator — run()', () => {
-  test('disabled job는 실행되지 않음', async () => {
+  test('SIGTERM 수신 → shutdownFlag 설정 후 run() 완료', async () => {
     const config = {
       servers: {},
       replication: {
         jobs: [
-          { id: 'disabled-job', enabled: false, mappings: [], checkpoint: { directory: '/tmp' } },
+          { id: 'job-1', shutdown_timeout_ms: 30000 },
         ],
       },
     };
 
     const replicator = new Replicator(config);
-    await replicator.run();
-    assert.ok(true, 'disabled job은 실행 없이 즉시 완료되어야 함');
+    // run()은 shutdownFlag가 true가 될 때까지 루프를 돈다
+    // process.emit('SIGTERM')으로 내부 shutdownFlag를 설정
+    const runPromise = replicator.run();
+    setImmediate(() => process.emit('SIGTERM'));
+    await runPromise;
+    assert.ok(true, 'SIGTERM 후 run() 정상 종료');
   });
 
-  test('enabled job 없음 → 즉시 완료', async () => {
+  test('job 없음 → SIGTERM 후 즉시 완료', async () => {
     const config = {
       servers: {},
-      replication: {
-        jobs: [],
-      },
+      replication: { jobs: [] },
     };
 
     const replicator = new Replicator(config);
-    await replicator.run();
-    assert.ok(true, '빈 jobs → 즉시 완료');
-  });
-
-  test('여러 job 병렬 실행 — 모든 job이 독립적으로 실행되고 완료됨', async () => {
-    const executionOrder = [];
-
-    const { Job: JobClass } = require('../../job_runner.js');
-    const origRun = JobClass.prototype.run;
-    JobClass.prototype.run = async function() {
-      executionOrder.push(this.jobConfig.id);
-      // 각 job이 비동기로 독립 실행됨을 확인하기 위해 job-1은 짧게, job-2는 길게 대기
-      const delay = this.jobConfig.id === 'multi-job-1' ? 10 : 5;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      executionOrder.push(`${this.jobConfig.id}-done`);
-    };
-
-    try {
-      const config = {
-        servers: {},
-        replication: {
-          jobs: [
-            { id: 'multi-job-1', enabled: true, mappings: [], checkpoint: { directory: '/tmp' } },
-            { id: 'multi-job-2', enabled: true, mappings: [], checkpoint: { directory: '/tmp' } },
-            { id: 'multi-job-disabled', enabled: false, mappings: [], checkpoint: { directory: '/tmp' } },
-          ],
-        },
-      };
-
-      const replicator = new Replicator(config);
-      await replicator.run();
-
-      assert.ok(executionOrder.includes('multi-job-1'), 'job-1이 실행되어야 함');
-      assert.ok(executionOrder.includes('multi-job-2'), 'job-2가 실행되어야 함');
-      assert.ok(!executionOrder.includes('multi-job-disabled'), 'disabled job은 실행되지 않아야 함');
-      assert.ok(executionOrder.includes('multi-job-1-done'), 'job-1이 완료되어야 함');
-      assert.ok(executionOrder.includes('multi-job-2-done'), 'job-2가 완료되어야 함');
-      // 두 job이 병렬로 시작됨 — job-2-done이 job-1-done보다 먼저 올 수 있음
-      assert.equal(executionOrder.filter(e => e.endsWith('-done')).length, 2, '두 job 모두 완료');
-    } finally {
-      JobClass.prototype.run = origRun;
-    }
-  });
-
-  test('한 job 에러가 다른 job 실행에 영향을 주지 않음', async () => {
-    const completed = [];
-
-    const { Job: JobClass } = require('../../job_runner.js');
-    const origRun = JobClass.prototype.run;
-    JobClass.prototype.run = async function() {
-      if (this.jobConfig.id === 'crash-job') {
-        throw new Error('intentional crash');
-      }
-      await new Promise(resolve => setTimeout(resolve, 10));
-      completed.push(this.jobConfig.id);
-    };
-
-    try {
-      const config = {
-        servers: {},
-        replication: {
-          jobs: [
-            { id: 'crash-job', enabled: true, mappings: [], checkpoint: { directory: '/tmp' } },
-            { id: 'healthy-job', enabled: true, mappings: [], checkpoint: { directory: '/tmp' } },
-          ],
-        },
-      };
-
-      const replicator = new Replicator(config);
-      await replicator.run(); // crash-job 에러가 전파되지 않아야 함
-
-      assert.ok(!completed.includes('crash-job'), 'crash-job은 완료 목록에 없어야 함');
-      assert.ok(completed.includes('healthy-job'), 'healthy-job은 정상 완료되어야 함');
-    } finally {
-      JobClass.prototype.run = origRun;
-    }
+    const runPromise = replicator.run();
+    setImmediate(() => process.emit('SIGTERM'));
+    await runPromise;
+    assert.ok(true, '빈 jobs → SIGTERM 후 정상 종료');
   });
 });

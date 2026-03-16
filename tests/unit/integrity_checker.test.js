@@ -26,7 +26,7 @@ function makeTagTableForTest() {
   const timeCol = new Column('TIME', ColumnType.DATETIME, 2, 'data', 0);
   const schema = new TableSchema('TAG', 'TAG', [nameCol, timeCol]);
   // config는 사용되지 않으므로 dummy 전달
-  const table = new TagTable('TAG', { host: 'mock', port: 1 });
+  const table = new TagTable({ host: 'mock', port: 1 }, 'TAG');
   table.setSchema(schema);
   return table;
 }
@@ -98,7 +98,7 @@ test('findFirstMissRow: NAME 컬럼 없는 schema → { firstMissIdx: null, err 
   // NAME 컬럼 없이 TIME만 있는 schema
   const timeCol = new Column('TIME', ColumnType.DATETIME, 2, 'data', 0);
   const schema = new TableSchema('TAG', 'TAG', [timeCol]);
-  const table = new TagTable('TAG', { host: 'mock', port: 1 });
+  const table = new TagTable({ host: 'mock', port: 1 }, 'TAG');
   table.setSchema(schema);
   const client = makeMockClient();
   const rows = [{ canonical: 'sensor_a', time: 1000n }];

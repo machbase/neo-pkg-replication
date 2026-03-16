@@ -1,5 +1,6 @@
 {
   "version": 3,
+  "api": { "enabled": true, "port": 8080 },
   "logging": {
     "level": "info",
     "stdout": false,
@@ -26,12 +27,20 @@
     "jobs": [
       {
         "id": "job-1",
-        "enabled": true,
         "shutdown_timeout_ms": 30000,
         "checkpoint": {
           "directory": "./checkpoints"
         },
-        "execution_defaults": {
+        "source": {
+          "server": "src",
+          "table": "TAG",
+          "columns": ["name"]
+        },
+        "target": {
+          "server": "dst",
+          "table": "TAG2"
+        },
+        "execution": {
           "query_limit": 1000,
           "poll_interval_ms": 1000,
           "start_mode": "full",
@@ -39,21 +48,7 @@
           "integrity": {
             "enabled": true
           }
-        },
-        "mappings": [
-          {
-            "mapping_id": "tag-to-tag2",
-            "source": {
-              "server": "src",
-              "table": "TAG",
-              "columns": ["name"]
-            },
-            "target": {
-              "server": "dst",
-              "table": "TAG2"
-            }
-          }
-        ]
+        }
       }
     ]
   }

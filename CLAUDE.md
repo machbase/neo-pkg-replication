@@ -14,7 +14,7 @@ Machbase TAG/LOG 테이블 간 데이터 복제(replication) 도구.
 repli-js/
 ├── app.js                        # 진입점 — ConfigLoader → Replicator 실행
 ├── job_runner.js                 # Replicator, Job — Worker 병렬 실행 오케스트레이션
-├── config.json                   # 실행 설정 (jobs, mappings, 접속 정보 등)
+├── config.json                   # 실행 설정 (jobs, 접속 정보 등)
 ├── config/
 │   └── config.js                 # ConfigLoader — 설정 파일 로드/검증
 ├── core/
@@ -60,21 +60,20 @@ repli-js/
 
 - `ConfigLoader.load(filePath)` → config 객체 반환
 - version 3 필수 검증, servers/jobs 구조 검증
-- `_processJob()`: job별 checkpoint 디렉토리, execution_defaults 처리
-- `_processMapping()`: source.columns UPPERCASE 정규화, tag_identifier/retry/integrity 검증
-- `_mergeExecution(...layers)`: job defaults → source.execution → mapping.execution 우선순위 merge
+- `_processJob()`: job별 source/target/execution 검증, source.columns UPPERCASE 정규화, tag_identifier/retry/integrity 검증
+- `_mergeExecution(...layers)`: EXECUTION_DEFAULTS → job.execution 2-level merge
 
 ### job_runner.js — Replicator / Job
 
 - **Replicator**: SIGTERM/SIGINT → `shutdownFlag.value = true`, shutdown timer 관리
   - `shutdown_timeout_ms`: 활성 job 중 최댓값 사용 (기본 30000ms)
   - `module.exports = { Replicator, Job, Worker }`
-- **Job**: `while(!shutdown)` 루프
-  - `_discoverMapping(mapping, logCtx)` → 소스/대상 스키마 수집 + 검증 (단기 커넥션)
+- **Job**: `while(!shutdown)` 루프 (job = 단일 src→dst 복제 단위)
+  - `_discoverMapping(jobConfig, logCtx)` → 소스/대상 스키마 수집 + 검증 (단기 커넥션)
     - TAG: `TagTable.getDataTables()` → `TagTable.getSchema(dataTableId)` 호출
     - LOG: `LogTable.getSchema()` 호출
-    - src-only 컬럼 검출 (metadata 제외): 소스에만 있는 컬럼 → 해당 mapping 스킵
-    - `source.columns` 유효성 검증: schema에 없는 컬럼명 → 해당 mapping 스킵
+    - src-only 컬럼 검출 (metadata 제외): 소스에만 있는 컬럼 → discover 실패
+    - `source.columns` 유효성 검증: schema에 없는 컬럼명 → discover 실패
   - `AbortController`로 Worker × N `Promise.all` 병렬 실행
   - Worker 에러 시 abort → 루프 재시작
 
@@ -242,26 +241,22 @@ repli-js/
       "enabled": true,
       "shutdown_timeout_ms": 30000,
       "checkpoint": { "directory": "./checkpoints" },
-      "execution_defaults": {},
-      "mappings": [{
-        "mapping_id": "map-1",
-        "source": {
-          "server": "src",
-          "table": "TAG",
-          "columns": ["TIME", "VALUE"],
-          "tag_identifier": { "mode": "none" }
-        },
-        "target": { "server": "dst", "table": "TAG" },
-        "execution": {
-          "start_mode": "full",
-          "poll_interval_ms": 1000,
-          "query_limit": 1000,
-          "rid_range_size": 50000,
-          "on_save_failure": "continue",
-          "integrity": { "enabled": true },
-          "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
-        }
-      }]
+      "source": {
+        "server": "src",
+        "table": "TAG",
+        "columns": ["TIME", "VALUE"],
+        "tag_identifier": { "mode": "none" }
+      },
+      "target": { "server": "dst", "table": "TAG2" },
+      "execution": {
+        "start_mode": "full",
+        "poll_interval_ms": 1000,
+        "query_limit": 1000,
+        "rid_range_size": 50000,
+        "on_save_failure": "continue",
+        "integrity": { "enabled": true },
+        "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
+      }
     }]
   }
 }
@@ -270,7 +265,7 @@ repli-js/
 `source.columns` 필드:
 - 미지정(`null`) → 소스 테이블의 모든 데이터 컬럼 SELECT
 - `["TIME", "VALUE"]` → 지정된 컬럼만 SELECT (대소문자 무관, 내부적으로 UPPERCASE 정규화)
-- 빈 배열(`[]`) 또는 비문자열 항목 → config 검증 오류, 해당 mapping 스킵
+- 빈 배열(`[]`) 또는 비문자열 항목 → config 검증 오류 (throw)
 
 `source.tag_identifier` 필드:
 - `{ "mode": "none" }` → 태그명 그대로 사용 (기본값)

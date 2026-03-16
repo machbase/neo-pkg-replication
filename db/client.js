@@ -96,16 +96,17 @@ class MachbaseClient {
       [tableName]
     );
     if (!rows || rows.length === 0) return { type: 'UNSUPPORTED' };
-    const typeCode = rows[0].TYPE;
-    if (typeCode === 6) return { type: 'TAG' };
-    if (typeCode === 0) return { type: 'LOG' };
-    return { type: 'UNSUPPORTED' };
+    switch (rows[0].TYPE) {
+      case 6: return { type: 'TAG' };
+      case 0: return { type: 'LOG' };
+      default: return { type: 'UNSUPPORTED' };
+    }
   }
 
   async selectTagDataTables(tableName) {
     const pattern = `_${tableName}_DATA_%`;
     const sql = `
-      SELECT m.NAME AS data_table, m.ID AS table_id
+      SELECT m.NAME AS data_table
       FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m
       WHERE v.ID = m.ID AND m.NAME LIKE ?
       ORDER BY m.NAME
@@ -116,12 +117,13 @@ class MachbaseClient {
   /**
    * 테이블명 기준으로 M$SYS_COLUMNS 조회
    * TAG META 컬럼 조회 및 LOG 컬럼 조회에 사용
+   * c.FLAG === 67108864
    * @param {string} tableName
-   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
+   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>>}
    */
   async selectColumnsByTableName(tableName) {
     const sql = `
-      SELECT c.NAME, c.TYPE, c.ID, c.LENGTH
+      SELECT c.NAME, c.TYPE, c.ID, c.LENGTH, c.FLAG
       FROM M$SYS_COLUMNS c, M$SYS_TABLES t
       WHERE c.TABLE_ID = t.ID AND t.NAME = ?
         AND c.ID < 65534
@@ -130,21 +132,6 @@ class MachbaseClient {
     return this.query(sql, [tableName]);
   }
 
-  /**
-   * table_id 기준으로 M$SYS_COLUMNS 조회
-   * TAG DATA 파티션 컬럼 조회에 사용
-   * @param {number|bigint} tableId
-   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
-   */
-  async selectColumnsByTableId(tableId) {
-    const sql = `
-      SELECT c.NAME, c.TYPE, c.ID, c.LENGTH
-      FROM M$SYS_COLUMNS c
-      WHERE c.TABLE_ID = ? AND c.ID > 0 AND c.ID < 65534
-      ORDER BY c.ID ASC
-    `.trim();
-    return this.query(sql, [tableId]);
-  }
 
   /**
    * 테이블의 최대 RID 조회

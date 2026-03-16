@@ -92,7 +92,6 @@ function makeShutdownFlag(timeoutMs = 500) {
 
 function baseMapping(srcTable, dstTable, execOverrides = {}) {
   return {
-    mapping_id: 'log-test',
     source: { server: 'src', table: srcTable, tag_identifier: { mode: 'none', value: '' }, columns: null },
     target: { server: 'dst', table: dstTable },
     execution: {
@@ -125,9 +124,7 @@ async function runLogWorker(jobId, srcTable, dstTable, tmpDir, execOverrides = {
 
   const mapping = baseMapping(srcTable, dstTable, execOverrides);
   const worker = new Worker(
-    jobId,
-    { directory: tmpDir },
-    mapping,
+    { ...mapping, id: jobId, checkpoint: { directory: tmpDir } },
     'LOG',
     srcTable,
     srcSchema,

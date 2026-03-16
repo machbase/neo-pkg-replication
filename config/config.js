@@ -1,6 +1,7 @@
 'use strict';
 
 const { getInstance: getLogger } = require('../logger/logger.js');
+const { JobConfig } = require('../core/types.js');
 
 const fs = require('fs/promises');
 
@@ -67,6 +68,20 @@ class ConfigLoader {
       servers: raw.servers,
       replication: { jobs },
       logging: ConfigLoader._processLogging(raw.logging),
+      api: ConfigLoader._processApi(raw.api),
+    };
+  }
+
+  static async save(filePath, rawConfig) {
+    const tmp = `${filePath}.${process.hrtime.bigint()}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(rawConfig, null, 2), 'utf-8');
+    await fs.rename(tmp, filePath);
+  }
+
+  static _processApi(raw = {}) {
+    return {
+      enabled: raw.enabled !== false,
+      port: typeof raw.port === 'number' && raw.port > 0 ? raw.port : 8080,
     };
   }
 
@@ -123,192 +138,92 @@ class ConfigLoader {
       throw new Error(`checkpoint.directory must be a non-empty string in job '${job.id}'`);
     }
 
-    const jobDefaults = ConfigLoader._mergeExecution(EXECUTION_DEFAULTS, job.execution_defaults || {});
-
-    const mappings = (job.mappings || []).flatMap(mapping =>
-      ConfigLoader._processMapping(mapping, servers, jobDefaults, job.id)
-    );
-
-    return {
-      id: job.id,
-      enabled: job.enabled !== false,
-      shutdown_timeout_ms: shutdownTimeout,
-      checkpoint,
-      mappings,
-    };
-  }
-
-  static _processMapping(mapping, servers, jobDefaults, jobId) {
-    if (!mapping.mapping_id) throw new Error(`mapping_id is required in job '${jobId}'`);
-
-    const logCtx = { job_id: jobId, mapping_id: mapping.mapping_id };
-
     // source/target 구조 검증
-    if (!mapping.source || typeof mapping.source !== 'object') {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: 'mapping.source is required and must be an object, skipping mapping',
-      });
-      return [];
+    if (!job.source || typeof job.source !== 'object') {
+      throw new Error(`job.source is required and must be an object in job '${job.id}'`);
     }
-    if (!mapping.target || typeof mapping.target !== 'object') {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: 'mapping.target is required and must be an object, skipping mapping',
-      });
-      return [];
+    if (!job.target || typeof job.target !== 'object') {
+      throw new Error(`job.target is required and must be an object in job '${job.id}'`);
     }
-    if (!mapping.source.table || typeof mapping.source.table !== 'string') {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: 'mapping.source.table is required and must be a non-empty string, skipping mapping',
-      });
-      return [];
+    if (!job.source.table || typeof job.source.table !== 'string') {
+      throw new Error(`job.source.table is required and must be a non-empty string in job '${job.id}'`);
     }
-    if (!mapping.target.table || typeof mapping.target.table !== 'string') {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: 'mapping.target.table is required and must be a non-empty string, skipping mapping',
-      });
-      return [];
+    if (!job.target.table || typeof job.target.table !== 'string') {
+      throw new Error(`job.target.table is required and must be a non-empty string in job '${job.id}'`);
     }
 
-    const srcServer = mapping.source.server;
-    const dstServer = mapping.target.server;
+    const srcServer = job.source.server;
+    const dstServer = job.target.server;
 
     if (!servers[srcServer]) {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: `Unknown source server alias: "${srcServer}", skipping mapping`,
-      });
-      return [];
+      throw new Error(`Unknown source server alias: "${srcServer}" in job '${job.id}'`);
     }
     if (!servers[dstServer]) {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: `Unknown target server alias: "${dstServer}", skipping mapping`,
-      });
-      return [];
+      throw new Error(`Unknown target server alias: "${dstServer}" in job '${job.id}'`);
     }
 
-    // 필드 레벨 merge: mapping.execution > source.execution > job execution_defaults
-    const execution = ConfigLoader._mergeExecution(
-      jobDefaults,
-      mapping.source?.execution || {},
-      mapping.execution || {},
-    );
+    // 2-level merge: EXECUTION_DEFAULTS → job.execution
+    const execution = ConfigLoader._mergeExecution(EXECUTION_DEFAULTS, job.execution || {});
 
     // query_limit 검증
     if (!Number.isInteger(execution.query_limit) || execution.query_limit < 1) {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: `query_limit must be a positive integer, got: ${execution.query_limit}, skipping mapping`,
-      });
-      return [];
+      throw new Error(`query_limit must be a positive integer, got: ${execution.query_limit} in job '${job.id}'`);
     }
 
     // poll_interval_ms 검증
     if (!Number.isInteger(execution.poll_interval_ms) || execution.poll_interval_ms < 1) {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: `poll_interval_ms must be a positive integer, got: ${execution.poll_interval_ms}, skipping mapping`,
-      });
-      return [];
+      throw new Error(`poll_interval_ms must be a positive integer, got: ${execution.poll_interval_ms} in job '${job.id}'`);
     }
 
     if (!VALID_START_MODES.has(execution.start_mode)) {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: `Invalid start_mode: "${execution.start_mode}", skipping mapping`,
-      });
-      return [];
+      throw new Error(`Invalid start_mode: "${execution.start_mode}" in job '${job.id}'`);
     }
     if (execution.start_mode === 'rid_after') {
       const ridVal = execution.rid_after;
       if (ridVal === undefined || ridVal === null) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: 'rid_after is required when start_mode is "rid_after", skipping mapping',
-        });
-        return [];
+        throw new Error(`rid_after is required when start_mode is "rid_after" in job '${job.id}'`);
       }
       if (!/^\d+$/.test(String(ridVal))) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: `rid_after must be a non-negative integer, got: ${ridVal}, skipping mapping`,
-        });
-        return [];
+        throw new Error(`rid_after must be a non-negative integer, got: ${ridVal} in job '${job.id}'`);
       }
     }
     if (!VALID_ON_SAVE_FAILURE.has(execution.on_save_failure)) {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: `Invalid on_save_failure: "${execution.on_save_failure}", skipping mapping`,
-      });
-      return [];
+      throw new Error(`Invalid on_save_failure: "${execution.on_save_failure}" in job '${job.id}'`);
     }
 
     const rrs = execution.rid_range_size;
     if (!Number.isInteger(rrs) || rrs < 1) {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: `rid_range_size must be a positive integer, got: ${rrs}, skipping mapping`,
-      });
-      return [];
+      throw new Error(`rid_range_size must be a positive integer, got: ${rrs} in job '${job.id}'`);
     }
 
     // retry 구조 검증
     if (execution.retry !== undefined) {
       if (typeof execution.retry !== 'object' || execution.retry === null || Array.isArray(execution.retry)) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: 'retry must be an object, skipping mapping',
-        });
-        return [];
+        throw new Error(`retry must be an object in job '${job.id}'`);
       }
       const r = execution.retry;
       const VALID_STRATEGIES = ['exponential', 'linear'];
       if (r.strategy !== undefined && !VALID_STRATEGIES.includes(r.strategy)) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: `retry.strategy must be 'exponential' or 'linear', got: "${r.strategy}", skipping mapping`,
-        });
-        return [];
+        throw new Error(`retry.strategy must be 'exponential' or 'linear', got: "${r.strategy}" in job '${job.id}'`);
       }
       if (r.max_attempts !== undefined && r.max_attempts !== null) {
         if (!Number.isInteger(r.max_attempts) || r.max_attempts < 1) {
-          getLogger().error('config', {
-            ...logCtx,
-            msg: `retry.max_attempts must be a positive integer or null, got: ${r.max_attempts}, skipping mapping`,
-          });
-          return [];
+          throw new Error(`retry.max_attempts must be a positive integer or null, got: ${r.max_attempts} in job '${job.id}'`);
         }
       }
       if (r.base_delay_ms !== undefined) {
         if (!Number.isInteger(r.base_delay_ms) || r.base_delay_ms < 0) {
-          getLogger().error('config', {
-            ...logCtx,
-            msg: `retry.base_delay_ms must be a non-negative integer, got: ${r.base_delay_ms}, skipping mapping`,
-          });
-          return [];
+          throw new Error(`retry.base_delay_ms must be a non-negative integer, got: ${r.base_delay_ms} in job '${job.id}'`);
         }
       }
       if (r.max_delay_ms !== undefined) {
         if (!Number.isInteger(r.max_delay_ms) || r.max_delay_ms < 0) {
-          getLogger().error('config', {
-            ...logCtx,
-            msg: `retry.max_delay_ms must be a non-negative integer, got: ${r.max_delay_ms}, skipping mapping`,
-          });
-          return [];
+          throw new Error(`retry.max_delay_ms must be a non-negative integer, got: ${r.max_delay_ms} in job '${job.id}'`);
         }
       }
       if (r.multiplier !== undefined) {
         if (typeof r.multiplier !== 'number' || r.multiplier <= 0) {
-          getLogger().error('config', {
-            ...logCtx,
-            msg: `retry.multiplier must be a positive number, got: ${r.multiplier}, skipping mapping`,
-          });
-          return [];
+          throw new Error(`retry.multiplier must be a positive number, got: ${r.multiplier} in job '${job.id}'`);
         }
       }
     }
@@ -316,85 +231,59 @@ class ConfigLoader {
     // integrity 구조 검증
     if (execution.integrity !== undefined) {
       if (typeof execution.integrity !== 'object' || execution.integrity === null || Array.isArray(execution.integrity)) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: 'integrity must be an object, skipping mapping',
-        });
-        return [];
+        throw new Error(`integrity must be an object in job '${job.id}'`);
       }
       if (execution.integrity.enabled !== undefined && typeof execution.integrity.enabled !== 'boolean') {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: `integrity.enabled must be a boolean, got: ${typeof execution.integrity.enabled}, skipping mapping`,
-        });
-        return [];
+        throw new Error(`integrity.enabled must be a boolean, got: ${typeof execution.integrity.enabled} in job '${job.id}'`);
       }
     }
 
     // tag_identifier 검증
     const VALID_MODES = ['prefix', 'suffix', 'none'];
-    const tagId = mapping.source.tag_identifier;
+    const tagId = job.source.tag_identifier;
     if (tagId) {
       if (tagId.mode === undefined || tagId.mode === null) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: `tag_identifier.mode is required when tag_identifier is specified (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`,
-        });
-        return [];
+        throw new Error(`tag_identifier.mode is required when tag_identifier is specified (must be one of: ${VALID_MODES.join(', ')}) in job '${job.id}'`);
       }
       if (!VALID_MODES.includes(tagId.mode)) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: `Invalid tag_identifier.mode '${tagId.mode}' (must be one of: ${VALID_MODES.join(', ')}), skipping mapping`,
-        });
-        return [];
+        throw new Error(`Invalid tag_identifier.mode '${tagId.mode}' (must be one of: ${VALID_MODES.join(', ')}) in job '${job.id}'`);
       }
     }
     if (tagId && tagId.value !== undefined && typeof tagId.value !== 'string') {
-      getLogger().error('config', {
-        ...logCtx,
-        msg: `tag_identifier.value must be a string, got: ${typeof tagId.value}, skipping mapping`,
-      });
-      return [];
+      throw new Error(`tag_identifier.value must be a string, got: ${typeof tagId.value} in job '${job.id}'`);
     }
 
     // source.columns 검증
     let sourceColumns = null;
-    const rawCols = mapping.source.columns;
+    const rawCols = job.source.columns;
     if (rawCols !== undefined && rawCols !== null) {
       if (!Array.isArray(rawCols) || rawCols.length === 0) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: 'source.columns must be a non-empty array when specified, skipping mapping',
-        });
-        return [];
+        throw new Error(`source.columns must be a non-empty array when specified in job '${job.id}'`);
       }
       if (!rawCols.every(c => typeof c === 'string' && c.trim() !== '')) {
-        getLogger().error('config', {
-          ...logCtx,
-          msg: 'source.columns entries must be non-empty strings, skipping mapping',
-        });
-        return [];
+        throw new Error(`source.columns entries must be non-empty strings in job '${job.id}'`);
       }
       sourceColumns = rawCols.map(c => c.toUpperCase());
     }
 
-    return [{
-      mapping_id: mapping.mapping_id,
+    return new JobConfig({
+      id: job.id,
+      shutdown_timeout_ms: shutdownTimeout,
+      checkpoint,
       source: {
         server: srcServer,
-        table: mapping.source.table,
-        tag_identifier: mapping.source.tag_identifier || { mode: 'none', value: '' },
+        table: job.source.table,
+        tag_identifier: job.source.tag_identifier || { mode: 'none', value: '' },
         columns: sourceColumns,
       },
-      target: { server: dstServer, table: mapping.target.table },
+      target: { server: dstServer, table: job.target.table },
       execution,
-    }];
+    });
   }
 
   /**
    * 필드 레벨 merge: 오른쪽 인수가 우선
-   * _mergeExecution(base, mid, top) → top > mid > base
+   * _mergeExecution(base, top) → top > base
    */
   static _mergeExecution(...layers) {
     const merged = {};

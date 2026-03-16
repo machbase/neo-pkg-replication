@@ -72,20 +72,20 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
 }
 
 /**
- * Writer.append 을 retry 포함하여 호출
+ * dstTable.append 을 retry 포함하여 호출
  * @returns {boolean} true on success, false on exhausted/shutdown
  */
-async function _appendRows(writer, outRows, retry, shutdownFlag, logCtx) {
+async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
   const result = await _withRetry({
     fn: async () => {
-      const err = await writer.append(outRows);
+      const err = await dstTable.append(outRows);
       if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable append error: ${err.message}` };
       return { done: true, value: true };
     },
     retry,
     shutdownFlag,
     logCtx,
-    exhaustedMsg: 'append retry exhausted, skipping mapping',
+    exhaustedMsg: 'append retry exhausted, skipping job',
     retryMsg: 'append retry',
   });
   return result.ok;
@@ -102,11 +102,9 @@ async function _appendRows(writer, outRows, retry, shutdownFlag, logCtx) {
  * STARTUP_INTEGRITY 진입 조건: TAG 테이블 + 체크포인트 존재 + integrity.enabled !== false
  */
 class Worker {
-  constructor(jobId, jobCheckpoint, mapping, tableType, dataTable,
+  constructor(jobConfig, tableType, dataTable,
               srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag) {
-    this.jobId = jobId;
-    this.jobCheckpoint = jobCheckpoint;
-    this.mapping = mapping;
+    this.jobConfig = jobConfig;
     this.tableType = tableType;
     this.dataTable = dataTable;
     this.srcSchema = srcSchema;
@@ -120,11 +118,10 @@ class Worker {
    * 연결 생성 + 전체 실행
    */
   async run(signal) {
-    const { jobId, mapping, tableType, dataTable,
+    const { jobConfig, tableType, dataTable,
             srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag } = this;
     const logCtx = {
-      job_id: jobId,
-      mapping_id: mapping.mapping_id,
+      job_id: jobConfig.id,
       data_table: dataTable,
     };
 
@@ -139,12 +136,12 @@ class Worker {
     if (tableType === 'TAG') {
       srcTable = new TagDataTable(dataTable, srcConfig);
       srcTable.setSchema(srcSchema);
-      dstTable = new TagTable(mapping.target.table, dstConfig);
+      dstTable = new TagTable(dstConfig, jobConfig.target.table);
       dstTable.setSchema(dstSchema);
     } else {
       srcTable = new LogTable(dataTable, srcConfig);
       srcTable.setSchema(srcSchema);
-      dstTable = new LogTable(mapping.target.table, dstConfig);
+      dstTable = new LogTable(jobConfig.target.table, dstConfig);
       dstTable.setSchema(dstSchema);
     }
 
@@ -177,22 +174,22 @@ class Worker {
    * 상태 머신: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
    */
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
-    const { jobId, mapping, tableType, dataTable } = this;
-    const exec = mapping.execution;
+    const { jobConfig, tableType, dataTable } = this;
+    const exec = jobConfig.execution;
     const batchSize = exec.query_limit || 5000;
     const ridRangeSize = exec.rid_range_size || 50000;
     const pollIntervalMs = exec.poll_interval_ms || 1000;
-    const sourceColumns = mapping.source.columns || null;
-    const tagIdentifier = mapping.source.tag_identifier || { mode: 'none', value: '' };
+    const sourceColumns = jobConfig.source.columns || null;
+    const tagIdentifier = jobConfig.source.tag_identifier || { mode: 'none', value: '' };
     const retry = new RetryHandler(exec.retry || {});
-    const checkpointStore = new CheckpointStore(this.jobCheckpoint.directory);
-    const logCtx = { job_id: jobId, data_table: dataTable };
+    const checkpointStore = new CheckpointStore(jobConfig.checkpoint.directory);
+    const logCtx = { job_id: jobConfig.id, data_table: dataTable };
 
     // ═══════════════════════════════════════════════════════════
     // RESOLVE_START — 시작 RID 결정
     // ═══════════════════════════════════════════════════════════
 
-    const { cp, exists: cpExists } = await checkpointStore.load(jobId, dataTable);
+    const { cp, exists: cpExists } = await checkpointStore.load(jobConfig.id, dataTable);
     let startRid;
 
     if (cpExists && cp) {
@@ -205,7 +202,7 @@ class Worker {
           const maxRidVal = await srcTable.getMaxRid();
           startRid = maxRidVal + 1n;
         } catch (err) {
-          getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (start_mode=now), skipping mapping: ${err.message}` });
+          getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (start_mode=now), skipping job: ${err.message}` });
           return;
         }
       } else if (startMode === 'rid_after') {
@@ -307,10 +304,10 @@ class Worker {
         dropped_no_meta: droppedNoMeta,
         skipped_exists: 0,
       };
-      await checkpointStore.save(jobId, dataTable, {
+      await checkpointStore.save(jobConfig.id, dataTable, {
         last_success_rid: maxRidInBatch,
-        source_server: mapping.source.server,
-        source_table: mapping.source.table,
+        source_server: jobConfig.source.server,
+        source_table: jobConfig.source.table,
       }, batchStats, { on_save_failure: exec.on_save_failure });
 
       startRid = maxRidInBatch + 1n;
@@ -335,7 +332,7 @@ class Worker {
     logCtx,
     checkpointStore,
   }) {
-    const { jobId, mapping, dataTable, dstConfig } = this;
+    const { jobConfig, dataTable, dstConfig } = this;
 
     getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY start, from_rid=${startRid}` });
     let integrityRid = startRid;
@@ -403,11 +400,11 @@ class Worker {
 
         if (firstMissRid !== null) {
           const safeCpRid = firstMissRid > 0n ? firstMissRid - 1n : 0n;
-          await checkpointStore.save(jobId, dataTable, {
+          await checkpointStore.save(jobConfig.id, dataTable, {
             last_success_rid: safeCpRid,
-            source_server: mapping.source.server,
-            source_table: mapping.source.table,
-          }, batchStats, { on_save_failure: mapping.execution.on_save_failure });
+            source_server: jobConfig.source.server,
+            source_table: jobConfig.source.table,
+          }, batchStats, { on_save_failure: jobConfig.execution.on_save_failure });
           startRid = firstMissRid;
           getLogger().info('worker', {
             ...logCtx,
@@ -417,11 +414,11 @@ class Worker {
         }
 
         // 배치 내 모든 row가 존재 → 다음 배치로 진행
-        await checkpointStore.save(jobId, dataTable, {
+        await checkpointStore.save(jobConfig.id, dataTable, {
           last_success_rid: maxRidInBatch,
-          source_server: mapping.source.server,
-          source_table: mapping.source.table,
-        }, batchStats, { on_save_failure: mapping.execution.on_save_failure });
+          source_server: jobConfig.source.server,
+          source_table: jobConfig.source.table,
+        }, batchStats, { on_save_failure: jobConfig.execution.on_save_failure });
         integrityRid = maxRidInBatch + 1n;
         getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY: batch all confirmed, next_rid=${integrityRid}` });
       } finally {

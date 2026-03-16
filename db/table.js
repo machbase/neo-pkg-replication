@@ -284,10 +284,10 @@ class LogTable {
  */
 class TagTable {
   /**
-   * @param {string} logicalTable - 논리 테이블명
    * @param {object} config - MachbaseClient 접속 설정
+   * @param {string} logicalTable - 논리 테이블명
    */
-  constructor(logicalTable, config) {
+  constructor(config, logicalTable) {
     this.logicalTable = logicalTable;
     this.client = new MachbaseClient(config);
     /** @type {TableSchema|null} */
@@ -297,57 +297,38 @@ class TagTable {
   }
 
   /**
-   * META 테이블 컬럼 목록 조회
+   * 컬럼 목록 조회
+   * @param {string} tableName
    * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
    */
-  async getMetaColumns() {
-    return this.client.selectColumnsByTableName(`_${this.logicalTable}_META`);
-  }
-
-  /**
-   * DATA 파티션 컬럼 목록 조회
-   * @param {BigInt} dataTableId
-   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
-   */
-  async getDataColumns(dataTableId) {
-    return this.client.selectColumnsByTableId(dataTableId);
+   async getColumns() {
+    return this.client.selectColumnsByTableName(this.logicalTable);
   }
 
   /**
    * TAG 스키마 조회 후 반환
    * META + DATA 파티션 두 곳에서 컬럼 조회
-   * @param {BigInt} dataTableId - DATA 파티션 table_id
    * @returns {Promise<TableSchema>}
    */
-  async getSchema(dataTableId) {
-    const metaRows = await this.getMetaColumns();
-    const metadataColumns = [];
-    for (const r of metaRows) {
-      if (r.NAME.startsWith('_') || r.NAME === 'NAME') continue;
-      metadataColumns.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'metadata', r.LENGTH ?? 0));
-    }
-
-    const dataRows = await this.getDataColumns(dataTableId);
-    const dataColumns = [];
-    for (const r of dataRows) {
+  async getSchema() {
+    const rows = await this.getColumns();
+    const cols = [];
+    for (const r of rows) {
       if (r.NAME.startsWith('_')) continue;
-      const columnType = r.NAME.toLowerCase() === 'name'
-        ? ColumnType.VARCHAR
-        : ColumnType.fromCode(r.TYPE);
-      const category = r.NAME.toLowerCase() === 'name' ? 'key' : 'data';
-      dataColumns.push(new Column(r.NAME, columnType, r.ID, category, r.LENGTH ?? 0));
+      const category = r.FLAG === 67108864 ? 'metadata' : 'data';
+      cols.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, category, r.LENGTH ?? 0));
     }
 
-    if (dataColumns.length === 0) {
-      throw new Error(`TagTable.getSchema: no data columns found for '${this.logicalTable}' (dataTableId=${dataTableId})`);
+    if (cols.length === 0) {
+      throw new Error(`TagTable.getSchema: no data columns found for '${this.logicalTable}'`);
     }
 
-    return new TableSchema('TAG', this.logicalTable, [...dataColumns, ...metadataColumns]);
+    return new TableSchema('TAG', this.logicalTable, cols);
   }
 
   /**
    * DATA 파티션 목록 조회
-   * @returns {Promise<Array<{ data_table: string, table_id: BigInt }>>}
+   * @returns {Promise<Array<{ data_table: string }>>}
    */
   async getDataTables() {
     return this.client.selectTagDataTables(this.logicalTable);

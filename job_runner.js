@@ -16,27 +16,16 @@ class Job {
 
   /**
    * source.columns 유효성 검증 헬퍼
-   * @returns {true|null} null = 검증 실패 (mapping skip)
+   * @returns {true|null} null = 검증 실패
    */
-  _validateSourceColumns(mapping, srcSchema, logCtx) {
-    if (!mapping.source.columns) return true;
-    const actualCols = new Set(srcSchema.columns.map(c => c.name));
-    const unknownCols = mapping.source.columns.filter(c => !actualCols.has(c));
-    if (unknownCols.length > 0) {
-      getLogger().error('job_runner', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping mapping` });
-      return null;
-    }
-    return true;
-  }
-
   /**
-   * mapping의 소스/대상 스키마 수집 (단기 커넥션 사용 후 즉시 반납)
+   * 소스/대상 스키마 수집 (단기 커넥션 사용 후 즉시 반납)
    * @returns {{ tableType, dataTables, srcSchema, dstSchema }}|null  null = 실패
    */
-  async _discoverMapping(mapping, logCtx) {
-    const { servers } = this;
-    const srcConfig = servers[mapping.source.server];
-    const dstConfig = servers[mapping.target.server];
+  async _discoverMapping(logCtx) {
+    const { source, target } = this.jobConfig;
+    const srcConfig = this.servers[source.server];
+    const dstConfig = this.servers[target.server];
 
     let tableType;
     let dataTables;
@@ -45,85 +34,99 @@ class Job {
 
     try {
       // 테이블 타입 조회 (단기 커넥션)
-      const tmpConn = new MachbaseClient(srcConfig);
+      const client = new MachbaseClient(srcConfig);
       try {
-        await tmpConn.connect();
-        const result = await tmpConn.selectTableType(mapping.source.table);
+        await client.connect();
+        const result = await client.selectTableType(source.table);
         tableType = result.type;
       } finally {
-        await tmpConn.close().catch(() => {});
+        await client.close().catch(() => {});
       }
 
-      if (tableType === 'UNSUPPORTED') {
-        getLogger().error('job_runner', { ...logCtx, msg: `unsupported table type, skipping mapping` });
-        return null;
-      }
-
-      if (tableType === 'TAG') {
-        // 소스 스키마
-        const srcTagTable = new TagTable(mapping.source.table, srcConfig);
-        try {
-          await srcTagTable.client.connect();
-          const srcTables = await srcTagTable.getDataTables();
-          if (srcTables.length === 0) {
-            getLogger().error('job_runner', { ...logCtx, msg: `no data partitions found, skipping mapping` });
-            return null;
+      switch (tableType) {
+        case 'TAG': {
+          const table = new TagTable(srcConfig, source.table);
+          try {
+            await table.client.connect();
+            const src = await table.getDataTables();
+            if (src.length === 0) {
+              getLogger().error('job_runner', { ...logCtx, msg: `no data partitions found, skipping job` });
+              return null;
+            }
+            dataTables = src.map(t => t.data_table);
+            srcSchema = await table.getSchema();
+          } finally {
+            await table.client.close().catch(() => {});
           }
-          dataTables = srcTables.map(t => t.data_table);
-          srcSchema = await srcTagTable.getSchema(srcTables[0].table_id);
-        } finally {
-          await srcTagTable.client.close().catch(() => {});
-        }
 
-        if (!this._validateSourceColumns(mapping, srcSchema, logCtx)) return null;
-
-        // 대상 스키마
-        const dstTagTable = new TagTable(mapping.target.table, dstConfig);
-        try {
-          await dstTagTable.client.connect();
-          const dstTables = await dstTagTable.getDataTables();
-          if (dstTables.length === 0) {
-            getLogger().error('job_runner', { ...logCtx, msg: `no target data partitions found, skipping mapping` });
-            return null;
+          if (source.columns) {
+            const actualCols = new Set(srcSchema.columns.map(c => c.name));
+            const unknownCols = source.columns.filter(c => !actualCols.has(c));
+            if (unknownCols.length > 0) {
+              getLogger().error('job_runner', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
+              return null;
+            }
           }
-          dstSchema = await dstTagTable.getSchema(dstTables[0].table_id);
-        } finally {
-          await dstTagTable.client.close().catch(() => {});
-        }
-      } else {
-        // LOG: 논리 테이블을 data_table로 사용
-        dataTables = [mapping.source.table];
 
-        const srcLogTable = new LogTable(mapping.source.table, srcConfig);
-        try {
-          await srcLogTable.client.connect();
-          srcSchema = await srcLogTable.getSchema();
-        } finally {
-          await srcLogTable.client.close().catch(() => {});
+          const dst = new TagTable(dstConfig, target.table);
+          try {
+            await dst.client.connect();
+            const dstTables = await dst.getDataTables();
+            if (dstTables.length === 0) {
+              getLogger().error('job_runner', { ...logCtx, msg: `no target data partitions found, skipping job` });
+              return null;
+            }
+            dstSchema = await dst.getSchema();
+          } finally {
+            await dst.client.close().catch(() => {});
+          }
+          break;
         }
+        case 'LOG': {
+          dataTables = [source.table];
 
-        if (!this._validateSourceColumns(mapping, srcSchema, logCtx)) return null;
+          const src = new LogTable(source.table, srcConfig);
+          try {
+            await src.client.connect();
+            srcSchema = await src.getSchema();
+          } finally {
+            await src.client.close().catch(() => {});
+          }
 
-        const dstLogTable = new LogTable(mapping.target.table, dstConfig);
-        try {
-          await dstLogTable.client.connect();
-          dstSchema = await dstLogTable.getSchema();
-        } finally {
-          await dstLogTable.client.close().catch(() => {});
+          if (source.columns) {
+            const actualCols = new Set(srcSchema.columns.map(c => c.name));
+            const unknownCols = source.columns.filter(c => !actualCols.has(c));
+            if (unknownCols.length > 0) {
+              getLogger().error('job_runner', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
+              return null;
+            }
+          }
+
+          const dst = new LogTable(target.table, dstConfig);
+          try {
+            await dst.client.connect();
+            dstSchema = await dst.getSchema();
+          } finally {
+            await dst.client.close().catch(() => {});
+          }
+          break;
         }
+        default:
+          getLogger().error('job_runner', { ...logCtx, msg: `unsupported table type, skipping job` });
+          return null;
       }
     } catch (err) {
       getLogger().error('job_runner', { ...logCtx, msg: `discover failed: ${err.message}` });
       return null;
     }
 
-    // src에만 있는 컬럼 검출 — metadata 카테고리는 제외 (Writer가 safeNull로 패딩)
+    // src에만 있는 컬럼 검출 — metadata 카테고리는 제외 (safeNull로 패딩)
     const dstNames = new Set(dstSchema.columns.map(c => c.name));
     const srcOnlyCols = srcSchema.columns
       .filter(c => c.category !== 'metadata' && !dstNames.has(c.name))
       .map(c => c.name);
     if (srcOnlyCols.length > 0) {
-      getLogger().error('job_runner', { ...logCtx, msg: `source has columns not present in destination: ${srcOnlyCols.join(', ')}, skipping mapping` });
+      getLogger().error('job_runner', { ...logCtx, msg: `source has columns not present in destination: ${srcOnlyCols.join(', ')}, skipping job` });
       return null;
     }
 
@@ -134,63 +137,50 @@ class Job {
    * shutdown 전까지 반복 실행. 에러/종료 시 재시작.
    */
   async run() {
-    const { jobConfig, servers, shutdownFlag } = this;
-    const logCtx = { job_id: jobConfig.id };
+    const { shutdownFlag } = this;
+    const { id, source, target } = this.jobConfig;
+    const logCtx = { job_id: id };
 
-    getLogger().info('job_runner', { ...logCtx, msg: `job start, mappings=${jobConfig.mappings.length}` });
+    getLogger().info('job_runner', { ...logCtx, msg: 'job start' });
 
     while (!shutdownFlag.value) {
-      // ── DISCOVER 단계: mapping별 스키마 수집 ──
-      const workers = [];
+      const jobCtx = {
+        ...logCtx,
+        source: `${source.server}/${source.table}`,
+        target: `${target.server}/${target.table}`,
+      };
 
-      for (const mapping of jobConfig.mappings) {
-        const mappingCtx = {
-          ...logCtx,
-          mapping_id: mapping.mapping_id,
-          source: `${mapping.source.server}/${mapping.source.table}`,
-          target: `${mapping.target.server}/${mapping.target.table}`,
-        };
-
-        const discovered = await this._discoverMapping(mapping, mappingCtx);
-        if (!discovered) {
-          // discover 실패 → 이 mapping의 workers=[] (재시작 시 재시도)
-          continue;
-        }
-
-        const { tableType, dataTables, srcSchema, dstSchema } = discovered;
-        const srcConfig = servers[mapping.source.server];
-        const dstConfig = servers[mapping.target.server];
-
-        getLogger().info('job_runner', {
-          ...mappingCtx,
-          table_type: tableType,
-          data_tables: dataTables.join(','),
-          msg: `discover ok, spawning ${dataTables.length} worker(s)`,
-        });
-
-        for (const dataTable of dataTables) {
-          workers.push(new Worker(
-            jobConfig.id,
-            jobConfig.checkpoint,
-            mapping,
-            tableType,
-            dataTable,
-            srcSchema,
-            dstSchema,
-            srcConfig,
-            dstConfig,
-            shutdownFlag,
-          ));
-        }
-      }
-
-      if (workers.length === 0) {
+      const discovered = await this._discoverMapping(jobCtx);
+      if (!discovered) {
         if (shutdownFlag.value) break;
-        // 모든 mapping discover 실패 → 잠시 대기 후 재시작
-        getLogger().warn('job_runner', { ...logCtx, msg: 'no workers to run, retrying in 5s' });
+        getLogger().warn('job_runner', { ...logCtx, msg: 'discover failed, retrying in 5s' });
         await new Promise(resolve => setTimeout(resolve, 5000));
         continue;
       }
+
+      const { tableType, dataTables, srcSchema, dstSchema } = discovered;
+      const srcConfig = this.servers[source.server];
+      const dstConfig = this.servers[target.server];
+
+      getLogger().info('job_runner', {
+        ...jobCtx,
+        table_type: tableType,
+        data_tables: dataTables.join(','),
+        msg: `discover ok, spawning ${dataTables.length} worker(s)`,
+      });
+
+      const workers = dataTables.map(dataTable =>
+        new Worker(
+          this.jobConfig,
+          tableType,
+          dataTable,
+          srcSchema,
+          dstSchema,
+          srcConfig,
+          dstConfig,
+          shutdownFlag,
+        )
+      );
 
       // ── Workers 병렬 실행 (AbortController 패턴) ──
       const ac = new AbortController();
@@ -223,8 +213,28 @@ class Job {
 // ─── Replicator ───────────────────────────────────────────────────────────────
 
 class Replicator {
-  constructor(config) {
+  constructor(config, configPath = null) {
     this.config = config;
+    this.configPath = configPath;
+    // id → { jobConfig, shutdownFlag, promise, status: 'running'|'stopped' }
+    this.jobRegistry = new Map();
+  }
+
+  _startJob(jobConfig) {
+    const shutdownFlag = { value: false };
+    const entry = { jobConfig, shutdownFlag, promise: null, status: 'running' };
+    this.jobRegistry.set(jobConfig.id, entry);
+    entry.promise = new Job(jobConfig, this.config.servers, shutdownFlag)
+      .run()
+      .catch(err => getLogger().error('job_runner', { job_id: jobConfig.id, msg: `job error: ${err.message}` }))
+      .finally(() => { entry.status = 'stopped'; });
+  }
+
+  async _stopJob(id) {
+    const entry = this.jobRegistry.get(id);
+    if (!entry || entry.status !== 'running') return;
+    entry.shutdownFlag.value = true;
+    await entry.promise;
   }
 
   _startShutdownTimer(shutdownTimeoutMs) {
@@ -241,12 +251,9 @@ class Replicator {
     const { config } = this;
     const shutdownFlag = { value: false };
 
-    // shutdown_timeout_ms: 활성화된 모든 job 중 최댓값 사용, 없으면 기본값
+    // shutdown_timeout_ms: 모든 job 중 최댓값 사용, 없으면 기본값
     let shutdownTimeoutMs = 30000;
-    const enabledJobTimeouts = config.replication.jobs
-      .filter(j => j.enabled)
-      .map(j => j.shutdown_timeout_ms || 0);
-    const maxTimeout = enabledJobTimeouts.length > 0 ? Math.max(...enabledJobTimeouts) : 0;
+    const maxTimeout = Math.max(0, ...config.replication.jobs.map(j => j.shutdown_timeout_ms || 0));
     if (maxTimeout > 0) shutdownTimeoutMs = maxTimeout;
 
     let timeoutHandle;
@@ -260,18 +267,21 @@ class Replicator {
     process.once('SIGTERM', () => startShutdown('SIGTERM'));
     process.once('SIGINT', () => startShutdown('SIGINT'));
 
-    const enabledJobs = config.replication.jobs.filter(j => j.enabled);
-    getLogger().banner(`repli starting — ${enabledJobs.length} job(s)`);
-    getLogger().info('job_runner', { msg: `starting ${enabledJobs.length} job(s)` });
+    getLogger().banner(`repli starting — ${config.replication.jobs.length} job(s) registered`);
+    getLogger().info('job_runner', { msg: `${config.replication.jobs.length} job(s) registered, none started automatically` });
 
-    // 각 job을 독립적으로 실행 — 한 job의 실패가 다른 job을 중단시키지 않음
-    await Promise.all(
-      enabledJobs.map(jobConfig =>
-        new Job(jobConfig, config.servers, shutdownFlag).run().catch(err => {
-          getLogger().error('job_runner', { job_id: jobConfig.id, msg: `job crashed: ${err.message}` });
-        })
-      )
-    );
+    // config에서 로드된 job들을 jobRegistry에 등록 (stopped 상태)
+    for (const jobConfig of config.replication.jobs) {
+      if (!this.jobRegistry.has(jobConfig.id)) {
+        this.jobRegistry.set(jobConfig.id, { jobConfig, shutdownFlag: { value: false }, promise: null, status: 'stopped' });
+      }
+    }
+
+    // job은 자동 시작하지 않음 — API를 통해 개별 시작
+    await new Promise(resolve => {
+      const check = () => { if (shutdownFlag.value) resolve(); else setTimeout(check, 500); };
+      check();
+    });
 
     clearTimeout(timeoutHandle);
     getLogger().info('job_runner', { msg: 'all jobs completed' });
