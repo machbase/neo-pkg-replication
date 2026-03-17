@@ -20,38 +20,38 @@ test('shouldRetry: err.retryable=false → false', () => {
 
 // ─── nextDelay ────────────────────────────────────────────────────────────────
 
-test('exponential: attempt=0 → base_delay_ms', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 2, jitter: false });
+test('exponential: attempt=0 → baseDelayMs', () => {
+  const rh = new RetryHandler({ strategy: 'exponential', baseDelayMs: 1000, multiplier: 2, jitter: false });
   assert.equal(rh.nextDelay(0), 1000);
 });
 
 test('exponential: attempt=1 → initial * multiplier^1', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 2, jitter: false });
+  const rh = new RetryHandler({ strategy: 'exponential', baseDelayMs: 1000, multiplier: 2, jitter: false });
   assert.equal(rh.nextDelay(1), 2000);
 });
 
 test('exponential: attempt=3 → 8000', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 2, jitter: false });
+  const rh = new RetryHandler({ strategy: 'exponential', baseDelayMs: 1000, multiplier: 2, jitter: false });
   assert.equal(rh.nextDelay(3), 8000);
 });
 
-test('linear: attempt=0 → base_delay_ms', () => {
-  const rh = new RetryHandler({ strategy: 'linear', base_delay_ms: 500, jitter: false });
+test('linear: attempt=0 → baseDelayMs', () => {
+  const rh = new RetryHandler({ strategy: 'linear', baseDelayMs: 500, jitter: false });
   assert.equal(rh.nextDelay(0), 500);
 });
 
 test('linear: attempt=2 → initial * 3', () => {
-  const rh = new RetryHandler({ strategy: 'linear', base_delay_ms: 500, jitter: false });
+  const rh = new RetryHandler({ strategy: 'linear', baseDelayMs: 500, jitter: false });
   assert.equal(rh.nextDelay(2), 1500);
 });
 
-test('max_delay_ms 상한 적용', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 10, max_delay_ms: 5000, jitter: false });
+test('maxDelayMs 상한 적용', () => {
+  const rh = new RetryHandler({ strategy: 'exponential', baseDelayMs: 1000, multiplier: 10, maxDelayMs: 5000, jitter: false });
   assert.equal(rh.nextDelay(5), 5000); // 1000 * 10^5 = 100000 → 5000으로 제한
 });
 
 test('jitter=true → delay < 원본 delay', () => {
-  const rh = new RetryHandler({ strategy: 'exponential', base_delay_ms: 1000, multiplier: 2, max_delay_ms: 60000, jitter: true });
+  const rh = new RetryHandler({ strategy: 'exponential', baseDelayMs: 1000, multiplier: 2, maxDelayMs: 60000, jitter: true });
   const delays = Array.from({ length: 20 }, () => rh.nextDelay(3));
   // jitter가 있으면 8000보다 작아야 함 (Math.random() < 1)
   assert.ok(delays.every(d => d <= 8000));
@@ -61,19 +61,19 @@ test('jitter=true → delay < 원본 delay', () => {
 
 // ─── isExhausted ─────────────────────────────────────────────────────────────
 
-test('isExhausted: max_attempts=null → 항상 false', () => {
-  const rh = new RetryHandler({ max_attempts: null });
+test('isExhausted: maxAttempts=null → 항상 false', () => {
+  const rh = new RetryHandler({ maxAttempts: null });
   assert.equal(rh.isExhausted(9999), false);
 });
 
-test('isExhausted: attempt >= max_attempts → true', () => {
-  const rh = new RetryHandler({ max_attempts: 3 });
+test('isExhausted: attempt >= maxAttempts → true', () => {
+  const rh = new RetryHandler({ maxAttempts: 3 });
   assert.equal(rh.isExhausted(3), true);
   assert.equal(rh.isExhausted(10), true);
 });
 
-test('isExhausted: attempt < max_attempts → false', () => {
-  const rh = new RetryHandler({ max_attempts: 3 });
+test('isExhausted: attempt < maxAttempts → false', () => {
+  const rh = new RetryHandler({ maxAttempts: 3 });
   assert.equal(rh.isExhausted(2), false);
   assert.equal(rh.isExhausted(0), false);
 });

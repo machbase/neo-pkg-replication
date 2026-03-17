@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "job_id": "fw-resume",
+  "jobId": "fw-resume",
   "source": {
     "server": "src",
     "table": "TAG",
-    "data_table": "_TAG_DATA_0"
+    "dataTable": "_TAG_DATA_0"
   },
   "checkpoint": {
-    "last_success_rid": "999",
-    "updated_at": "2026-03-17T02:42:14.576Z"
+    "lastSuccessRid": "999",
+    "updatedAt": "2026-03-17T07:30:37.154Z"
   }
 }

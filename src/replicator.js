@@ -26,9 +26,9 @@ class Replicator {
     const { config } = this;
     const shutdownFlag = { value: false };
 
-    // shutdown_timeout_ms: 모든 job 중 최댓값 사용, 없으면 기본값
+    // shutdownTimeoutMs: 모든 job 중 최댓값 사용, 없으면 기본값
     let shutdownTimeoutMs = 30000;
-    const maxTimeout = Math.max(0, ...config.replication.jobs.map(j => j.shutdown_timeout_ms || 0));
+    const maxTimeout = Math.max(0, ...config.replication.jobs.map(j => j.shutdownTimeoutMs || 0));
     if (maxTimeout > 0) shutdownTimeoutMs = maxTimeout;
 
     let timeoutHandle;

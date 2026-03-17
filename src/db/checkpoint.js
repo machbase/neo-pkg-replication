@@ -7,7 +7,7 @@ const path = require('path');
 
 // ─── 내부 파일 I/O 헬퍼 ──────────────────────────────────────────────────────
 
-const BIGINT_KEYS = new Set(['last_success_rid']);
+const BIGINT_KEYS = new Set(['lastSuccessRid']);
 
 function _stringify(data) {
   return JSON.stringify(
@@ -71,29 +71,29 @@ class CheckpointStore {
       }
       const msg = err instanceof SyntaxError ? `parse failed: ${err.message}` : `read failed: ${err.message}`;
       getLogger().error('checkpoint_io', {
-        job_id: jobId,
-        data_table: dataTable,
+        jobId,
+        dataTable,
         msg,
       });
       return { cp: null, exists: false, err };
     }
 
-    // source.data_table 불일치 → 손상 처리
-    if (data.source?.data_table !== dataTable) {
+    // source.dataTable 불일치 → 손상 처리
+    if (data.source?.dataTable !== dataTable) {
       getLogger().error('checkpoint_io', {
-        job_id: jobId,
-        data_table: dataTable,
-        msg: `data_table mismatch in file (got: ${data.source?.data_table}), invalidating`,
+        jobId,
+        dataTable,
+        msg: `dataTable mismatch in file (got: ${data.source?.dataTable}), invalidating`,
       });
-      return { cp: null, exists: false, err: new Error('checkpoint data_table mismatch') };
+      return { cp: null, exists: false, err: new Error('checkpoint dataTable mismatch') };
     }
 
     const cp = data.checkpoint;
-    if (!cp || typeof cp.last_success_rid !== 'bigint') {
+    if (!cp || typeof cp.lastSuccessRid !== 'bigint') {
       getLogger().error('checkpoint_io', {
-        job_id: jobId,
-        data_table: dataTable,
-        msg: `invalid checkpoint structure (last_success_rid missing or wrong type), invalidating`,
+        jobId,
+        dataTable,
+        msg: `invalid checkpoint structure (lastSuccessRid missing or wrong type), invalidating`,
       });
       return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
     }
@@ -105,49 +105,49 @@ class CheckpointStore {
    * 체크포인트 저장 (atomic write)
    * @param {string} jobId
    * @param {string} dataTable
-   * @param {{ last_success_rid: bigint, source_server?: string, source_table?: string }} cp
-   * @param {{ rows_read: number, rows_written: number, dropped_no_meta: number, skipped_exists: number }} stats
-   * @param {{ on_save_failure?: 'continue'|'abort' }} [opts]
+   * @param {{ lastSuccessRid: bigint, sourceServer?: string, sourceTable?: string }} cp
+   * @param {{ rowsRead: number, rowsWritten: number, droppedNoMeta: number, skippedExists: number }} stats
+   * @param {{ onSaveFailure?: 'continue'|'abort' }} [opts]
    * @returns {Error|null}
    */
   async save(jobId, dataTable, cp, stats, opts) {
-    if (typeof cp.last_success_rid !== 'bigint') {
-      throw new TypeError(`last_success_rid must be BigInt, got ${typeof cp.last_success_rid}`);
+    if (typeof cp.lastSuccessRid !== 'bigint') {
+      throw new TypeError(`lastSuccessRid must be BigInt, got ${typeof cp.lastSuccessRid}`);
     }
 
     const data = {
       version: 1,
-      job_id: jobId,
+      jobId,
       source: {
-        server: cp.source_server || '',
-        table: cp.source_table || '',
-        data_table: dataTable,
+        server: cp.sourceServer || '',
+        table: cp.sourceTable || '',
+        dataTable,
       },
       checkpoint: {
-        last_success_rid: cp.last_success_rid,
-        updated_at: new Date().toISOString(),
+        lastSuccessRid: cp.lastSuccessRid,
+        updatedAt: new Date().toISOString(),
       },
     };
 
     try {
       await _writeFile(this._filePath(jobId, dataTable), data);
       getLogger().info('checkpoint_saved', {
-        job_id: jobId,
-        data_table: dataTable,
-        last_success_rid: cp.last_success_rid.toString(),
-        rows_read: stats?.rows_read ?? 0,
-        rows_written: stats?.rows_written ?? 0,
-        dropped_no_meta: stats?.dropped_no_meta ?? 0,
-        skipped_exists: stats?.skipped_exists ?? 0,
+        jobId,
+        dataTable,
+        lastSuccessRid: cp.lastSuccessRid.toString(),
+        rowsRead:      stats?.rowsRead      ?? 0,
+        rowsWritten:   stats?.rowsWritten   ?? 0,
+        droppedNoMeta: stats?.droppedNoMeta ?? 0,
+        skippedExists: stats?.skippedExists ?? 0,
       });
       return null;
     } catch (err) {
       getLogger().error('checkpoint_io', {
-        job_id: jobId,
-        data_table: dataTable,
+        jobId,
+        dataTable,
         msg: `save failed: ${err.message}`,
       });
-      if (opts?.on_save_failure === 'abort') throw err;
+      if (opts?.onSaveFailure === 'abort') throw err;
       return err;
     }
   }

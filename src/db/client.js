@@ -1,7 +1,7 @@
 'use strict';
 
 const { createConnection, QueryError } = require('@machbase/ts-client');
-const { ColumnType, Column, TableSchema } = require('./types.js');
+const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 
 // ── @machbase/ts-client FLOAT/DOUBLE endian 버그 우회 ────────────────────────
 //
@@ -125,6 +125,19 @@ class MachbaseClient {
   }
 
   /**
+   * 사용자 테이블 목록 조회 (TAG/LOG 타입만, 내부 테이블 제외)
+   * @returns {Promise<Array<{ NAME: string, TYPE: number }>>}
+   */
+  async selectAllTables() {
+    const sql = `
+      SELECT NAME, TYPE
+      FROM M$SYS_TABLES
+      WHERE TYPE IN (0, 6)
+    `.trim();
+    return this.query(sql);
+  }
+
+  /**
    * 테이블명 기준으로 M$SYS_COLUMNS 조회
    * TAG META 컬럼 조회 및 LOG 컬럼 조회에 사용
    * c.FLAG === 67108864
@@ -175,6 +188,46 @@ class MachbaseClient {
       [tagId]
     );
     return rows?.[0]?.name ?? null;
+  }
+
+  /**
+   * src 스키마를 기반으로 TAG 테이블 생성
+   * @param {string} tableName
+   * @param {import('./types').TableSchema} srcSchema
+   */
+  async createTagTable(tableName, srcSchema) {
+    const dataCols = srcSchema.columns.filter(c => !(c.flag & FLAG_METADATA));
+    const metaCols = srcSchema.columns.filter(c =>   c.flag & FLAG_METADATA);
+
+    if (!dataCols.some(c => c.flag & FLAG_PRIMARY))
+      throw new Error(`createTagTable: PRIMARY KEY column not found in schema for '${srcSchema.logicalTable}'`);
+    if (!dataCols.some(c => c.flag & FLAG_BASETIME))
+      throw new Error(`createTagTable: BASETIME column not found in schema for '${srcSchema.logicalTable}'`);
+
+    const colDefs = dataCols.map(c => {
+      let def = `${c.name} ${c.sqlType()}`;
+      if      (c.flag & FLAG_PRIMARY)   def += ' PRIMARY KEY';
+      else if (c.flag & FLAG_BASETIME)  def += ' BASETIME';
+      else if (c.flag & FLAG_SUMMARIZED) def += ' SUMMARIZED';
+      return def;
+    });
+
+    let sql = `CREATE TAG TABLE ${tableName} (${colDefs.join(', ')})`;
+    if (metaCols.length > 0) {
+      const metaDefs = metaCols.map(c => `${c.name} ${c.sqlType()}`).join(', ');
+      sql += ` METADATA (${metaDefs})`;
+    }
+    await this.execute(sql);
+  }
+
+  /**
+   * src 스키마를 기반으로 LOG 테이블 생성
+   * @param {string} tableName
+   * @param {import('./types').TableSchema} srcSchema
+   */
+  async createLogTable(tableName, srcSchema) {
+    const colDefs = srcSchema.columns.map(c => `${c.name} ${c.sqlType()}`);
+    await this.execute(`CREATE TABLE ${tableName} (${colDefs.join(', ')})`);
   }
 }
 

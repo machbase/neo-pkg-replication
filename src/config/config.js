@@ -87,6 +87,30 @@ class Config {
     this.replication.jobs = this.replication.jobs.filter(j => j.id !== id);
   }
 
+  addServer(raw) {
+    const srv = new ServerConfig(raw);
+    srv.valid();
+    if (this.servers.find(s => s.name === srv.name))
+      throw new Error(`Server '${srv.name}' already exists`);
+    this.servers.push(srv);
+    return srv;
+  }
+
+  updateServer(name, raw) {
+    const idx = this.servers.findIndex(s => s.name === name);
+    if (idx === -1) throw new Error(`Server '${name}' not found`);
+    const srv = new ServerConfig({ ...raw, name });
+    srv.valid();
+    this.servers[idx] = srv;
+    return srv;
+  }
+
+  removeServer(name) {
+    const idx = this.servers.findIndex(s => s.name === name);
+    if (idx === -1) throw new Error(`Server '${name}' not found`);
+    this.servers.splice(idx, 1);
+  }
+
   static _buildApi(raw = {}) {
     const cors = raw.cors !== undefined ? raw.cors : { origin: '*' };
     const api = new ApiConfig({
@@ -135,7 +159,7 @@ class Config {
       integrity = new IntegrityConfig(rawIntegrity);
     }
 
-    const rawTagId = job.source?.tag_identifier;
+    const rawTagId = job.source?.tagIdentifier;
     const tagIdentifier = rawTagId
       ? new TagIdentifierConfig(rawTagId)
       : new TagIdentifierConfig({ mode: 'none', value: '' });
@@ -150,28 +174,28 @@ class Config {
 
     const source = job.source
       ? new SourceConfig({
-          server:         job.source.server,
-          table:          job.source.table,
-          tag_identifier: tagIdentifier,
-          columns:        sourceColumns,
+          server:        job.source.server,
+          table:         job.source.table,
+          tagIdentifier,
+          columns:       sourceColumns,
         })
       : null;
 
     const target = job.target
-      ? new TargetConfig({ server: job.target.server, table: job.target.table })
+      ? new TargetConfig({ server: job.target.server, table: job.target.table, autoCreate: job.target.autoCreate })
       : null;
 
     const jobConfig = new JobConfig({
-      id:                  job.id,
-      shutdown_timeout_ms: job.shutdown_timeout_ms ?? 30000,
+      id:                 job.id,
+      shutdownTimeoutMs:  job.shutdownTimeoutMs ?? 30000,
       source,
       target,
-      query_limit:         job.query_limit,
-      rid_range_size:      job.rid_range_size,
-      poll_interval_ms:    job.poll_interval_ms,
-      start_mode:          job.start_mode,
-      rid_after:           job.rid_after,
-      on_save_failure:     job.on_save_failure,
+      queryLimit:         job.queryLimit,
+      ridRangeSize:       job.ridRangeSize,
+      pollIntervalMs:     job.pollIntervalMs,
+      startMode:          job.startMode,
+      ridAfter:           job.ridAfter,
+      onSaveFailure:      job.onSaveFailure,
       integrity,
       retry,
     });
@@ -212,13 +236,13 @@ class TagIdentifierConfig {
 
   valid(jobId) {
     if (this.mode === undefined || this.mode === null) {
-      throw new Error(`tag_identifier.mode is required (must be one of: ${VALID_TAG_IDENTIFIER_MODES.join(', ')}) in job '${jobId}'`);
+      throw new Error(`tagIdentifier.mode is required (must be one of: ${VALID_TAG_IDENTIFIER_MODES.join(', ')}) in job '${jobId}'`);
     }
     if (!VALID_TAG_IDENTIFIER_MODES.includes(this.mode)) {
-      throw new Error(`Invalid tag_identifier.mode '${this.mode}' (must be one of: ${VALID_TAG_IDENTIFIER_MODES.join(', ')}) in job '${jobId}'`);
+      throw new Error(`Invalid tagIdentifier.mode '${this.mode}' (must be one of: ${VALID_TAG_IDENTIFIER_MODES.join(', ')}) in job '${jobId}'`);
     }
     if (this.value !== undefined && typeof this.value !== 'string') {
-      throw new Error(`tag_identifier.value must be a string, got: ${typeof this.value} in job '${jobId}'`);
+      throw new Error(`tagIdentifier.value must be a string, got: ${typeof this.value} in job '${jobId}'`);
     }
   }
 }
@@ -226,11 +250,11 @@ class TagIdentifierConfig {
 // ─── SourceConfig ─────────────────────────────────────────────────────────────
 
 class SourceConfig {
-  constructor({ server, table, columns, tag_identifier }) {
-    this.server         = server;
-    this.table          = table;
-    this.columns        = columns;
-    this.tag_identifier = tag_identifier;
+  constructor({ server, table, columns, tagIdentifier }) {
+    this.server        = server;
+    this.table         = table;
+    this.columns       = columns;
+    this.tagIdentifier = tagIdentifier;
   }
 
   valid(jobId, servers) {
@@ -240,8 +264,8 @@ class SourceConfig {
     if (!servers.find(s => s.name === this.server)) {
       throw new Error(`Unknown source server alias: "${this.server}" in job '${jobId}'`);
     }
-    if (this.tag_identifier) {
-      this.tag_identifier.valid(jobId);
+    if (this.tagIdentifier) {
+      this.tagIdentifier.valid(jobId);
     }
     if (this.columns !== null && this.columns !== undefined) {
       if (!Array.isArray(this.columns) || this.columns.length === 0) {
@@ -257,17 +281,24 @@ class SourceConfig {
 // ─── TargetConfig ─────────────────────────────────────────────────────────────
 
 class TargetConfig {
-  constructor({ server, table }) {
-    this.server = server;
-    this.table  = table;
+  constructor({ server, table, autoCreate }) {
+    this.server     = server;
+    this.table      = table ?? '';
+    this.autoCreate = autoCreate ?? false;
   }
 
   valid(jobId, servers) {
-    if (!this.table || typeof this.table !== 'string') {
-      throw new Error(`job.target.table is required and must be a non-empty string in job '${jobId}'`);
+    if (typeof this.table !== 'string') {
+      throw new Error(`job.target.table must be a string in job '${jobId}'`);
+    }
+    if (!this.table && !this.autoCreate) {
+      throw new Error(`job.target.table is required when autoCreate is false in job '${jobId}'`);
     }
     if (!servers.find(s => s.name === this.server)) {
       throw new Error(`Unknown target server alias: "${this.server}" in job '${jobId}'`);
+    }
+    if (typeof this.autoCreate !== 'boolean') {
+      throw new Error(`job.target.autoCreate must be a boolean in job '${jobId}'`);
     }
   }
 }
@@ -289,12 +320,12 @@ class IntegrityConfig {
 // ─── RetryConfig ──────────────────────────────────────────────────────────────
 
 class RetryConfig {
-  constructor({ strategy, max_attempts, base_delay_ms, max_delay_ms, multiplier } = {}) {
-    this.strategy      = strategy;
-    this.max_attempts  = max_attempts;
-    this.base_delay_ms = base_delay_ms;
-    this.max_delay_ms  = max_delay_ms;
-    this.multiplier    = multiplier;
+  constructor({ strategy, maxAttempts, baseDelayMs, maxDelayMs, multiplier } = {}) {
+    this.strategy    = strategy;
+    this.maxAttempts = maxAttempts;
+    this.baseDelayMs = baseDelayMs;
+    this.maxDelayMs  = maxDelayMs;
+    this.multiplier  = multiplier;
   }
 
   valid(jobId) {
@@ -302,19 +333,19 @@ class RetryConfig {
     if (this.strategy !== undefined && !VALID_STRATEGIES.includes(this.strategy)) {
       throw new Error(`retry.strategy must be 'exponential' or 'linear', got: "${this.strategy}" in job '${jobId}'`);
     }
-    if (this.max_attempts !== undefined && this.max_attempts !== null) {
-      if (!Number.isInteger(this.max_attempts) || this.max_attempts < 1) {
-        throw new Error(`retry.max_attempts must be a positive integer or null, got: ${this.max_attempts} in job '${jobId}'`);
+    if (this.maxAttempts !== undefined && this.maxAttempts !== null) {
+      if (!Number.isInteger(this.maxAttempts) || this.maxAttempts < 1) {
+        throw new Error(`retry.maxAttempts must be a positive integer or null, got: ${this.maxAttempts} in job '${jobId}'`);
       }
     }
-    if (this.base_delay_ms !== undefined) {
-      if (!Number.isInteger(this.base_delay_ms) || this.base_delay_ms < 0) {
-        throw new Error(`retry.base_delay_ms must be a non-negative integer, got: ${this.base_delay_ms} in job '${jobId}'`);
+    if (this.baseDelayMs !== undefined) {
+      if (!Number.isInteger(this.baseDelayMs) || this.baseDelayMs < 0) {
+        throw new Error(`retry.baseDelayMs must be a non-negative integer, got: ${this.baseDelayMs} in job '${jobId}'`);
       }
     }
-    if (this.max_delay_ms !== undefined) {
-      if (!Number.isInteger(this.max_delay_ms) || this.max_delay_ms < 0) {
-        throw new Error(`retry.max_delay_ms must be a non-negative integer, got: ${this.max_delay_ms} in job '${jobId}'`);
+    if (this.maxDelayMs !== undefined) {
+      if (!Number.isInteger(this.maxDelayMs) || this.maxDelayMs < 0) {
+        throw new Error(`retry.maxDelayMs must be a non-negative integer, got: ${this.maxDelayMs} in job '${jobId}'`);
       }
     }
     if (this.multiplier !== undefined) {
@@ -327,38 +358,38 @@ class RetryConfig {
 
 // ─── JobConfig ───────────────────────────────────────────────────────────────
 
-const VALID_START_MODES = new Set(['full', 'now', 'rid_after']);
+const VALID_START_MODES = new Set(['full', 'now', 'ridAfter']);
 const VALID_ON_SAVE_FAILURE = new Set(['continue', 'abort']);
 
 class JobConfig {
-  constructor({ id, shutdown_timeout_ms, source, target,
-                query_limit, rid_range_size, poll_interval_ms,
-                start_mode, rid_after, on_save_failure,
+  constructor({ id, shutdownTimeoutMs, source, target,
+                queryLimit, ridRangeSize, pollIntervalMs,
+                startMode, ridAfter, onSaveFailure,
                 integrity, retry }) {
-    this.id                  = id;
-    this.shutdown_timeout_ms = shutdown_timeout_ms;
-    this.source              = source;
-    this.target              = target;
-    this.query_limit         = query_limit      ?? 5000;
-    this.rid_range_size      = rid_range_size   ?? 50000;
-    this.poll_interval_ms    = poll_interval_ms ?? 1000;
-    this.start_mode          = start_mode       ?? 'full';
-    this.rid_after           = rid_after;
-    this.on_save_failure     = on_save_failure  ?? 'continue';
-    this.integrity           = integrity;
-    this.retry               = retry;
+    this.id                = id;
+    this.shutdownTimeoutMs = shutdownTimeoutMs;
+    this.source            = source;
+    this.target            = target;
+    this.queryLimit        = queryLimit      ?? 5000;
+    this.ridRangeSize      = ridRangeSize    ?? 50000;
+    this.pollIntervalMs    = pollIntervalMs  ?? 1000;
+    this.startMode         = startMode       ?? 'full';
+    this.ridAfter          = ridAfter;
+    this.onSaveFailure     = onSaveFailure   ?? 'continue';
+    this.integrity         = integrity;
+    this.retry             = retry;
   }
 
   valid(servers) {
     if (!this.id) throw new Error(`job.id is required`);
 
-    if (this.shutdown_timeout_ms !== undefined) {
-      if (!Number.isInteger(this.shutdown_timeout_ms) || this.shutdown_timeout_ms < 1) {
+    if (this.shutdownTimeoutMs !== undefined) {
+      if (!Number.isInteger(this.shutdownTimeoutMs) || this.shutdownTimeoutMs < 1) {
         getLogger().warn('config', {
-          job_id: this.id,
-          msg: `shutdown_timeout_ms must be a positive integer, got: ${this.shutdown_timeout_ms}, using default 30000`,
+          jobId: this.id,
+          msg: `shutdownTimeoutMs must be a positive integer, got: ${this.shutdownTimeoutMs}, using default 30000`,
         });
-        this.shutdown_timeout_ms = 30000;
+        this.shutdownTimeoutMs = 30000;
       }
     }
 
@@ -372,28 +403,28 @@ class JobConfig {
     this.source.valid(this.id, servers);
     this.target.valid(this.id, servers);
 
-    if (!Number.isInteger(this.query_limit) || this.query_limit < 1) {
-      throw new Error(`query_limit must be a positive integer, got: ${this.query_limit} in job '${this.id}'`);
+    if (!Number.isInteger(this.queryLimit) || this.queryLimit < 1) {
+      throw new Error(`queryLimit must be a positive integer, got: ${this.queryLimit} in job '${this.id}'`);
     }
-    if (!Number.isInteger(this.poll_interval_ms) || this.poll_interval_ms < 1) {
-      throw new Error(`poll_interval_ms must be a positive integer, got: ${this.poll_interval_ms} in job '${this.id}'`);
+    if (!Number.isInteger(this.pollIntervalMs) || this.pollIntervalMs < 1) {
+      throw new Error(`pollIntervalMs must be a positive integer, got: ${this.pollIntervalMs} in job '${this.id}'`);
     }
-    if (!VALID_START_MODES.has(this.start_mode)) {
-      throw new Error(`Invalid start_mode: "${this.start_mode}" in job '${this.id}'`);
+    if (!VALID_START_MODES.has(this.startMode)) {
+      throw new Error(`Invalid startMode: "${this.startMode}" in job '${this.id}'`);
     }
-    if (this.start_mode === 'rid_after') {
-      if (this.rid_after === undefined || this.rid_after === null) {
-        throw new Error(`rid_after is required when start_mode is "rid_after" in job '${this.id}'`);
+    if (this.startMode === 'ridAfter') {
+      if (this.ridAfter === undefined || this.ridAfter === null) {
+        throw new Error(`ridAfter is required when startMode is "ridAfter" in job '${this.id}'`);
       }
-      if (!/^\d+$/.test(String(this.rid_after))) {
-        throw new Error(`rid_after must be a non-negative integer, got: ${this.rid_after} in job '${this.id}'`);
+      if (!/^\d+$/.test(String(this.ridAfter))) {
+        throw new Error(`ridAfter must be a non-negative integer, got: ${this.ridAfter} in job '${this.id}'`);
       }
     }
-    if (!VALID_ON_SAVE_FAILURE.has(this.on_save_failure)) {
-      throw new Error(`Invalid on_save_failure: "${this.on_save_failure}" in job '${this.id}'`);
+    if (!VALID_ON_SAVE_FAILURE.has(this.onSaveFailure)) {
+      throw new Error(`Invalid onSaveFailure: "${this.onSaveFailure}" in job '${this.id}'`);
     }
-    if (!Number.isInteger(this.rid_range_size) || this.rid_range_size < 1) {
-      throw new Error(`rid_range_size must be a positive integer, got: ${this.rid_range_size} in job '${this.id}'`);
+    if (!Number.isInteger(this.ridRangeSize) || this.ridRangeSize < 1) {
+      throw new Error(`ridRangeSize must be a positive integer, got: ${this.ridRangeSize} in job '${this.id}'`);
     }
 
     if (this.retry !== undefined) {

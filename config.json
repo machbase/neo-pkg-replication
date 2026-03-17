@@ -29,7 +29,7 @@
     "jobs": [
       {
         "id": "job-1",
-        "shutdown_timeout_ms": 30000,
+        "shutdownTimeoutMs": 30000,
         "source": {
           "server": "src",
           "table": "TAG",
@@ -39,10 +39,10 @@
           "server": "dst",
           "table": "TAG2"
         },
-        "query_limit": 1000,
-        "poll_interval_ms": 1000,
-        "start_mode": "full",
-        "on_save_failure": "continue",
+        "queryLimit": 1000,
+        "pollIntervalMs": 1000,
+        "startMode": "full",
+        "onSaveFailure": "continue",
         "integrity": {
           "enabled": true
         }

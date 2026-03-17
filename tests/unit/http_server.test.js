@@ -83,13 +83,15 @@ function makeServer() {
 // ─── GET /api/jobs ─────────────────────────────────────────────────────────────
 
 describe('HttpServer — GET /api/jobs', () => {
-  test('빈 registry → data: []', async () => {
+  test('빈 registry → data: [], ok: true', async () => {
     const { server } = makeServer();
     const port = 19101;
     server.start(port, {});
     try {
       const res = await request('GET', `http://127.0.0.1:${port}/api/jobs`);
       assert.equal(res.status, 200);
+      assert.equal(res.body.ok, true);
+      assert.equal(res.body.reason, null);
       assert.deepEqual(res.body.data, []);
     } finally {
       server.stop();

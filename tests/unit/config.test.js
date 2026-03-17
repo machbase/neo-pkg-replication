@@ -24,10 +24,10 @@ const BASE_CONFIG = {
       id: 'job-1',
       source: { server: 'src', table: 'TAG' },
       target: { server: 'dst', table: 'TAG2' },
-      query_limit: 5000,
-      poll_interval_ms: 1000,
-      start_mode: 'full',
-      on_save_failure: 'continue',
+      queryLimit: 5000,
+      pollIntervalMs: 1000,
+      startMode: 'full',
+      onSaveFailure: 'continue',
     }],
   },
 };
@@ -39,7 +39,7 @@ test('정상 config 로드', async () => {
   assert.equal(config.replication.jobs.length, 1);
   assert.ok(config.replication.jobs[0].source);
   assert.ok(config.replication.jobs[0].target);
-  assert.ok(config.replication.jobs[0].query_limit);
+  assert.ok(config.replication.jobs[0].queryLimit);
 });
 
 test('version != 3 → 오류', async () => {
@@ -65,59 +65,59 @@ test('존재하지 않는 source server → 오류', async () => {
   await assert.rejects(() => Config.load(filePath), /unknown source server/i);
 });
 
-test('start_mode=rid_after + rid_after 없음 → 오류', async () => {
+test('startMode=ridAfter + ridAfter 없음 → 오류', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].start_mode = 'rid_after';
+  config.replication.jobs[0].startMode = 'ridAfter';
   const filePath = await writeConfig(config);
-  await assert.rejects(() => Config.load(filePath), /rid_after/i);
+  await assert.rejects(() => Config.load(filePath), /ridAfter/i);
 });
 
-test('start_mode=rid_after + rid_after 있음 → 정상 로드', async () => {
+test('startMode=ridAfter + ridAfter 있음 → 정상 로드', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].start_mode = 'rid_after';
-  config.replication.jobs[0].rid_after = '0';
-  const filePath = await writeConfig(config);
-  const result = await Config.load(filePath);
-  assert.equal(result.replication.jobs[0].start_mode, 'rid_after');
-});
-
-test('job 필드 직접 지정: query_limit, poll_interval_ms', async () => {
-  const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].query_limit = 9999;
-  config.replication.jobs[0].poll_interval_ms = 200;
+  config.replication.jobs[0].startMode = 'ridAfter';
+  config.replication.jobs[0].ridAfter = '0';
   const filePath = await writeConfig(config);
   const result = await Config.load(filePath);
-  const job = result.replication.jobs[0];
-  assert.equal(job.query_limit, 9999);
-  assert.equal(job.poll_interval_ms, 200);
-  assert.equal(job.start_mode, 'full');
+  assert.equal(result.replication.jobs[0].startMode, 'ridAfter');
 });
 
-test('기본값 주입: query_limit=5000, rid_range_size=50000, shutdown_timeout_ms=30000', async () => {
+test('job 필드 직접 지정: queryLimit, pollIntervalMs', async () => {
   const config = structuredClone(BASE_CONFIG);
-  delete config.replication.jobs[0].query_limit;
-  delete config.replication.jobs[0].shutdown_timeout_ms;
+  config.replication.jobs[0].queryLimit = 9999;
+  config.replication.jobs[0].pollIntervalMs = 200;
   const filePath = await writeConfig(config);
   const result = await Config.load(filePath);
   const job = result.replication.jobs[0];
-  assert.equal(job.query_limit, 5000);
-  assert.equal(job.rid_range_size, 50000);
-  assert.equal(job.shutdown_timeout_ms, 30000);
+  assert.equal(job.queryLimit, 9999);
+  assert.equal(job.pollIntervalMs, 200);
+  assert.equal(job.startMode, 'full');
 });
 
-test('rid_range_size 사용자 설정', async () => {
+test('기본값 주입: queryLimit=5000, ridRangeSize=50000, shutdownTimeoutMs=30000', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].rid_range_size = 99999;
+  delete config.replication.jobs[0].queryLimit;
+  delete config.replication.jobs[0].shutdownTimeoutMs;
   const filePath = await writeConfig(config);
   const result = await Config.load(filePath);
-  assert.equal(result.replication.jobs[0].rid_range_size, 99999);
+  const job = result.replication.jobs[0];
+  assert.equal(job.queryLimit, 5000);
+  assert.equal(job.ridRangeSize, 50000);
+  assert.equal(job.shutdownTimeoutMs, 30000);
 });
 
-test('rid_range_size 비정수 → 오류', async () => {
+test('ridRangeSize 사용자 설정', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].rid_range_size = 0;
+  config.replication.jobs[0].ridRangeSize = 99999;
   const filePath = await writeConfig(config);
-  await assert.rejects(() => Config.load(filePath), /rid_range_size/i);
+  const result = await Config.load(filePath);
+  assert.equal(result.replication.jobs[0].ridRangeSize, 99999);
+});
+
+test('ridRangeSize 비정수 → 오류', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].ridRangeSize = 0;
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /ridRangeSize/i);
 });
 
 
@@ -151,18 +151,18 @@ test('target.table 없음 → 오류', async () => {
   await assert.rejects(() => Config.load(filePath), /target\.table/i);
 });
 
-test('query_limit 비정수 → 오류', async () => {
+test('queryLimit 비정수 → 오류', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].query_limit = 'abc';
+  config.replication.jobs[0].queryLimit = 'abc';
   const filePath = await writeConfig(config);
-  await assert.rejects(() => Config.load(filePath), /query_limit/i);
+  await assert.rejects(() => Config.load(filePath), /queryLimit/i);
 });
 
-test('poll_interval_ms 0 → 오류', async () => {
+test('pollIntervalMs 0 → 오류', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].poll_interval_ms = 0;
+  config.replication.jobs[0].pollIntervalMs = 0;
   const filePath = await writeConfig(config);
-  await assert.rejects(() => Config.load(filePath), /poll_interval_ms/i);
+  await assert.rejects(() => Config.load(filePath), /pollIntervalMs/i);
 });
 
 test('retry가 배열 → 오류', async () => {
@@ -179,11 +179,11 @@ test('retry.strategy 잘못된 값 → 오류', async () => {
   await assert.rejects(() => Config.load(filePath), /retry\.strategy/i);
 });
 
-test('retry.max_attempts 음수 → 오류', async () => {
+test('retry.maxAttempts 음수 → 오류', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].retry = { max_attempts: -1 };
+  config.replication.jobs[0].retry = { maxAttempts: -1 };
   const filePath = await writeConfig(config);
-  await assert.rejects(() => Config.load(filePath), /retry\.max_attempts/i);
+  await assert.rejects(() => Config.load(filePath), /retry\.maxAttempts/i);
 });
 
 test('integrity 비객체 → 오류', async () => {
@@ -200,19 +200,19 @@ test('integrity.enabled 비불리언 → 오류', async () => {
   await assert.rejects(() => Config.load(filePath), /integrity\.enabled/i);
 });
 
-test('tag_identifier.value 비문자열 → 오류', async () => {
+test('tagIdentifier.value 비문자열 → 오류', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].source.tag_identifier = { mode: 'prefix', value: 123 };
+  config.replication.jobs[0].source.tagIdentifier = { mode: 'prefix', value: 123 };
   const filePath = await writeConfig(config);
-  await assert.rejects(() => Config.load(filePath), /tag_identifier\.value/i);
+  await assert.rejects(() => Config.load(filePath), /tagIdentifier\.value/i);
 });
 
-test('shutdown_timeout_ms 비정수 → warn 후 기본값 30000', async () => {
+test('shutdownTimeoutMs 비정수 → warn 후 기본값 30000', async () => {
   const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].shutdown_timeout_ms = 'bad';
+  config.replication.jobs[0].shutdownTimeoutMs = 'bad';
   const filePath = await writeConfig(config);
   const result = await Config.load(filePath);
-  assert.equal(result.replication.jobs[0].shutdown_timeout_ms, 30000);
+  assert.equal(result.replication.jobs[0].shutdownTimeoutMs, 30000);
 });
 
 test('JSON 파싱 실패 → 파일 경로 포함 에러', async () => {
@@ -272,10 +272,10 @@ test('addJob: 새 job 추가 후 replication.jobs에 포함됨', async () => {
     id: 'job-new',
     source: { server: 'src', table: 'TAG' },
     target: { server: 'dst', table: 'TAG2' },
-    start_mode: 'full',
-    poll_interval_ms: 1000,
-    query_limit: 5000,
-    on_save_failure: 'continue',
+    startMode: 'full',
+    pollIntervalMs: 1000,
+    queryLimit: 5000,
+    onSaveFailure: 'continue',
   };
 
   const jobConfig = config.addJob(newJob);
@@ -292,7 +292,7 @@ test('addJob: 유효하지 않은 server → 오류 throw', async () => {
     id: 'job-bad',
     source: { server: 'nonexistent', table: 'TAG' },
     target: { server: 'dst', table: 'TAG2' },
-    start_mode: 'full',
+    startMode: 'full',
   };
 
   assert.throws(() => config.addJob(badJob), /unknown source server/i);
@@ -306,16 +306,16 @@ test('updateJob: 기존 job 내용 교체', async () => {
     id: 'job-1',
     source: { server: 'src', table: 'TAG' },
     target: { server: 'dst', table: 'TAG3' },
-    start_mode: 'now',
-    poll_interval_ms: 2000,
-    query_limit: 1000,
-    on_save_failure: 'continue',
+    startMode: 'now',
+    pollIntervalMs: 2000,
+    queryLimit: 1000,
+    onSaveFailure: 'continue',
   };
 
   const jobConfig = config.updateJob('job-1', updatedJob);
   assert.equal(jobConfig.id, 'job-1');
   assert.equal(jobConfig.target.table, 'TAG3');
-  assert.equal(jobConfig.start_mode, 'now');
+  assert.equal(jobConfig.startMode, 'now');
   assert.equal(config.replication.jobs.length, 1);
   assert.equal(config.replication.jobs[0].target.table, 'TAG3');
 });
@@ -337,6 +337,107 @@ test('removeJob: 존재하지 않는 id → 오류 없이 무시', async () => {
   assert.equal(config.replication.jobs.length, 1, '존재하지 않는 id 제거 → jobs 그대로');
 });
 
+test('addServer: 정상 추가 → servers에 포함됨', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  assert.equal(config.servers.length, 2);
+  const srv = config.addServer({ name: 'new', host: '10.0.0.1', port: 5656, user: 'SYS', password: 'PASS' });
+  assert.equal(config.servers.length, 3);
+  assert.equal(srv.name, 'new');
+  assert.equal(srv.host, '10.0.0.1');
+});
+
+test('addServer: 중복 name → throw already exists', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  assert.throws(
+    () => config.addServer({ name: 'src', host: '10.0.0.1', port: 5656, user: 'SYS', password: 'PASS' }),
+    /already exists/i
+  );
+});
+
+test('addServer: host 없음 → valid() throw', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  assert.throws(
+    () => config.addServer({ name: 'new', port: 5656, user: 'SYS', password: 'PASS' }),
+    /host/i
+  );
+});
+
+test('updateServer: host 변경 → servers[idx] 교체', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  const srv = config.updateServer('src', { host: '192.168.1.1', port: 5656, user: 'SYS', password: 'PASS' });
+  assert.equal(srv.host, '192.168.1.1');
+  assert.equal(config.servers.find(s => s.name === 'src').host, '192.168.1.1');
+});
+
+test('updateServer: 존재하지 않는 name → throw not found', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  assert.throws(
+    () => config.updateServer('nonexistent', { host: '10.0.0.1', port: 5656, user: 'SYS', password: 'PASS' }),
+    /not found/i
+  );
+});
+
+test('removeServer: 정상 삭제 → servers에서 제거됨', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  assert.equal(config.servers.length, 2);
+  config.removeServer('src');
+  assert.equal(config.servers.length, 1);
+  assert.equal(config.servers[0].name, 'dst');
+});
+
+test('removeServer: 존재하지 않는 name → throw not found', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  assert.throws(() => config.removeServer('nonexistent'), /not found/i);
+});
+
+// === target.autoCreate 테스트 ===
+
+test('target.autoCreate: true + table: "" → valid 통과', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].target = { server: 'dst', table: '', autoCreate: true };
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  assert.equal(result.replication.jobs[0].target.table, '');
+  assert.equal(result.replication.jobs[0].target.autoCreate, true);
+});
+
+test('target.autoCreate: false + table: "" → config 오류', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].target = { server: 'dst', table: '', autoCreate: false };
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /autoCreate/i);
+});
+
+test('target.autoCreate: true + table: "TAG_COPY" → valid 통과', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].target = { server: 'dst', table: 'TAG_COPY', autoCreate: true };
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  assert.equal(result.replication.jobs[0].target.table, 'TAG_COPY');
+  assert.equal(result.replication.jobs[0].target.autoCreate, true);
+});
+
+test('target.autoCreate 미지정 + table: "" → config 오류 (autoCreate 기본 false)', async () => {
+  const config = structuredClone(BASE_CONFIG);
+  config.replication.jobs[0].target = { server: 'dst', table: '' };
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /autoCreate/i);
+});
+
 test('save: 파일에 쓰고 다시 로드 가능', async () => {
   const filePath = await writeConfig(BASE_CONFIG);
   const config = await Config.load(filePath);
@@ -345,10 +446,10 @@ test('save: 파일에 쓰고 다시 로드 가능', async () => {
     id: 'job-saved',
     source: { server: 'src', table: 'TAG' },
     target: { server: 'dst', table: 'TAG2' },
-    start_mode: 'full',
-    poll_interval_ms: 1000,
-    query_limit: 5000,
-    on_save_failure: 'continue',
+    startMode: 'full',
+    pollIntervalMs: 1000,
+    queryLimit: 5000,
+    onSaveFailure: 'continue',
   });
 
   await config.save();

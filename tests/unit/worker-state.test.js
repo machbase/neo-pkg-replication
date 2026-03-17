@@ -15,7 +15,7 @@ const {
 // ─── RESOLVE_START ────────────────────────────────────────────────────────────
 
 describe('Worker — RESOLVE_START', () => {
-  test('체크포인트 없음 + start_mode=full → startRid=0n 으로 시작 후 빈 배치 대기 후 shutdown', async () => {
+  test('체크포인트 없음 + startMode=full → startRid=0n 으로 시작 후 빈 배치 대기 후 shutdown', async () => {
     const cpFile = path.join(CHECKPOINT_DIRECTORY, 'test-job_TAG_DATA_0.json');
     await fs.rm(cpFile, { force: true });
 
@@ -34,22 +34,22 @@ describe('Worker — RESOLVE_START', () => {
       await worker.run(makeSignal());
 
       assert.ok(readCalls.length >= 1, '최소 1회 이상 read 호출되어야 함');
-      assert.equal(readCalls[0].startRid, 0n, 'start_mode=full → startRid=0n');
+      assert.equal(readCalls[0].startRid, 0n, 'startMode=full → startRid=0n');
     } finally {
       restore();
       await fs.rm(cpFile, { force: true });
     }
   });
 
-  test('체크포인트 있음 → last_success_rid에서 재개', async () => {
+  test('체크포인트 있음 → lastSuccessRid에서 재개', async () => {
     const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
     const cpFile = path.join(CHECKPOINT_DIRECTORY, 'test-job_TAG_DATA_0.json');
 
     await store.save('test-job', '_TAG_DATA_0', {
-      last_success_rid: 1234n,
-      source_server: 'src',
-      source_table: 'TAG',
-    }, { rows_read: 10, rows_written: 10, dropped_no_meta: 0, skipped_exists: 0 });
+      lastSuccessRid: 1234n,
+      sourceServer: 'src',
+      sourceTable: 'TAG',
+    }, { rowsRead: 10, rowsWritten: 10, droppedNoMeta: 0, skippedExists: 0 });
 
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];
@@ -66,7 +66,7 @@ describe('Worker — RESOLVE_START', () => {
       await worker.run(makeSignal());
 
       assert.ok(readCalls.length >= 1);
-      assert.equal(readCalls[0], 1235n, '체크포인트 last_success_rid=1234n → startRid=1235n (1234n+1n)');
+      assert.equal(readCalls[0], 1235n, '체크포인트 lastSuccessRid=1234n → startRid=1235n (1234n+1n)');
     } finally {
       restore();
       await fs.rm(cpFile, { force: true });
@@ -110,7 +110,7 @@ describe('Worker — STEADY_REPLICATION', () => {
 
       const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
       const { cp } = await store.load('test-job-2', '_TAG_DATA_0');
-      assert.equal(cp.last_success_rid, 12n, 'checkpoint = maxRid(12n)');
+      assert.equal(cp.lastSuccessRid, 12n, 'checkpoint = maxRid(12n)');
       assert.equal(appendedRows.length, 3, '3개 row가 append되어야 함');
     } finally {
       restore();
@@ -148,7 +148,7 @@ describe('Worker — STEADY_REPLICATION', () => {
 
       const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
       const { cp } = await store.load('test-alldrop', '_TAG_DATA_0');
-      assert.equal(cp.last_success_rid, 5n, 'checkpoint = maxRidInBatch(5n)');
+      assert.equal(cp.lastSuccessRid, 5n, 'checkpoint = maxRidInBatch(5n)');
       assert.equal(appendedRows.length, 1, '1개 row append');
     } finally {
       restore();
@@ -250,10 +250,10 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   test('integrity.enabled=false → STARTUP_INTEGRITY 미실행, 즉시 STEADY 진입', async () => {
     const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
     await store.save('test-int', '_TAG_DATA_0', {
-      last_success_rid: 10n,
-      source_server: 'src',
-      source_table: 'TAG',
-    }, { rows_read: 5, rows_written: 5, dropped_no_meta: 0, skipped_exists: 0 });
+      lastSuccessRid: 10n,
+      sourceServer: 'src',
+      sourceTable: 'TAG',
+    }, { rowsRead: 5, rowsWritten: 5, droppedNoMeta: 0, skippedExists: 0 });
 
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];
@@ -285,13 +285,13 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     }
   });
 
-  test('TAG + checkpoint존재 + integrity.enabled → STARTUP_INTEGRITY 수행, first_miss 발견 후 STEADY', async () => {
+  test('TAG + checkpoint존재 + integrity.enabled → STARTUP_INTEGRITY 수행, firstMiss 발견 후 STEADY', async () => {
     const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
     await store.save('test-int2', '_TAG_DATA_0', {
-      last_success_rid: 100n,
-      source_server: 'src',
-      source_table: 'TAG',
-    }, { rows_read: 5, rows_written: 5, dropped_no_meta: 0, skipped_exists: 0 });
+      lastSuccessRid: 100n,
+      sourceServer: 'src',
+      sourceTable: 'TAG',
+    }, { rowsRead: 5, rowsWritten: 5, droppedNoMeta: 0, skippedExists: 0 });
 
     const shutdownFlag = { value: false };
     let steadyReadCalls = [];
@@ -336,7 +336,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
       await worker.run(makeSignal());
 
       const { cp } = await store.load('test-int2', '_TAG_DATA_0');
-      assert.equal(cp.last_success_rid, 101n, 'STARTUP_INTEGRITY: safe_cp_rid = first_miss(102n) - 1n = 101n');
+      assert.equal(cp.lastSuccessRid, 101n, 'STARTUP_INTEGRITY: safe_cp_rid = firstMiss(102n) - 1n = 101n');
       assert.equal(steadyReadCalls[0], 102n, 'STEADY는 firstMissRid(102n)부터 시작');
     } finally {
       tableMod.TagTable.prototype.findFirstMissRow = origFindFirstMissRow;
@@ -347,10 +347,10 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   test('STARTUP_INTEGRITY: 배치 내 모든 row 존재 → 다음 배치로 진행 후 소스 소진 시 STEADY 진입', async () => {
     const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
     await store.save('test-int-allexist', '_TAG_DATA_0', {
-      last_success_rid: 50n,
-      source_server: 'src',
-      source_table: 'TAG',
-    }, { rows_read: 5, rows_written: 5, dropped_no_meta: 0, skipped_exists: 0 });
+      lastSuccessRid: 50n,
+      sourceServer: 'src',
+      sourceTable: 'TAG',
+    }, { rowsRead: 5, rowsWritten: 5, droppedNoMeta: 0, skippedExists: 0 });
 
     const shutdownFlag = { value: false };
     let integrityBatch = 0;
@@ -401,10 +401,10 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   test('LOG 테이블 → checkpoint 있어도 STARTUP_INTEGRITY 미수행', async () => {
     const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
     await store.save('test-log-int', '_LOG_DATA_0', {
-      last_success_rid: 50n,
-      source_server: 'src',
-      source_table: 'LOG',
-    }, { rows_read: 5, rows_written: 5, dropped_no_meta: 0, skipped_exists: 0 });
+      lastSuccessRid: 50n,
+      sourceServer: 'src',
+      sourceTable: 'LOG',
+    }, { rowsRead: 5, rowsWritten: 5, droppedNoMeta: 0, skippedExists: 0 });
 
     const shutdownFlag = makeShutdownFlag(30);
     const findFirstMissRowCalls = [];
@@ -451,7 +451,7 @@ describe('Worker — non-retryable 에러 처리', () => {
 
     try {
       const worker = makeTagWorker('test-nr', null,
-        { retry: { max_attempts: 5, base_delay_ms: 10, max_delay_ms: 100 } },
+        { retry: { maxAttempts: 5, baseDelayMs: 10, maxDelayMs: 100 } },
         shutdownFlag);
       await worker.run(makeSignal());
 
@@ -488,7 +488,7 @@ describe('Worker — non-retryable 에러 처리', () => {
 
     try {
       const worker = makeTagWorker('test-nr-append', null,
-        { retry: { max_attempts: 5, base_delay_ms: 10, max_delay_ms: 100 } },
+        { retry: { maxAttempts: 5, baseDelayMs: 10, maxDelayMs: 100 } },
         shutdownFlag);
       await worker.run(makeSignal());
 
@@ -514,7 +514,7 @@ describe('Worker — read 에러', () => {
 
     try {
       const worker = makeTagWorker('fw-read-err', null,
-        { retry: { max_attempts: 5, base_delay_ms: 5, max_delay_ms: 20 } },
+        { retry: { maxAttempts: 5, baseDelayMs: 5, maxDelayMs: 20 } },
         shutdownFlag);
       await worker.run(makeSignal());
 
@@ -559,7 +559,7 @@ describe('Worker — append 에러 retry', () => {
 
     try {
       const worker = makeTagWorker('fw-append-retry', null,
-        { retry: { max_attempts: 5, base_delay_ms: 5, max_delay_ms: 20 } },
+        { retry: { maxAttempts: 5, baseDelayMs: 5, maxDelayMs: 20 } },
         shutdownFlag);
       await worker.run(makeSignal());
 
@@ -582,7 +582,7 @@ describe('Worker — shutdown 신호', () => {
     const startTime = Date.now();
 
     try {
-      const worker = makeTagWorker('fw-shutdown', null, { poll_interval_ms: 5000 }, shutdownFlag);
+      const worker = makeTagWorker('fw-shutdown', null, { pollIntervalMs: 5000 }, shutdownFlag);
       await worker.run(makeSignal());
 
       const elapsed = Date.now() - startTime;
@@ -607,7 +607,7 @@ describe('Worker — 빈 배치 poll 대기', () => {
     });
 
     try {
-      const worker = makeTagWorker('fw-poll', null, { poll_interval_ms: 10 }, shutdownFlag);
+      const worker = makeTagWorker('fw-poll', null, { pollIntervalMs: 10 }, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.ok(readCallCount >= 2, '빈 배치 후 poll 대기 → 재읽기 확인');
@@ -659,7 +659,7 @@ describe('Worker — TAG 복제 기본 흐름', () => {
 
       const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
       const { cp } = await store.load('fw-tag-1', '_TAG_DATA_0');
-      assert.equal(cp.last_success_rid, 2n);
+      assert.equal(cp.lastSuccessRid, 2n);
     } finally {
       restore();
       await fs.rm(cpFile, { force: true });
@@ -702,7 +702,7 @@ describe('Worker — LOG 복제 기본 흐름', () => {
 
       const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
       const { cp } = await store.load('fw-log-1', '_LOG_DATA_0');
-      assert.equal(cp.last_success_rid, 10n);
+      assert.equal(cp.lastSuccessRid, 10n);
     } finally {
       restore();
     }
@@ -710,14 +710,14 @@ describe('Worker — LOG 복제 기본 흐름', () => {
 });
 
 describe('Worker — checkpoint resume', () => {
-  test('checkpoint 저장 후 재시작 → startRid = last_success_rid + 1', async () => {
+  test('checkpoint 저장 후 재시작 → startRid = lastSuccessRid + 1', async () => {
     const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
 
     await store.save('fw-resume', '_TAG_DATA_0', {
-      last_success_rid: 999n,
-      source_server: 'src',
-      source_table: 'TAG',
-    }, { rows_read: 10, rows_written: 10, dropped_no_meta: 0, skipped_exists: 0 });
+      lastSuccessRid: 999n,
+      sourceServer: 'src',
+      sourceTable: 'TAG',
+    }, { rowsRead: 10, rowsWritten: 10, droppedNoMeta: 0, skippedExists: 0 });
 
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];

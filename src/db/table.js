@@ -1,9 +1,75 @@
 'use strict';
 
-const { ColumnType, Column, TableSchema } = require('./types.js');
+const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 const { MachbaseClient } = require('./client.js');
 const { MachbaseStream, _toCell } = require('./stream.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
+
+// ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
+
+/**
+ * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환.
+ * LogTable.findFirstMissRow 와 TagTable.findFirstMissRow 에서 공유하는 공통 구현.
+ *
+ * @param {string} logicalTable - 논리 테이블명
+ * @param {TableSchema} schema  - NAME 컬럼을 포함하는 스키마
+ * @param {Array<{ canonical: string, time: bigint }>} rows
+ * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
+ * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
+ */
+async function _findFirstMissRow(logicalTable, schema, rows, client) {
+  if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
+
+  const chk = '_repli_chk';
+  const lkp = '_repli_lkp';
+  const nameCol = schema.columns.find(c => c.name === 'NAME');
+  if (!nameCol) return { firstMissIdx: null, err: new Error(`findFirstMissRow: NAME column not found in schema for '${logicalTable}'`) };
+  const nameDdlType = nameCol.sqlType();
+
+  try {
+    await client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
+    await client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
+
+    const stream = new MachbaseStream();
+    const openErr = await stream.open(client, chk, [
+      { name: 'IDX',  type: 'int32'    },
+      { name: 'NAME', type: 'varchar'  },
+      { name: 'TIME', type: 'datetime' },
+    ]);
+    if (openErr) return { firstMissIdx: null, err: openErr };
+    const appendErr = await stream.append(rows.map((r, i) => [i, String(r.canonical), BigInt(r.time)]));
+    const closeErr  = await stream.close();
+    if (appendErr) return { firstMissIdx: null, err: appendErr };
+    if (closeErr)  return { firstMissIdx: null, err: closeErr };
+
+    await client.execute(
+      `INSERT INTO ${lkp} ` +
+      `SELECT t.NAME, t.TIME FROM ${logicalTable} t, ${chk} c ` +
+      `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
+    );
+
+    const result = await client.query(
+      `SELECT IDX FROM (` +
+        `SELECT c.IDX, t.NAME AS T_NAME ` +
+        `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
+      `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
+    );
+
+    if (!result || result.length === 0) return { firstMissIdx: null, err: null };
+    return { firstMissIdx: result[0].IDX, err: null };
+
+  } catch (err) {
+    getLogger().error('table', { table: logicalTable, msg: err.message });
+    return { firstMissIdx: null, err };
+  } finally {
+    await client.execute(`DROP TABLE ${chk}`).catch(e =>
+      getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` })
+    );
+    await client.execute(`DROP TABLE ${lkp}`).catch(e =>
+      getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` })
+    );
+  }
+}
 
 
 /**
@@ -167,57 +233,7 @@ class LogTable {
    * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
    */
   async findFirstMissRow(rows, client) {
-    if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
-
-    const chk = '_repli_chk';
-    const lkp = '_repli_lkp';
-    const nameCol = this.schema.columns.find(c => c.name === 'NAME');
-    if (!nameCol) return { firstMissIdx: null, err: new Error(`findFirstMissRow: NAME column not found in schema for '${this.logicalTable}'`) };
-    const nameDdlType = nameCol.sqlType();
-
-    try {
-      await client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
-      await client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
-
-      const stream = new MachbaseStream();
-      const openErr = await stream.open(client, chk, [
-        { name: 'IDX',  type: 'int32'    },
-        { name: 'NAME', type: 'varchar'  },
-        { name: 'TIME', type: 'datetime' },
-      ]);
-      if (openErr) return { firstMissIdx: null, err: openErr };
-      const appendErr = await stream.append(rows.map((r, i) => [i, String(r.canonical), BigInt(r.time)]));
-      const closeErr  = await stream.close();
-      if (appendErr) return { firstMissIdx: null, err: appendErr };
-      if (closeErr)  return { firstMissIdx: null, err: closeErr };
-
-      await client.execute(
-        `INSERT INTO ${lkp} ` +
-        `SELECT t.NAME, t.TIME FROM ${this.logicalTable} t, ${chk} c ` +
-        `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
-      );
-
-      const result = await client.query(
-        `SELECT IDX FROM (` +
-          `SELECT c.IDX, t.NAME AS T_NAME ` +
-          `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
-        `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
-      );
-
-      if (!result || result.length === 0) return { firstMissIdx: null, err: null };
-      return { firstMissIdx: result[0].IDX, err: null };
-
-    } catch (err) {
-      getLogger().error('table', { table: this.logicalTable, msg: err.message });
-      return { firstMissIdx: null, err };
-    } finally {
-      await client.execute(`DROP TABLE ${chk}`).catch(e =>
-        getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` })
-      );
-      await client.execute(`DROP TABLE ${lkp}`).catch(e =>
-        getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` })
-      );
-    }
+    return _findFirstMissRow(this.logicalTable, this.schema, rows, client);
   }
 }
 
@@ -323,8 +339,7 @@ class TagTable {
     const cols = [];
     for (const r of rows) {
       if (r.NAME.startsWith('_')) continue;
-      const category = r.FLAG === 67108864 ? 'metadata' : 'data';
-      cols.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, category, r.LENGTH ?? 0));
+      cols.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, r.FLAG ?? 0, r.LENGTH ?? 0));
     }
 
     if (cols.length === 0) {
@@ -437,57 +452,7 @@ class TagTable {
    * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
    */
   async findFirstMissRow(rows, client) {
-    if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
-
-    const chk = '_repli_chk';
-    const lkp = '_repli_lkp';
-    const nameCol = this.schema.columns.find(c => c.name === 'NAME');
-    if (!nameCol) return { firstMissIdx: null, err: new Error(`findFirstMissRow: NAME column not found in schema for '${this.logicalTable}'`) };
-    const nameDdlType = nameCol.sqlType();
-
-    try {
-      await client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
-      await client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
-
-      const stream = new MachbaseStream();
-      const openErr = await stream.open(client, chk, [
-        { name: 'IDX',  type: 'int32'    },
-        { name: 'NAME', type: 'varchar'  },
-        { name: 'TIME', type: 'datetime' },
-      ]);
-      if (openErr) return { firstMissIdx: null, err: openErr };
-      const appendErr = await stream.append(rows.map((r, i) => [i, String(r.canonical), BigInt(r.time)]));
-      const closeErr  = await stream.close();
-      if (appendErr) return { firstMissIdx: null, err: appendErr };
-      if (closeErr)  return { firstMissIdx: null, err: closeErr };
-
-      await client.execute(
-        `INSERT INTO ${lkp} ` +
-        `SELECT t.NAME, t.TIME FROM ${this.logicalTable} t, ${chk} c ` +
-        `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
-      );
-
-      const result = await client.query(
-        `SELECT IDX FROM (` +
-          `SELECT c.IDX, t.NAME AS T_NAME ` +
-          `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
-        `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
-      );
-
-      if (!result || result.length === 0) return { firstMissIdx: null, err: null };
-      return { firstMissIdx: result[0].IDX, err: null };
-
-    } catch (err) {
-      getLogger().error('table', { table: this.logicalTable, msg: err.message });
-      return { firstMissIdx: null, err };
-    } finally {
-      await client.execute(`DROP TABLE ${chk}`).catch(e =>
-        getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` })
-      );
-      await client.execute(`DROP TABLE ${lkp}`).catch(e =>
-        getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` })
-      );
-    }
+    return _findFirstMissRow(this.logicalTable, this.schema, rows, client);
   }
 }
 
@@ -578,7 +543,7 @@ class TagDataTable {
    */
   async read(startRid, limit = 1000, rangeSize = 50000, tagIdentifier = null, sourceColumns = null) {
     const tableName = this.dataTable;
-    const cols = this.schema.columns.filter(c => c.category !== 'metadata');
+    const cols = this.schema.columns.filter(c => !(c.flag & FLAG_METADATA));
     const filtered = sourceColumns
       ? cols.filter(c => sourceColumns.includes(c.name))
       : cols;

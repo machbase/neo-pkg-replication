@@ -61,7 +61,7 @@ repli-js/
 ### src/replicator.js — Replicator
 
 - SIGTERM/SIGINT → `scheduler.stopAll()` → `httpServer.stop()`, shutdown timer 관리
-- `shutdown_timeout_ms`: 활성 job 중 최댓값 사용 (기본 30000ms)
+- `shutdownTimeoutMs`: 활성 job 중 최댓값 사용 (기본 30000ms)
 - `config.api.enabled` 시 `HttpServer` 생성 후 시작
 - job은 자동 시작하지 않음 — API를 통해 개별 시작
 - `module.exports = { Replicator }`
@@ -102,7 +102,7 @@ Config
  ├─ replication: ReplicationConfig
  │   └─ jobs: JobConfig[]
  │       ├─ source: SourceConfig
- │       │   └─ tag_identifier: TagIdentifierConfig
+ │       │   └─ tagIdentifier: TagIdentifierConfig
  │       ├─ target: TargetConfig
  │       ├─ integrity: IntegrityConfig (optional)
  │       └─ retry: RetryConfig (optional)
@@ -123,13 +123,13 @@ Config
 
 **JobConfig 필드 (flat 구조, execution 중첩 없음)**
 ```
-id, shutdown_timeout_ms,
+id, shutdownTimeoutMs,
 source (SourceConfig), target (TargetConfig),
-query_limit, rid_range_size, poll_interval_ms,
-start_mode, rid_after, on_save_failure,
+queryLimit, ridRangeSize, pollIntervalMs,
+startMode, ridAfter, onSaveFailure,
 integrity (IntegrityConfig?), retry (RetryConfig?)
 ```
-- 기본값: `query_limit=5000`, `rid_range_size=50000`, `poll_interval_ms=1000`, `start_mode='full'`, `on_save_failure='continue'`
+- 기본값: `queryLimit=5000`, `ridRangeSize=50000`, `pollIntervalMs=1000`, `startMode='full'`, `onSaveFailure='continue'`
 
 **CHECKPOINT_DIRECTORY**: `path.join(__dirname, '../../data')` 고정 경로 (외부 설정 불필요)
 
@@ -138,14 +138,14 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 `Worker(jobConfig, tableType, dataTable, srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag)` 클래스. `run(signal)` 메서드에서 3단계 상태 전이:
 
 1. **RESOLVE_START**: cp 파일 로드 → `startRid` 결정
-   - cp 존재 → `last_success_rid + 1n`
-   - cp 없음 → `start_mode` 기준 (`full`=0n, `now`=srcTable.getMaxRid()+1n, `rid_after`=BigInt(jobConfig.rid_after))
+   - cp 존재 → `lastSuccessRid + 1n`
+   - cp 없음 → `startMode` 기준 (`full`=0n, `now`=srcTable.getMaxRid()+1n, `ridAfter`=BigInt(jobConfig.ridAfter))
    - TAG 테이블: `srcTable.loadTagAliasCache()` 로드
 2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 + `integrity.enabled !== false` 시만):
    - `startRid`부터 배치 읽기 → `dstTable.findFirstMissRow()` 대상 DB 존재 확인 (VOLATILE TABLE + JOIN)
-   - first miss 발견 → `safe_cp_rid` 저장 후 STEADY 진입
+   - firstMiss 발견 → `safeCpRid` 저장 후 STEADY 진입
    - 배치마다 신규 `MachbaseClient(dstConfig)` 생성 (statement ID 소진 방지)
-3. **STEADY_REPLICATION**: 루프 — `srcTable.read()` → `dstTable.append()` → cp 저장(maxRidInBatch) → sleep(poll_interval_ms)
+3. **STEADY_REPLICATION**: 루프 — `srcTable.read()` → `dstTable.append()` → cp 저장(maxRidInBatch) → sleep(pollIntervalMs)
    - `stmtCount` 추적, 900 도달 시 `srcTable.close()` + `srcTable.open()` (연결 재생성)
    - AbortSignal과 shutdownFlag를 합산하는 `effectiveShutdownFlag` proxy 사용
 - `module.exports = { Worker }`
@@ -157,10 +157,11 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 - `ColumnType` 클래스: Machbase 컬럼 타입 정의 (`code`, `type`, `safeNull`)
   - `safeNull`: append 패딩용 타입 안전 null 대체값 (int32→`0`, int64/datetime→`0n`, float→`0.0`, string→`''`)
   - `ColumnType.fromCode(code)` → M$SYS_COLUMNS.TYPE 코드로 인스턴스 반환
-- `Column` 클래스: 테이블 컬럼 메타정보 (`name`, `columnType`, `id`, `category`)
-  - `category`: `'key'`(TAG의 NAME 컬럼), `'data'`(일반 데이터 컬럼), `'metadata'`(TAG META 추가 속성)
+- `Column` 클래스: 테이블 컬럼 메타정보 (`name`, `columnType`, `id`, `flag`, `length`)
+  - `flag`: `M$SYS_COLUMNS.FLAG` 원본값 — `FLAG_*` 상수로 비트 검사
+- `FLAG_PRIMARY=0x8000000`, `FLAG_BASETIME=0x1000000`, `FLAG_SUMMARIZED=0x2000000`, `FLAG_METADATA=0x4000000`
 - `TableSchema` 클래스: 불변 테이블 컬럼 구조 (`tableType`, `logicalTable`, `columns: Column[]`)
-- `module.exports = { ColumnType, Column, TableSchema }`
+- `module.exports = { ColumnType, Column, TableSchema, FLAG_PRIMARY, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA }`
 
 ### db/client.js — MachbaseClient
 
@@ -168,6 +169,7 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
   - `connect()` / `close()` / `query(sql, values?)` / `appendOpen(table, columns)` / `execute(sql)`
   - `query()` 반환 직후 `fixDoubleEndian()` 자동 적용 (BE/LE 혼재 버그 우회)
   - **카탈로그 메서드**: `selectTableType`, `selectTagDataTables`, `selectColumnsByTableName`, `selectColumnsByTableId`, `selectMaxRid`, `selectTagNames`, `selectTagNameByTagId`
+  - **DDL 메서드**: `createTagTable(tableName, srcSchema)`, `createLogTable(tableName, srcSchema)` — autoCreate 기능에서 사용
 - `toInt64(val)` → BigInt 변환 유틸리티
 - `module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema }`
 
@@ -190,7 +192,7 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 - `CheckpointStore(directory)`: `load(jobId, dataTable)` / `save(jobId, dataTable, cp, stats, opts?)`
 - 파일 경로: `{directory}/{jobId}_{dataTable}.json`
 - atomic write 내장 (`.{hrtime}.tmp` → `fs.rename`)
-- BigInt reviver/replacer 내장 (`last_success_rid` 키만 BigInt 복원)
+- BigInt reviver/replacer 내장 (`lastSuccessRid` 키만 BigInt 복원)
 
 ## config.json 형식
 
@@ -210,21 +212,21 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
   "replication": {
     "jobs": [{
       "id": "job-1",
-      "shutdown_timeout_ms": 30000,
+      "shutdownTimeoutMs": 30000,
       "source": {
         "server": "src",
         "table": "TAG",
         "columns": ["TIME", "VALUE"],
-        "tag_identifier": { "mode": "none" }
+        "tagIdentifier": { "mode": "none" }
       },
-      "target": { "server": "dst", "table": "TAG2" },
-      "start_mode": "full",
-      "poll_interval_ms": 1000,
-      "query_limit": 1000,
-      "rid_range_size": 50000,
-      "on_save_failure": "continue",
+      "target": { "server": "dst", "table": "TAG2", "autoCreate": false },
+      "startMode": "full",
+      "pollIntervalMs": 1000,
+      "queryLimit": 1000,
+      "ridRangeSize": 50000,
+      "onSaveFailure": "continue",
       "integrity": { "enabled": true },
-      "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
+      "retry": { "maxAttempts": 5, "baseDelayMs": 100, "maxDelayMs": 30000 }
     }]
   }
 }
@@ -244,6 +246,13 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 - `{ "mode": "none" }` → 태그명 그대로 사용 (기본값)
 - `{ "mode": "prefix", "value": "site1/" }` → 태그명 앞에 prefix 추가
 - `{ "mode": "suffix", "value": "_copy" }` → 태그명 뒤에 suffix 추가
+
+`target.autoCreate` 필드:
+- 미지정 또는 `false` (기본): 대상 테이블 사전 생성 필요. 없으면 job skip.
+- `true`: 대상 테이블 없으면 src 스키마 기반으로 자동 CREATE 후 복제 시작.
+  - `table: ""` 허용 → `source.table` 이름 그대로 사용
+  - TAG: PRIMARY KEY / BASETIME / SUMMARIZED / METADATA 포함 DDL 자동 생성
+  - LOG: 컬럼 그대로 CREATE TABLE
 
 `start_mode` 필드:
 - `"full"` → RID 0부터 전체 복제
@@ -328,13 +337,13 @@ node --test tests/integration/log_replication.test.js
 node --test tests/integration/table.test.js
 ```
 
-현재 테스트 현황: **125 단위 = 125 pass / 0 fail** (`node --test tests/unit/*.test.js`)
+현재 테스트 현황: **163 단위 = 163 pass / 0 fail** (`node --test tests/unit/*.test.js`)
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
 - client.test.js: fixDoubleEndian (4개)
-- config.test.js: 설정 검증 + addJob/updateJob/removeJob/save (36개)
+- config.test.js: 설정 검증 + addJob/updateJob/removeJob/save + autoCreate (40개)
 - http_server.test.js: REST API 7개 엔드포인트 (22개)
 - integrity_checker.test.js: TagTable.findFirstMissRow (7개)
-- job-scheduler.test.js: Job._discoverMapping + AbortController 전파 + JobScheduler (15개)
+- job-scheduler.test.js: Job._discoverMapping + autoCreate + AbortController 전파 + JobScheduler (19개)
 - replicator.test.js: Replicator SIGTERM/SIGINT/shutdown_timeout_ms (5개)
 - retry.test.js: RetryHandler 백오프 로직 (15개)
 - worker-state.test.js: Worker 상태 머신 + E2E mock 시나리오 (stmtCount 갱신 포함) (15개)

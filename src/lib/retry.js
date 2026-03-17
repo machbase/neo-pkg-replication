@@ -4,19 +4,19 @@ class RetryHandler {
   /**
    * @param {object} config
    * @param {string}  [config.strategy='exponential'] - 'exponential' | 'linear'
-   * @param {number}  [config.base_delay_ms=1000]
+   * @param {number}  [config.baseDelayMs=1000]
    * @param {number}  [config.multiplier=2]           - exponential 전용
-   * @param {number}  [config.max_delay_ms=60000]
+   * @param {number}  [config.maxDelayMs=60000]
    * @param {boolean} [config.jitter=true]
-   * @param {number|null} [config.max_attempts=null]  - null=무한
+   * @param {number|null} [config.maxAttempts=null]  - null=무한
    */
   constructor(config = {}) {
     this.strategy = config.strategy || 'exponential';
-    this.baseDelayMs = config.base_delay_ms ?? 1000;
+    this.baseDelayMs = config.baseDelayMs ?? 1000;
     this.multiplier = config.multiplier ?? 2;
-    this.maxDelayMs = config.max_delay_ms ?? 60000;
+    this.maxDelayMs = config.maxDelayMs ?? 60000;
     this.jitter = config.jitter !== false;
-    this.maxAttempts = config.max_attempts ?? null;
+    this.maxAttempts = config.maxAttempts ?? null;
   }
 
   /**

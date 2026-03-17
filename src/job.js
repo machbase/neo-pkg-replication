@@ -1,9 +1,32 @@
 'use strict';
 
 const { MachbaseClient } = require('./db/client.js');
+const { FLAG_METADATA } = require('./db/types.js');
 const { TagTable, LogTable } = require('./db/table.js');
 const { Worker } = require('./worker/worker.js');
 const { getInstance: getLogger } = require('./lib/logger.js');
+
+// ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
+
+/**
+ * source.columns 에 소스 스키마에 존재하지 않는 컬럼명이 포함되어 있으면
+ * 에러 로그를 남기고 false를 반환한다. 검증 통과 시 true.
+ *
+ * @param {SourceConfig} source
+ * @param {TableSchema} schema
+ * @param {object} logCtx
+ * @returns {boolean} true = valid, false = invalid (caller는 return null)
+ */
+function _validateSourceColumns(source, schema, logCtx) {
+  if (!source.columns) return true;
+  const actualCols = new Set(schema.columns.map(c => c.name));
+  const unknownCols = source.columns.filter(c => !actualCols.has(c));
+  if (unknownCols.length > 0) {
+    getLogger().error('job', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
+    return false;
+  }
+  return true;
+}
 
 // ─── JobScheduler ─────────────────────────────────────────────────────────────
 
@@ -83,6 +106,7 @@ class Job {
     const { source, target } = this.jobConfig;
     const srcConfig = this.servers.find(s => s.name === source.server);
     const dstConfig = this.servers.find(s => s.name === target.server);
+    const targetTable = target.table || source.table;
 
     let tableType;
     let dataTables;
@@ -116,22 +140,30 @@ class Job {
             await table.client.close().catch(() => {});
           }
 
-          if (source.columns) {
-            const actualCols = new Set(srcSchema.columns.map(c => c.name));
-            const unknownCols = source.columns.filter(c => !actualCols.has(c));
-            if (unknownCols.length > 0) {
-              getLogger().error('job', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
-              return null;
-            }
-          }
+          if (!_validateSourceColumns(source, srcSchema, logCtx)) return null;
 
-          const dst = new TagTable(dstConfig, target.table);
+          const dst = new TagTable(dstConfig, targetTable);
           try {
             await dst.client.connect();
-            const dstTables = await dst.getDataTables();
+            let dstTables = await dst.getDataTables();
             if (dstTables.length === 0) {
-              getLogger().error('job', { ...logCtx, msg: `no target data partitions found, skipping job` });
-              return null;
+              if (!this.jobConfig.target.autoCreate) {
+                getLogger().error('job', { ...logCtx, msg: `no target data partitions found, skipping job` });
+                return null;
+              }
+              const createClient = new MachbaseClient(dstConfig);
+              try {
+                await createClient.connect();
+                await createClient.createTagTable(targetTable, srcSchema);
+                getLogger().info('job', { ...logCtx, msg: `target table '${targetTable}' created` });
+              } finally {
+                await createClient.close().catch(() => {});
+              }
+              dstTables = await dst.getDataTables();
+              if (dstTables.length === 0) {
+                getLogger().error('job', { ...logCtx, msg: `target table created but no data partitions found` });
+                return null;
+              }
             }
             dstSchema = await dst.getSchema();
           } finally {
@@ -150,18 +182,20 @@ class Job {
             await src.client.close().catch(() => {});
           }
 
-          if (source.columns) {
-            const actualCols = new Set(srcSchema.columns.map(c => c.name));
-            const unknownCols = source.columns.filter(c => !actualCols.has(c));
-            if (unknownCols.length > 0) {
-              getLogger().error('job', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
-              return null;
-            }
-          }
+          if (!_validateSourceColumns(source, srcSchema, logCtx)) return null;
 
-          const dst = new LogTable(target.table, dstConfig);
+          const dst = new LogTable(targetTable, dstConfig);
           try {
             await dst.client.connect();
+            const dstType = await dst.client.selectTableType(targetTable);
+            if (dstType.type === 'UNSUPPORTED') {
+              if (!this.jobConfig.target.autoCreate) {
+                getLogger().error('job', { ...logCtx, msg: `target table not found, skipping job` });
+                return null;
+              }
+              await dst.client.createLogTable(targetTable, srcSchema);
+              getLogger().info('job', { ...logCtx, msg: `target table '${targetTable}' created` });
+            }
             dstSchema = await dst.getSchema();
           } finally {
             await dst.client.close().catch(() => {});
@@ -180,7 +214,7 @@ class Job {
     // src에만 있는 컬럼 검출 — metadata 카테고리는 제외 (safeNull로 패딩)
     const dstNames = new Set(dstSchema.columns.map(c => c.name));
     const srcOnlyCols = srcSchema.columns
-      .filter(c => c.category !== 'metadata' && !dstNames.has(c.name))
+      .filter(c => !(c.flag & FLAG_METADATA) && !dstNames.has(c.name))
       .map(c => c.name);
     if (srcOnlyCols.length > 0) {
       getLogger().error('job', { ...logCtx, msg: `source has columns not present in destination: ${srcOnlyCols.join(', ')}, skipping job` });

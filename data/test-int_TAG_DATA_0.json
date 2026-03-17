@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "job_id": "test-int",
+  "jobId": "test-int",
   "source": {
     "server": "src",
     "table": "TAG",
-    "data_table": "_TAG_DATA_0"
+    "dataTable": "_TAG_DATA_0"
   },
   "checkpoint": {
-    "last_success_rid": "10",
-    "updated_at": "2026-03-17T02:42:14.381Z"
+    "lastSuccessRid": "10",
+    "updatedAt": "2026-03-17T07:30:36.970Z"
   }
 }

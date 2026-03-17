@@ -122,8 +122,8 @@ class Worker {
     const { jobConfig, tableType, dataTable,
             srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag } = this;
     const logCtx = {
-      job_id: jobConfig.id,
-      data_table: dataTable,
+      jobId: jobConfig.id,
+      dataTable,
     };
 
     if (signal.aborted) return;
@@ -176,14 +176,14 @@ class Worker {
    */
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
     const { jobConfig, tableType, dataTable } = this;
-    const batchSize = jobConfig.query_limit;
-    const ridRangeSize = jobConfig.rid_range_size;
-    const pollIntervalMs = jobConfig.poll_interval_ms;
+    const batchSize     = jobConfig.queryLimit;
+    const ridRangeSize  = jobConfig.ridRangeSize;
+    const pollIntervalMs = jobConfig.pollIntervalMs;
     const sourceColumns = jobConfig.source.columns;
-    const tagIdentifier = jobConfig.source.tag_identifier;
+    const tagIdentifier = jobConfig.source.tagIdentifier;
     const retry = new RetryHandler(jobConfig.retry ?? {});
     const checkpointStore = new CheckpointStore(CHECKPOINT_DIRECTORY);
-    const logCtx = { job_id: jobConfig.id, data_table: dataTable };
+    const logCtx = { jobId: jobConfig.id, dataTable };
 
     // ═══════════════════════════════════════════════════════════
     // RESOLVE_START — 시작 RID 결정
@@ -193,24 +193,24 @@ class Worker {
     let startRid;
 
     if (cpExists && cp) {
-      startRid = cp.last_success_rid + 1n;
-      getLogger().info('worker', { ...logCtx, msg: `resume from checkpoint, start_rid=${startRid}` });
+      startRid = cp.lastSuccessRid + 1n;
+      getLogger().info('worker', { ...logCtx, msg: `resume from checkpoint, startRid=${startRid}` });
     } else {
-      const startMode = jobConfig.start_mode;
+      const startMode = jobConfig.startMode;
       if (startMode === 'now') {
         try {
           const maxRidVal = await srcTable.getMaxRid();
           startRid = maxRidVal + 1n;
         } catch (err) {
-          getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (start_mode=now), skipping job: ${err.message}` });
+          getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (startMode=now), skipping job: ${err.message}` });
           return;
         }
-      } else if (startMode === 'rid_after') {
-        startRid = BigInt(jobConfig.rid_after);
+      } else if (startMode === 'ridAfter') {
+        startRid = BigInt(jobConfig.ridAfter);
       } else {
         startRid = 0n; // 'full'
       }
-      getLogger().info('worker', { ...logCtx, msg: `start_mode=${startMode}, start_rid=${startRid}` });
+      getLogger().info('worker', { ...logCtx, msg: `startMode=${startMode}, startRid=${startRid}` });
     }
 
     // TAG alias cache 로드
@@ -252,7 +252,7 @@ class Worker {
     // STEADY_REPLICATION — 메인 복제 루프
     // ═══════════════════════════════════════════════════════════
 
-    getLogger().info('worker', { ...logCtx, msg: `STEADY_REPLICATION start, start_rid=${startRid}` });
+    getLogger().info('worker', { ...logCtx, msg: `STEADY_REPLICATION start, startRid=${startRid}` });
 
     let stmtCount = 0;
 
@@ -299,16 +299,16 @@ class Worker {
       }
 
       const batchStats = {
-        rows_read: rows.length,
-        rows_written: outRows.length,
-        dropped_no_meta: droppedNoMeta,
-        skipped_exists: 0,
+        rowsRead:      rows.length,
+        rowsWritten:   outRows.length,
+        droppedNoMeta,
+        skippedExists: 0,
       };
       await checkpointStore.save(jobConfig.id, dataTable, {
-        last_success_rid: maxRidInBatch,
-        source_server: jobConfig.source.server,
-        source_table: jobConfig.source.table,
-      }, batchStats, { on_save_failure: jobConfig.on_save_failure });
+        lastSuccessRid: maxRidInBatch,
+        sourceServer:   jobConfig.source.server,
+        sourceTable:    jobConfig.source.table,
+      }, batchStats, { onSaveFailure: jobConfig.onSaveFailure });
 
       startRid = maxRidInBatch + 1n;
     }
@@ -334,7 +334,7 @@ class Worker {
   }) {
     const { jobConfig, dataTable, dstConfig } = this;
 
-    getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY start, from_rid=${startRid}` });
+    getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY start, fromRid=${startRid}` });
     let integrityRid = startRid;
     const integrityBatchSize = Math.min(batchSize, INTEGRITY_BATCH_LIMIT);
 
@@ -342,7 +342,8 @@ class Worker {
       // @machbase/ts-client는 쿼리마다 statement ID를 소비하고 서버는 1024개 한도를 가짐.
       // MachbaseFacadeConnection.end() 후 재연결 불가 — 배치마다 신규 접속을 생성한다.
       const intConn = new MachbaseClient(dstConfig);
-      let shouldReturn = false;
+      // 'continue' | 'break' | 'return'
+      let outcome = 'continue';
 
       try {
         await intConn.connect();
@@ -351,15 +352,14 @@ class Worker {
         const { rows, err: readErr } = await srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, tagIdentifier, sourceColumns);
         if (readErr) {
           getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readErr.message}` });
-          shouldReturn = true;
-          break;
+          outcome = 'return'; break;
         }
 
         if (rows.length === 0) {
           // 소스의 모든 데이터가 대상에 존재함 → STEADY 진입
           startRid = integrityRid;
           getLogger().info('worker', { ...logCtx, msg: 'STARTUP_INTEGRITY: all rows confirmed, entering STEADY' });
-          break;
+          outcome = 'break'; break;
         }
 
         const maxRidInBatch = maxRid(rows);
@@ -367,7 +367,7 @@ class Worker {
         // 1단계: 배치 내 모든 row의 resolved 목록 구성 (read()가 이미 drop 제외)
         const resolved = rows.map(row => ({ rid: row.rid, canonical: row.data.NAME, time: row.data.TIME }));
 
-        if (shutdownFlag.value) { shouldReturn = true; break; }
+        if (shutdownFlag.value) { outcome = 'return'; break; }
 
         // 2단계: VOLATILE TABLE + JOIN으로 첫 번째 miss row 탐색
         const { firstMissIdx, err: batchErr } = resolved.length === 0
@@ -376,10 +376,9 @@ class Worker {
 
         if (batchErr) {
           getLogger().error('worker', { ...logCtx, msg: `findFirstMissRow failed: ${batchErr.message}` });
-          shouldReturn = true;
-          break;
+          outcome = 'return'; break;
         }
-        if (shutdownFlag.value) { shouldReturn = true; break; }
+        if (shutdownFlag.value) { outcome = 'return'; break; }
 
         let firstMissRid = null;
         let skippedExists = 0;
@@ -389,43 +388,45 @@ class Worker {
         } else {
           skippedExists = resolved.length;
         }
-        if (shutdownFlag.value) { shouldReturn = true; break; }
+        if (shutdownFlag.value) { outcome = 'return'; break; }
 
         const batchStats = {
-          rows_read: rows.length,
-          rows_written: 0,
-          dropped_no_meta: 0,
-          skipped_exists: skippedExists,
+          rowsRead:      rows.length,
+          rowsWritten:   0,
+          droppedNoMeta: 0,
+          skippedExists,
         };
 
         if (firstMissRid !== null) {
           const safeCpRid = firstMissRid > 0n ? firstMissRid - 1n : 0n;
           await checkpointStore.save(jobConfig.id, dataTable, {
-            last_success_rid: safeCpRid,
-            source_server: jobConfig.source.server,
-            source_table: jobConfig.source.table,
-          }, batchStats, { on_save_failure: jobConfig.on_save_failure });
+            lastSuccessRid: safeCpRid,
+            sourceServer:   jobConfig.source.server,
+            sourceTable:    jobConfig.source.table,
+          }, batchStats, { onSaveFailure: jobConfig.onSaveFailure });
           startRid = firstMissRid;
           getLogger().info('worker', {
             ...logCtx,
-            msg: `STARTUP_INTEGRITY: first_miss_rid=${firstMissRid}, safe_cp_rid=${safeCpRid}, entering STEADY`
+            msg: `STARTUP_INTEGRITY: firstMissRid=${firstMissRid}, safeCpRid=${safeCpRid}, entering STEADY`
           });
-          break;
+          outcome = 'break'; break;
         }
 
         // 배치 내 모든 row가 존재 → 다음 배치로 진행
         await checkpointStore.save(jobConfig.id, dataTable, {
-          last_success_rid: maxRidInBatch,
-          source_server: jobConfig.source.server,
-          source_table: jobConfig.source.table,
-        }, batchStats, { on_save_failure: jobConfig.on_save_failure });
+          lastSuccessRid: maxRidInBatch,
+          sourceServer:   jobConfig.source.server,
+          sourceTable:    jobConfig.source.table,
+        }, batchStats, { onSaveFailure: jobConfig.onSaveFailure });
         integrityRid = maxRidInBatch + 1n;
-        getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY: batch all confirmed, next_rid=${integrityRid}` });
+        getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY: batch all confirmed, nextRid=${integrityRid}` });
       } finally {
         await intConn.close().catch(() => {});
       }
 
-      if (shouldReturn) return null;
+      if (outcome === 'return') return null;
+      if (outcome === 'break')  break;
+      // outcome === 'continue' → 루프 계속
     }
 
     if (shutdownFlag.value) return null;

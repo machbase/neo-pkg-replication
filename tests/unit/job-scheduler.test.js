@@ -15,7 +15,7 @@ describe('Job — _discoverMapping', () => {
       id: 'job-disc-fail',
       source: { server: 'src', table: 'TAG' },
       target: { server: 'dst', table: 'TAG2' },
-      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     };
     const servers = [
       { name: 'src', host: '127.0.0.1', port: 1, user: 'x', password: 'x' },
@@ -39,7 +39,7 @@ describe('Job — _discoverMapping', () => {
       id: 'job-disc-ok',
       source: { server: 'src', table: 'TAG' },
       target: { server: 'dst', table: 'TAG' },
-      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     };
 
     const mockSchema = makeTagSchema();
@@ -72,7 +72,7 @@ describe('Job — _discoverMapping', () => {
       id: 'job-disc-badcol',
       source: { server: 'src', table: 'TAG', columns: ['TIME', 'NONEXISTENT'] },
       target: { server: 'dst', table: 'TAG' },
-      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     };
 
     const mockSchema = makeTagSchema();
@@ -119,24 +119,24 @@ describe('Job — _discoverMapping', () => {
       id: 'job-disc-srccol',
       source: { server: 'src', table: 'TAG', columns: null },
       target: { server: 'dst', table: 'TAG' },
-      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     };
 
     const srcSchema = {
       tableType: 'TAG', logicalTable: 'TAG',
       columns: [
-        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'key' },
-        { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
-        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
-        { name: 'EXTRA', columnType: { type: 'varchar' }, id: 3, category: 'data' }, // src-only
+        { name: 'NAME',  columnType: { type: 'varchar' }, id: 0, flag: 0x8000000, length: 80 },
+        { name: 'TIME',  columnType: { type: 'int64' },   id: 1, flag: 0x1000000, length: 0  },
+        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, flag: 0x2000000, length: 0  },
+        { name: 'EXTRA', columnType: { type: 'varchar' }, id: 3, flag: 0,         length: 80 }, // src-only
       ],
     };
     const dstSchema = {
       tableType: 'TAG', logicalTable: 'TAG',
       columns: [
-        { name: 'NAME', columnType: { type: 'varchar' }, id: 0, category: 'key' },
-        { name: 'TIME', columnType: { type: 'int64' }, id: 1, category: 'data' },
-        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, category: 'data' },
+        { name: 'NAME',  columnType: { type: 'varchar' }, id: 0, flag: 0x8000000, length: 80 },
+        { name: 'TIME',  columnType: { type: 'int64' },   id: 1, flag: 0x1000000, length: 0  },
+        { name: 'VALUE', columnType: { type: 'float64' }, id: 2, flag: 0x2000000, length: 0  },
       ],
     };
 
@@ -228,9 +228,9 @@ describe('Job — AbortController 전파', () => {
       const worker = new WorkerClass(
         {
           id: 'job-signal-test',
-          source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
+          source: { server: 'src', table: 'TAG', tagIdentifier: { mode: 'none', value: '' }, columns: null },
           target: { server: 'dst', table: 'TAG' },
-          start_mode: 'full', poll_interval_ms: 20, query_limit: 100,
+          startMode: 'full', pollIntervalMs: 20, queryLimit: 100,
         },
         'TAG', '_TAG_DATA_0', mockSchema, mockSchema,
         { host: 'mock', port: 1 }, { host: 'mock', port: 1 }, shutdownFlag,
@@ -256,8 +256,7 @@ describe('Job — AbortController 전파', () => {
         if (this.dataTable === '_TAG_DATA_0') {
           await new Promise(resolve => setImmediate(resolve));
           throw new Error('worker_0 intentional error');
-        }
-        if (this.dataTable === '_TAG_DATA_1') {
+        } else if (this.dataTable === '_TAG_DATA_1') {
           const effectiveShutdownFlag = {
             get value() { return signal.aborted; },
           };
@@ -278,9 +277,9 @@ describe('Job — AbortController 전파', () => {
     ];
     const jobConfig = {
       id: 'job-abort-test',
-      source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
+      source: { server: 'src', table: 'TAG', tagIdentifier: { mode: 'none', value: '' }, columns: null },
       target: { server: 'dst', table: 'TAG' },
-      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     };
     const mockSchema = makeTagSchema();
 
@@ -323,7 +322,7 @@ describe('Job — run() 재시작 동작', () => {
       id: 'job-restart',
       source: { server: 'src', table: 'TAG' },
       target: { server: 'dst', table: 'TAG' },
-      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     };
 
     const mockSchema = makeTagSchema();
@@ -355,6 +354,228 @@ describe('Job — run() 재시작 동작', () => {
       assert.equal(shutdownFlag.value, true, 'shutdown 후 job.run()이 종료되어야 함');
     } finally {
       WorkerClass.prototype.run = origWorkerRun;
+    }
+  });
+});
+
+// ─── Job — autoCreate ────────────────────────────────────────────────────────
+
+describe('Job — _discoverMapping autoCreate', () => {
+  test('TAG: autoCreate=true + dst 파티션 없음 → createTagTable 호출 후 정상 반환', async () => {
+    const shutdownFlag = { value: false };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
+    const jobConfig = {
+      id: 'job-autocreate-tag',
+      source: { server: 'src', table: 'TAG', columns: null },
+      target: { server: 'dst', table: 'TAG_COPY', autoCreate: true },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
+    };
+
+    const mockSchema = makeTagSchema();
+    const tableMod = require('../../src/db/table.js');
+    const clientMod = require('../../src/db/client.js');
+
+    const origConnect = clientMod.MachbaseClient.prototype.connect;
+    const origClose = clientMod.MachbaseClient.prototype.close;
+    const origSelectTableType = clientMod.MachbaseClient.prototype.selectTableType;
+    const origGetDataTables = tableMod.TagTable.prototype.getDataTables;
+    const origGetSchema = tableMod.TagTable.prototype.getSchema;
+
+    clientMod.MachbaseClient.prototype.connect = async function() {};
+    clientMod.MachbaseClient.prototype.close = async function() {};
+    clientMod.MachbaseClient.prototype.selectTableType = async function() { return { type: 'TAG' }; };
+
+    let createTagTableCalled = false;
+    clientMod.MachbaseClient.prototype.createTagTable = async function(name, schema) {
+      createTagTableCalled = true;
+      assert.equal(name, 'TAG_COPY');
+      assert.ok(schema);
+    };
+
+    let dstDataTablesCallCount = 0;
+    let schemaCallCount = 0;
+    tableMod.TagTable.prototype.getDataTables = async function() {
+      // src returns data; dst returns empty first, then data after create
+      if (this.logicalTable === 'TAG') return [{ data_table: '_TAG_DATA_0' }];
+      dstDataTablesCallCount++;
+      if (dstDataTablesCallCount === 1) return [];
+      return [{ data_table: '_TAG_COPY_DATA_0' }];
+    };
+    tableMod.TagTable.prototype.getSchema = async function() {
+      schemaCallCount++;
+      return mockSchema;
+    };
+
+    try {
+      const job = new Job(jobConfig, servers, shutdownFlag);
+      const result = await job._discoverMapping({ job_id: 'job-autocreate-tag' });
+      assert.ok(createTagTableCalled, 'createTagTable이 호출되어야 함');
+      assert.ok(result !== null, '결과가 null이 아니어야 함');
+      assert.equal(result.tableType, 'TAG');
+    } finally {
+      clientMod.MachbaseClient.prototype.connect = origConnect;
+      clientMod.MachbaseClient.prototype.close = origClose;
+      clientMod.MachbaseClient.prototype.selectTableType = origSelectTableType;
+      tableMod.TagTable.prototype.getDataTables = origGetDataTables;
+      tableMod.TagTable.prototype.getSchema = origGetSchema;
+      delete clientMod.MachbaseClient.prototype.createTagTable;
+    }
+  });
+
+  test('TAG: autoCreate=false + dst 파티션 없음 → null 반환', async () => {
+    const shutdownFlag = { value: false };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
+    const jobConfig = {
+      id: 'job-no-autocreate-tag',
+      source: { server: 'src', table: 'TAG', columns: null },
+      target: { server: 'dst', table: 'TAG_COPY', autoCreate: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
+    };
+
+    const mockSchema = makeTagSchema();
+    const tableMod = require('../../src/db/table.js');
+    const clientMod = require('../../src/db/client.js');
+
+    const origConnect = clientMod.MachbaseClient.prototype.connect;
+    const origClose = clientMod.MachbaseClient.prototype.close;
+    const origSelectTableType = clientMod.MachbaseClient.prototype.selectTableType;
+    const origGetDataTables = tableMod.TagTable.prototype.getDataTables;
+    const origGetSchema = tableMod.TagTable.prototype.getSchema;
+
+    clientMod.MachbaseClient.prototype.connect = async function() {};
+    clientMod.MachbaseClient.prototype.close = async function() {};
+    clientMod.MachbaseClient.prototype.selectTableType = async function() { return { type: 'TAG' }; };
+
+    tableMod.TagTable.prototype.getDataTables = async function() {
+      if (this.logicalTable === 'TAG') return [{ data_table: '_TAG_DATA_0' }];
+      return []; // dst has no partitions
+    };
+    tableMod.TagTable.prototype.getSchema = async function() { return mockSchema; };
+
+    try {
+      const job = new Job(jobConfig, servers, shutdownFlag);
+      const result = await job._discoverMapping({ job_id: 'job-no-autocreate-tag' });
+      assert.equal(result, null, 'autoCreate=false + dst 파티션 없음 → null 반환');
+    } finally {
+      clientMod.MachbaseClient.prototype.connect = origConnect;
+      clientMod.MachbaseClient.prototype.close = origClose;
+      clientMod.MachbaseClient.prototype.selectTableType = origSelectTableType;
+      tableMod.TagTable.prototype.getDataTables = origGetDataTables;
+      tableMod.TagTable.prototype.getSchema = origGetSchema;
+    }
+  });
+
+  test('LOG: autoCreate=true + dst 테이블 없음 → createLogTable 호출 후 정상 반환', async () => {
+    const shutdownFlag = { value: false };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
+    const jobConfig = {
+      id: 'job-autocreate-log',
+      source: { server: 'src', table: 'LOG_SRC', columns: null },
+      target: { server: 'dst', table: 'LOG_DST', autoCreate: true },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
+    };
+
+    const tableMod = require('../../src/db/table.js');
+    const clientMod = require('../../src/db/client.js');
+    const { ColumnType, Column, TableSchema } = require('../../src/db/types.js');
+
+    const logSchema = new TableSchema('LOG', 'LOG_SRC', [
+      new Column('TIME', ColumnType.DATETIME, 1, 'data'),
+      new Column('VALUE', ColumnType.DOUBLE, 2, 'data'),
+    ]);
+
+    const origConnect = clientMod.MachbaseClient.prototype.connect;
+    const origClose = clientMod.MachbaseClient.prototype.close;
+    const origSelectTableType = clientMod.MachbaseClient.prototype.selectTableType;
+    const origLogGetSchema = tableMod.LogTable.prototype.getSchema;
+
+    clientMod.MachbaseClient.prototype.connect = async function() {};
+    clientMod.MachbaseClient.prototype.close = async function() {};
+
+    let selectTableTypeCallCount = 0;
+    clientMod.MachbaseClient.prototype.selectTableType = async function(tableName) {
+      selectTableTypeCallCount++;
+      // first call: src type check → LOG; second call: dst type check → UNSUPPORTED
+      if (tableName === 'LOG_SRC') return { type: 'LOG' };
+      return { type: 'UNSUPPORTED' };
+    };
+
+    let createLogTableCalled = false;
+    clientMod.MachbaseClient.prototype.createLogTable = async function(name, schema) {
+      createLogTableCalled = true;
+      assert.equal(name, 'LOG_DST');
+      assert.ok(schema);
+    };
+
+    tableMod.LogTable.prototype.getSchema = async function() { return logSchema; };
+
+    try {
+      const job = new Job(jobConfig, servers, shutdownFlag);
+      const result = await job._discoverMapping({ job_id: 'job-autocreate-log' });
+      assert.ok(createLogTableCalled, 'createLogTable이 호출되어야 함');
+      assert.ok(result !== null, '결과가 null이 아니어야 함');
+      assert.equal(result.tableType, 'LOG');
+    } finally {
+      clientMod.MachbaseClient.prototype.connect = origConnect;
+      clientMod.MachbaseClient.prototype.close = origClose;
+      clientMod.MachbaseClient.prototype.selectTableType = origSelectTableType;
+      tableMod.LogTable.prototype.getSchema = origLogGetSchema;
+      delete clientMod.MachbaseClient.prototype.createLogTable;
+    }
+  });
+
+  test('LOG: autoCreate=false + dst 테이블 없음 → null 반환', async () => {
+    const shutdownFlag = { value: false };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
+    const jobConfig = {
+      id: 'job-no-autocreate-log',
+      source: { server: 'src', table: 'LOG_SRC', columns: null },
+      target: { server: 'dst', table: 'LOG_DST', autoCreate: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
+    };
+
+    const tableMod = require('../../src/db/table.js');
+    const clientMod = require('../../src/db/client.js');
+    const { ColumnType, Column, TableSchema } = require('../../src/db/types.js');
+
+    const logSchema = new TableSchema('LOG', 'LOG_SRC', [
+      new Column('TIME', ColumnType.DATETIME, 1, 'data'),
+    ]);
+
+    const origConnect = clientMod.MachbaseClient.prototype.connect;
+    const origClose = clientMod.MachbaseClient.prototype.close;
+    const origSelectTableType = clientMod.MachbaseClient.prototype.selectTableType;
+    const origLogGetSchema = tableMod.LogTable.prototype.getSchema;
+
+    clientMod.MachbaseClient.prototype.connect = async function() {};
+    clientMod.MachbaseClient.prototype.close = async function() {};
+    clientMod.MachbaseClient.prototype.selectTableType = async function(tableName) {
+      if (tableName === 'LOG_SRC') return { type: 'LOG' };
+      return { type: 'UNSUPPORTED' };
+    };
+    tableMod.LogTable.prototype.getSchema = async function() { return logSchema; };
+
+    try {
+      const job = new Job(jobConfig, servers, shutdownFlag);
+      const result = await job._discoverMapping({ job_id: 'job-no-autocreate-log' });
+      assert.equal(result, null, 'autoCreate=false + dst 테이블 없음 → null 반환');
+    } finally {
+      clientMod.MachbaseClient.prototype.connect = origConnect;
+      clientMod.MachbaseClient.prototype.close = origClose;
+      clientMod.MachbaseClient.prototype.selectTableType = origSelectTableType;
+      tableMod.LogTable.prototype.getSchema = origLogGetSchema;
     }
   });
 });
@@ -402,7 +623,7 @@ describe('JobScheduler', () => {
       id: 'sched-run',
       source: { server: 'src', table: 'TAG' },
       target: { server: 'src', table: 'TAG2' },
-      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     };
     scheduler.register(jobConfig);
 
@@ -432,7 +653,7 @@ describe('JobScheduler', () => {
       id,
       source: { server: 'src', table: 'TAG' },
       target: { server: 'src', table: 'TAG2' },
-      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     });
 
     scheduler.register(makeJob('stop-all-1'));

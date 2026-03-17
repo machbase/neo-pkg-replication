@@ -59,6 +59,14 @@ class ColumnType {
   }
 }
 
+// ─── Column FLAG 상수 ─────────────────────────────────────────────────────────
+
+/** M$SYS_COLUMNS.FLAG 비트 상수 */
+const FLAG_BASETIME   = 0x1000000;  // 16777216  — BASETIME 컬럼
+const FLAG_SUMMARIZED = 0x2000000;  // 33554432  — SUMMARIZED 컬럼
+const FLAG_METADATA   = 0x4000000;  // 67108864  — TAG META 추가 속성 컬럼
+const FLAG_PRIMARY    = 0x8000000;  // 134217728 — PRIMARY KEY 컬럼
+
 // ─── Column ───────────────────────────────────────────────────────────────────
 
 /**
@@ -67,18 +75,15 @@ class ColumnType {
  * @property {string} name - 컬럼명 (UPPERCASE, M$SYS_COLUMNS 기준)
  * @property {ColumnType} columnType - 컬럼 타입
  * @property {number} id - 컬럼 ID (M$SYS_COLUMNS.ID)
- * @property {'key'|'data'|'metadata'} category
- *   - key: TAG의 NAME 컬럼 (논리적 PK)
- *   - data: 일반 데이터 컬럼 (DATA 파티션 및 LOG)
- *   - metadata: TAG META 테이블의 추가 속성 컬럼
+ * @property {number} flag - M$SYS_COLUMNS.FLAG 원본값 (FLAG_* 상수로 비트 검사)
  * @property {number} length - M$SYS_COLUMNS.LENGTH (VARCHAR 가변 길이)
  */
 class Column {
-  constructor(name, columnType, id, category, length = 0) {
+  constructor(name, columnType, id, flag, length = 0) {
     this.name       = name;
     this.columnType = columnType;
     this.id         = id;
-    this.category   = category;
+    this.flag       = flag;
     this.length     = length;
   }
 
@@ -116,4 +121,4 @@ class TableSchema {
   }
 }
 
-module.exports = { ColumnType, Column, TableSchema };
+module.exports = { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY };

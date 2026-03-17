@@ -19,15 +19,20 @@ async function makeTmpDir() {
   return dir;
 }
 
+// FLAG 상수 (M$SYS_COLUMNS.FLAG)
+const FLAG_BASETIME   = 0x1000000;
+const FLAG_SUMMARIZED = 0x2000000;
+const FLAG_PRIMARY    = 0x8000000;
+
 /** TAG 스키마 mock */
 function makeTagSchema() {
   return {
     tableType: 'TAG',
     logicalTable: 'TAG',
     columns: [
-      { name: 'NAME', columnType: { type: 'varchar', safeNull: '' }, id: 0, category: 'key' },
-      { name: 'TIME', columnType: { type: 'int64', safeNull: 0n }, id: 2, category: 'data' },
-      { name: 'VALUE', columnType: { type: 'float64', safeNull: 0.0 }, id: 3, category: 'data' },
+      { name: 'NAME',  columnType: { type: 'varchar', safeNull: '' },  id: 0, flag: FLAG_PRIMARY,              length: 80 },
+      { name: 'TIME',  columnType: { type: 'int64',   safeNull: 0n },  id: 2, flag: FLAG_BASETIME,             length: 0  },
+      { name: 'VALUE', columnType: { type: 'float64', safeNull: 0.0 }, id: 3, flag: FLAG_SUMMARIZED,           length: 0  },
     ],
   };
 }
@@ -38,9 +43,9 @@ function makeLogSchema() {
     tableType: 'LOG',
     logicalTable: 'LOG',
     columns: [
-      { name: 'NAME', columnType: { type: 'varchar', safeNull: '' }, id: 0, category: 'data' },
-      { name: 'TIME', columnType: { type: 'int64', safeNull: 0n }, id: 1, category: 'data' },
-      { name: 'VALUE', columnType: { type: 'float64', safeNull: 0.0 }, id: 2, category: 'data' },
+      { name: 'NAME',  columnType: { type: 'varchar', safeNull: '' },  id: 0, flag: 0, length: 80 },
+      { name: 'TIME',  columnType: { type: 'int64',   safeNull: 0n },  id: 1, flag: 0, length: 0  },
+      { name: 'VALUE', columnType: { type: 'float64', safeNull: 0.0 }, id: 2, flag: 0, length: 0  },
     ],
   };
 }
@@ -129,12 +134,12 @@ function makeTagWorker(jobId, _tmpDir, overrides, shutdownFlag) {
   return new Worker(
     {
       id: jobId,
-      source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
+      source: { server: 'src', table: 'TAG', tagIdentifier: { mode: 'none', value: '' }, columns: null },
       target: { server: 'dst', table: 'TAG2' },
-      query_limit: 100,
-      poll_interval_ms: 20,
-      start_mode: 'full',
-      on_save_failure: 'continue',
+      queryLimit: 100,
+      pollIntervalMs: 20,
+      startMode: 'full',
+      onSaveFailure: 'continue',
       integrity: { enabled: false },
       ...overrides,
     },
@@ -155,12 +160,12 @@ function makeLogWorker(jobId, _tmpDir, overrides, shutdownFlag) {
   return new Worker(
     {
       id: jobId,
-      source: { server: 'src', table: 'LOG', tag_identifier: { mode: 'none', value: '' }, columns: null },
+      source: { server: 'src', table: 'LOG', tagIdentifier: { mode: 'none', value: '' }, columns: null },
       target: { server: 'dst', table: 'LOG2' },
-      query_limit: 100,
-      poll_interval_ms: 20,
-      start_mode: 'full',
-      on_save_failure: 'continue',
+      queryLimit: 100,
+      pollIntervalMs: 20,
+      startMode: 'full',
+      onSaveFailure: 'continue',
       integrity: { enabled: false },
       ...overrides,
     },

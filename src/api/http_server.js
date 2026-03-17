@@ -3,11 +3,14 @@
 const express = require('express');
 const cors = require('cors');
 const { getInstance: getLogger } = require('../lib/logger.js');
+const { MachbaseClient } = require('../db/client.js');
+const { ColumnType } = require('../db/types.js');
 
 // ─── Response 클래스 ──────────────────────────────────────────────────────────
 
 class Response {
   constructor(data = null, reason = null) {
+    this.ok     = !reason;
     this.data   = data;
     this.reason = reason;
   }
@@ -28,6 +31,15 @@ class JobStatusResponse {
   }
 }
 
+class ServerResponse {
+  constructor({ name, host, port, user }) {
+    this.name = name;
+    this.host = host;
+    this.port = port;
+    this.user = user;
+  }
+}
+
 // ─── HttpServer ───────────────────────────────────────────────────────────────
 
 class HttpServer {
@@ -41,6 +53,15 @@ class HttpServer {
     const app = express();
     app.use(cors(corsOptions));
     app.use(express.json());
+
+    app.get('/api/servers',                            (req, res) => this._listServers(req, res));
+    app.get('/api/servers/:name',                      (req, res) => this._getServer(req, res));
+    app.post('/api/servers',                           (req, res) => this._createServer(req, res));
+    app.put('/api/servers/:name',                      (req, res) => this._updateServer(req, res));
+    app.delete('/api/servers/:name',                   (req, res) => this._deleteServer(req, res));
+    app.get('/api/servers/:name/tables',               (req, res) => this._listTables(req, res));
+    app.get('/api/servers/:name/tables/:table/schema', (req, res) => this._getTableSchema(req, res));
+    app.get('/api/servers/:name/health',               (req, res) => this._checkHealth(req, res));
 
     app.get('/api/jobs',          (req, res) => this._listJobs(req, res));
     app.get('/api/jobs/:id',      (req, res) => this._getJob(req, res));
@@ -65,6 +86,127 @@ class HttpServer {
   }
 
   // ── Handlers ──────────────────────────────────────────────────────────────
+
+  // GET /api/servers → Response<ServerResponse[]>
+  _listServers(_req, res) {
+    const data = this.config.servers.map(s => new ServerResponse(s));
+    res.json(new Response(data));
+  }
+
+  // GET /api/servers/:name → Response<ServerResponse>
+  _getServer(req, res) {
+    const { name } = req.params;
+    const srv = this.config.servers.find(s => s.name === name);
+    if (!srv)
+      return res.status(404).json(new Response(null, `Server '${name}' not found`));
+    res.json(new Response(new ServerResponse(srv)));
+  }
+
+  // POST /api/servers → Response<ServerResponse> (201)
+  async _createServer(req, res) {
+    let srv;
+    try {
+      srv = this.config.addServer(req.body);
+    } catch (e) {
+      const status = e.message.includes('already exists') ? 409 : 400;
+      return res.status(status).json(new Response(null, e.message));
+    }
+    await this.config.save();
+    res.status(201).json(new Response(new ServerResponse(srv)));
+  }
+
+  // PUT /api/servers/:name → Response<ServerResponse>
+  async _updateServer(req, res) {
+    const { name } = req.params;
+    let srv;
+    try {
+      srv = this.config.updateServer(name, req.body);
+    } catch (e) {
+      const status = e.message.includes('not found') ? 404 : 400;
+      return res.status(status).json(new Response(null, e.message));
+    }
+    await this.config.save();
+    res.json(new Response(new ServerResponse(srv)));
+  }
+
+  // DELETE /api/servers/:name → 204
+  async _deleteServer(req, res) {
+    const { name } = req.params;
+    if (!this.config.servers.find(s => s.name === name))
+      return res.status(404).json(new Response(null, `Server '${name}' not found`));
+
+    const jobs = this.config.replication.jobs;
+    const inUse = jobs.find(j => j.source?.server === name || j.target?.server === name);
+    if (inUse)
+      return res.status(409).json(new Response(null, `Server '${name}' is referenced by job '${inUse.id}'`));
+
+    this.config.removeServer(name);
+    await this.config.save();
+    res.status(204).end();
+  }
+
+  // GET /api/servers/:name/tables → Response<{name, type}[]>
+  async _listTables(req, res) {
+    const { name } = req.params;
+    const srv = this.config.servers.find(s => s.name === name);
+    if (!srv)
+      return res.status(404).json(new Response(null, `Server '${name}' not found`));
+
+    const client = new MachbaseClient(srv);
+    try {
+      await client.connect();
+      const rows = await client.selectAllTables();
+      const data = rows.map(r => ({ name: r.NAME, type: r.TYPE === 6 ? 'TAG' : 'LOG' }));
+      res.json(new Response(data));
+    } catch (e) {
+      res.status(500).json(new Response(null, e.message));
+    } finally {
+      try { await client.close(); } catch (_) {}
+    }
+  }
+
+  // GET /api/servers/:name/tables/:table/schema → Response<column[]>
+  async _getTableSchema(req, res) {
+    const { name, table } = req.params;
+    const srv = this.config.servers.find(s => s.name === name);
+    if (!srv)
+      return res.status(404).json(new Response(null, `Server '${name}' not found`));
+
+    const client = new MachbaseClient(srv);
+    try {
+      await client.connect();
+      const rows = await client.selectColumnsByTableName(table.toUpperCase());
+      if (!rows || rows.length === 0)
+        return res.status(404).json(new Response(null, `Table '${table}' not found`));
+      const data = rows.map(r => ({
+        name:     r.NAME,
+        type:     ColumnType.fromCode(r.TYPE).type,
+        length:   r.LENGTH,
+      }));
+      res.json(new Response(data));
+    } catch (e) {
+      res.status(500).json(new Response(null, e.message));
+    } finally {
+      try { await client.close(); } catch (_) {}
+    }
+  }
+
+  // GET /api/servers/:name/health → Response<null>
+  async _checkHealth(req, res) {
+    const { name } = req.params;
+    const srv = this.config.servers.find(s => s.name === name);
+    if (!srv)
+      return res.status(404).json(new Response(null, `Server '${name}' not found`));
+
+    const client = new MachbaseClient(srv);
+    try {
+      await client.connect();
+      await client.close();
+      res.json(new Response());
+    } catch (e) {
+      res.json(new Response(null, e.message));
+    }
+  }
 
   // GET /api/jobs → Response<JobResponse[]>
   _listJobs(_req, res) {
