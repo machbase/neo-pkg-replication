@@ -39,8 +39,8 @@ repli-js/
 │   │   ├── client.test.js              # fixDoubleEndian 단위 테스트 (4개)
 │   │   ├── config.test.js              # Config 단위 테스트 (30개)
 │   │   ├── integrity_checker.test.js   # TagTable.findFirstMissRow 단위 테스트 (7개)
-│   │   ├── retry.test.js               # RetryHandler 단위 테스트 (19개)
-│   │   └── worker.test.js              # Worker 상태 머신 + Job/JobScheduler/Replicator + E2E mock 시나리오 (27개)
+│   │   ├── retry.test.js               # RetryHandler 단위 테스트 (15개)
+│   │   └── worker.test.js              # Worker 상태 머신 + Job/JobScheduler/Replicator + E2E mock 시나리오 (31개)
 │   └── integration/
 │       ├── tag_replication.test.js     # TAG 테이블 통합 테스트 (11개)
 │       ├── log_replication.test.js     # LOG 테이블 통합 테스트 (8개)
@@ -150,7 +150,7 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
    - AbortSignal과 shutdownFlag를 합산하는 `effectiveShutdownFlag` proxy 사용
 - `module.exports = { Worker }`
 
-### core/types.js — ColumnType / Column / TableSchema
+### src/db/types.js — ColumnType / Column / TableSchema
 
 순수 도메인 모델. I/O 의존성 없음.
 
@@ -328,13 +328,16 @@ node --test tests/integration/log_replication.test.js
 node --test tests/integration/table.test.js
 ```
 
-현재 테스트 현황: **93 단위 = 93 pass / 0 fail** (`node --test tests/unit/*.test.js`)
+현재 테스트 현황: **125 단위 = 125 pass / 0 fail** (`node --test tests/unit/*.test.js`)
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
 - client.test.js: fixDoubleEndian (4개)
-- config.test.js: 설정 검증 (30개)
+- config.test.js: 설정 검증 + addJob/updateJob/removeJob/save (36개)
+- http_server.test.js: REST API 7개 엔드포인트 (22개)
 - integrity_checker.test.js: TagTable.findFirstMissRow (7개)
-- retry.test.js: RetryHandler 백오프 로직 (19개)
-- worker.test.js: Worker 상태 머신 + Job/JobScheduler/Replicator + E2E mock 시나리오 (27개)
+- job-scheduler.test.js: Job._discoverMapping + AbortController 전파 + JobScheduler (15개)
+- replicator.test.js: Replicator SIGTERM/SIGINT/shutdown_timeout_ms (5개)
+- retry.test.js: RetryHandler 백오프 로직 (15개)
+- worker-state.test.js: Worker 상태 머신 + E2E mock 시나리오 (stmtCount 갱신 포함) (15개)
 
 ## 실행 방법
 

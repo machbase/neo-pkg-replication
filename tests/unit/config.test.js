@@ -261,3 +261,99 @@ test('source.columns: [123] (비문자열) → 오류', async () => {
   const filePath = await writeConfig(config);
   await assert.rejects(() => Config.load(filePath), /source\.columns/i);
 });
+
+// === Config 인스턴스 메서드 테스트 ===
+
+test('addJob: 새 job 추가 후 replication.jobs에 포함됨', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  const newJob = {
+    id: 'job-new',
+    source: { server: 'src', table: 'TAG' },
+    target: { server: 'dst', table: 'TAG2' },
+    start_mode: 'full',
+    poll_interval_ms: 1000,
+    query_limit: 5000,
+    on_save_failure: 'continue',
+  };
+
+  const jobConfig = config.addJob(newJob);
+  assert.equal(jobConfig.id, 'job-new');
+  assert.equal(config.replication.jobs.length, 2);
+  assert.equal(config.replication.jobs[1].id, 'job-new');
+});
+
+test('addJob: 유효하지 않은 server → 오류 throw', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  const badJob = {
+    id: 'job-bad',
+    source: { server: 'nonexistent', table: 'TAG' },
+    target: { server: 'dst', table: 'TAG2' },
+    start_mode: 'full',
+  };
+
+  assert.throws(() => config.addJob(badJob), /unknown source server/i);
+});
+
+test('updateJob: 기존 job 내용 교체', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  const updatedJob = {
+    id: 'job-1',
+    source: { server: 'src', table: 'TAG' },
+    target: { server: 'dst', table: 'TAG3' },
+    start_mode: 'now',
+    poll_interval_ms: 2000,
+    query_limit: 1000,
+    on_save_failure: 'continue',
+  };
+
+  const jobConfig = config.updateJob('job-1', updatedJob);
+  assert.equal(jobConfig.id, 'job-1');
+  assert.equal(jobConfig.target.table, 'TAG3');
+  assert.equal(jobConfig.start_mode, 'now');
+  assert.equal(config.replication.jobs.length, 1);
+  assert.equal(config.replication.jobs[0].target.table, 'TAG3');
+});
+
+test('removeJob: job 제거 후 replication.jobs에서 삭제됨', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  assert.equal(config.replication.jobs.length, 1);
+  config.removeJob('job-1');
+  assert.equal(config.replication.jobs.length, 0);
+});
+
+test('removeJob: 존재하지 않는 id → 오류 없이 무시', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  config.removeJob('nonexistent');
+  assert.equal(config.replication.jobs.length, 1, '존재하지 않는 id 제거 → jobs 그대로');
+});
+
+test('save: 파일에 쓰고 다시 로드 가능', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+
+  config.addJob({
+    id: 'job-saved',
+    source: { server: 'src', table: 'TAG' },
+    target: { server: 'dst', table: 'TAG2' },
+    start_mode: 'full',
+    poll_interval_ms: 1000,
+    query_limit: 5000,
+    on_save_failure: 'continue',
+  });
+
+  await config.save();
+
+  const reloaded = await Config.load(filePath);
+  assert.equal(reloaded.replication.jobs.length, 2);
+  assert.equal(reloaded.replication.jobs[1].id, 'job-saved');
+});

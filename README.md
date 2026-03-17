@@ -22,47 +22,33 @@ npm install
 ```json
 {
   "version": 3,
-  "servers": {
-    "src": { "host": "192.168.1.10", "port": 5656, "user": "SYS", "password": "MANAGER" },
-    "dst": { "host": "192.168.1.20", "port": 5656, "user": "SYS", "password": "MANAGER" }
-  },
+  "servers": [
+    { "name": "src", "host": "192.168.1.10", "port": 5656, "user": "SYS", "password": "MANAGER" },
+    { "name": "dst", "host": "192.168.1.20", "port": 5656, "user": "SYS", "password": "MANAGER" }
+  ],
   "replication": {
     "jobs": [
       {
         "id": "job-1",
         "enabled": true,
         "shutdown_timeout_ms": 30000,
-        "checkpoint": { "directory": "./checkpoints" },
-        "execution_defaults": {
-          "query_limit": 5000,
-          "poll_interval_ms": 1000,
-          "start_mode": "full",
-          "on_save_failure": "continue",
-          "integrity": { "enabled": true },
-          "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
+        "source": {
+          "server": "src",
+          "table": "TAG",
+          "tag_identifier": { "mode": "none" }
         },
-        "mappings": [
-          {
-            "mapping_id": "tag-to-tag2",
-            "source": {
-              "server": "src",
-              "table": "TAG",
-              "tag_identifier": { "mode": "none", "value": "" }
-            },
-            "target": { "server": "dst", "table": "TAG2" },
-            "execution": {
-              "start_mode": "rid_after",
-              "rid_after": 1000
-            }
-          }
-        ]
+        "target": { "server": "dst", "table": "TAG2" },
+        "start_mode": "full",
+        "query_limit": 5000,
+        "poll_interval_ms": 1000,
+        "on_save_failure": "continue",
+        "integrity": { "enabled": true },
+        "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
       }
     ]
   }
 }
 ```
-
-우선순위: `mapping.execution` > `mapping.source.execution` > `execution_defaults` 순으로 항목별 오버라이드된다.
 
 ### 주요 설정 항목
 
@@ -72,15 +58,10 @@ npm install
 |------|--------|------|
 | `enabled` | `true` | `false`이면 job 전체 건너뜀 |
 | `shutdown_timeout_ms` | `30000` | graceful shutdown 최대 대기 시간 (ms). 초과 시 강제 종료 |
-| `checkpoint.directory` | `"./checkpoints"` | 체크포인트 파일 저장 디렉토리 |
-
-**execution 항목** (`execution_defaults` 또는 mapping의 `execution`에서 사용)
-
-| 항목 | 기본값 | 설명 |
-|------|--------|------|
 | `start_mode` | `"full"` | 체크포인트 없을 때 시작 기준. `full`=RID 0, `now`=현재 최대 RID, `rid_after`=지정 RID |
 | `rid_after` | — | `start_mode=rid_after`일 때 시작 RID 값 (필수) |
 | `query_limit` | `5000` | 1회 읽기 최대 행 수 |
+| `rid_range_size` | `50000` | RID 범위 힌트 크기 |
 | `poll_interval_ms` | `1000` | 새 데이터 없을 때 대기 시간 (ms) |
 | `on_save_failure` | `"continue"` | 체크포인트 저장 실패 시 동작. `continue` 또는 `abort` |
 | `integrity.enabled` | `true` | TAG 테이블 재시작 시 중복 검사(STARTUP_INTEGRITY) 수행 여부 |
@@ -88,10 +69,11 @@ npm install
 | `retry.base_delay_ms` | — | 재시도 초기 대기 시간 (ms, 지수 백오프) |
 | `retry.max_delay_ms` | — | 재시도 최대 대기 시간 (ms) |
 
-**mapping 레벨**
+**source 레벨**
 
 | 항목 | 기본값 | 설명 |
 |------|--------|------|
+| `source.columns` | `null` | 복제할 컬럼 목록. `null`이면 전체 데이터 컬럼 |
 | `source.tag_identifier` | `{ mode: "none" }` | TAG 이름 변환 규칙. `prefix`/`suffix`/`none` |
 
 ## 실행
@@ -124,12 +106,24 @@ _TAG_DATA_3  ──┘
 2. **STARTUP_INTEGRITY** — TAG 테이블 재시작 시(`integrity.enabled=true`), 이미 대상 DB에 기록된 행을 확인해 중복 없이 안전한 재개 지점을 산출한다. LOG 테이블은 수행하지 않는다.
 3. **STEADY_REPLICATION** — `readAfterRid → append → checkpoint 저장 → sleep` 루프를 반복한다.
 
-체크포인트 파일은 `checkpoints/{job_id}__{data_table}.json`에 저장된다.
+체크포인트 파일은 `data/{job_id}_{data_table}.json`에 저장된다.
+
+## REST API
+
+`config.json`에 `api` 설정을 추가하면 REST API 서버가 활성화된다.
+
+```json
+{
+  "api": { "enabled": true, "port": 3000 }
+}
+```
+
+엔드포인트 상세는 [`docs/API.md`](docs/API.md)를 참고한다.
 
 ## 테스트
 
 ```bash
-# 전체 단위 테스트 (95개)
+# 전체 단위 테스트 (93개)
 node --test tests/unit/*.test.js
 
 # 통합 테스트 (실 DB 연결 필요 — 127.0.0.1:5656)
@@ -138,7 +132,7 @@ node --test tests/integration/log_replication.test.js
 node --test tests/integration/table.test.js
 ```
 
-현재 95개 단위 테스트 pass. 통합 테스트는 실 DB 연결 시 pass.
+현재 93개 단위 테스트 pass. 통합 테스트는 실 DB 연결 시 pass.
 
 ## 로그 형식
 
@@ -176,18 +170,19 @@ repli-js/
 │   │   ├── client.js    # MachbaseClient (endian 우회 포함)
 │   │   ├── stream.js    # MachbaseStream, _toCell (append 스트림 래퍼)
 │   │   ├── table.js     # LogTable, TagTable, TagDataTable, TagAliasCache
-│   │   └── checkpoint.js  # 체크포인트 관리 (atomic write, BigInt 지원 내장)
+│   │   ├── checkpoint.js  # 체크포인트 관리 (atomic write, BigInt 지원 내장)
+│   │   └── types.js     # ColumnType, Column, TableSchema (순수 도메인 모델)
 │   ├── worker/
 │   │   └── worker.js    # Worker 상태 머신
 │   └── lib/
 │       ├── logger.js    # Logger (날짜 로테이션, stdout/file)
-│       ├── retry.js     # 재시도 유틸리티
-│       └── types.js     # ColumnType, Column, TableSchema (순수 도메인 모델)
+│       └── retry.js     # 재시도 유틸리티
+├── data/                # 런타임 생성 — cp 파일 저장 위치
 ├── docs/
 │   ├── PROJECT.md       # 상세 설계 문서 (아키텍처, UML, 결정 이력)
+│   ├── API.md           # REST API 명세
 │   └── ENDIAN_BUG.md    # @machbase/ts-client endian 버그 상세 분석
-├── checkpoints/         # 런타임 생성 — cp 파일 저장 위치
 └── tests/
-    ├── unit/            # 단위 테스트 (95개)
-    └── integration/     # 통합 테스트 (36개, 실 DB 필요)
+    ├── unit/            # 단위 테스트 (93개)
+    └── integration/     # 통합 테스트 (실 DB 필요)
 ```

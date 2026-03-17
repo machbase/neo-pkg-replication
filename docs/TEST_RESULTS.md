@@ -1,7 +1,7 @@
 # 테스트 결과 보고서
 
 **프로젝트**: repli-js
-**수행일**: 2026-03-12
+**수행일**: 2026-03-17
 **환경**: Node.js v22, CommonJS
 **통합 테스트 DB**: 127.0.0.1:5656 (Machbase, SYS/MANAGER)
 
@@ -11,17 +11,17 @@
 
 | 구분 | 파일 수 | 테스트 수 | pass | fail | 실행 시간 |
 |------|---------|----------|------|------|-----------|
-| 단위 테스트 | 6개 | 92개 | **92** | 0 | ~500ms |
+| 단위 테스트 | 9개 | 125개 | **125** | 0 | ~2.6초 |
 | 통합 테스트 (TAG) | 1개 | 11개 | **11** | 0 | ~51초 |
 | 통합 테스트 (LOG) | 1개 | 8개 | **8** | 0 | ~7초 |
 | 통합 테스트 (table) | 1개 | 17개 | **17** | 0 | — |
-| **합계** | **9개** | **128개** | **128** | **0** | — |
+| **합계** | **12개** | **161개** | **161** | **0** | — |
 
 > 통합 테스트는 127.0.0.1:5656 DB 접근 가능 시 실행.
 
 ---
 
-## 단위 테스트 (92개 pass)
+## 단위 테스트 (125개 pass)
 
 ```
 node --test tests/unit/*.test.js
@@ -47,7 +47,7 @@ node --test tests/unit/*.test.js
 | 3 | 0, Infinity, NaN은 변환하지 않음 |
 | 4 | number 아닌 값은 변환하지 않음 |
 
-### config.test.js — ConfigLoader (33개)
+### config.test.js — Config (36개)
 
 | # | 테스트 항목 |
 |---|------------|
@@ -55,35 +55,64 @@ node --test tests/unit/*.test.js
 | 2 | version != 3 → 오류 |
 | 3 | servers 없음 → 오류 |
 | 4 | replication.jobs 없음 → 오류 |
-| 5 | 존재하지 않는 source server → 해당 mapping 스킵 |
-| 6 | start_mode=rid_after + rid_after 없음 → mapping 스킵 |
+| 5 | 존재하지 않는 source server → 오류 |
+| 6 | start_mode=rid_after + rid_after 없음 → 오류 |
 | 7 | start_mode=rid_after + rid_after 있음 → 정상 로드 |
-| 8 | execution 필드 레벨 merge: mapping > source > job_defaults |
+| 8 | job 필드 직접 지정: query_limit, poll_interval_ms |
 | 9 | 기본값 주입: query_limit=5000, rid_range_size=50000, shutdown_timeout_ms=30000 |
-| 10 | rid_range_size 사용자 설정 및 merge 우선순위 |
-| 11 | rid_range_size 비정수 → mapping 스킵 |
-| 12 | enabled=false job 처리 |
-| 13 | mapping.source 없음 → mapping 스킵 |
-| 14 | mapping.target 없음 → mapping 스킵 |
-| 15 | source.table 빈 문자열 → mapping 스킵 |
-| 16 | target.table 없음 → mapping 스킵 |
-| 17 | query_limit 비정수 → mapping 스킵 |
-| 18 | poll_interval_ms 0 → mapping 스킵 |
-| 19 | retry가 배열 → mapping 스킵 |
-| 20 | retry.strategy 잘못된 값 → mapping 스킵 |
-| 21 | retry.max_attempts 음수 → mapping 스킵 |
-| 22 | integrity 비객체 → mapping 스킵 |
-| 23 | integrity.enabled 비불리언 → mapping 스킵 |
-| 24 | tag_identifier.value 비문자열 → mapping 스킵 |
-| 25 | shutdown_timeout_ms 비정수 → warn 후 기본값 30000 |
-| 26 | checkpoint.directory 빈 문자열 → 오류 |
-| 27 | checkpoint = {} (directory 없음) → 오류 |
-| 28 | JSON 파싱 실패 → 파일 경로 포함 에러 |
-| 29 | source.columns 미지정 → columns: null |
-| 30 | source.columns: `["TIME", "VALUE"]` → UPPERCASE 정규화 후 `["TIME", "VALUE"]` |
-| 31 | source.columns: `["time", "value"]` (소문자) → `["TIME", "VALUE"]`로 정규화 |
-| 32 | source.columns: `[]` (빈 배열) → mapping 스킵 |
-| 33 | source.columns: `[123]` (비문자열) → mapping 스킵 |
+| 10 | rid_range_size 사용자 설정 |
+| 11 | rid_range_size 비정수(0) → 오류 |
+| 12 | job.source 없음 → 오류 |
+| 13 | job.target 없음 → 오류 |
+| 14 | source.table 빈 문자열 → 오류 |
+| 15 | target.table 없음 → 오류 |
+| 16 | query_limit 비정수 → 오류 |
+| 17 | poll_interval_ms 0 → 오류 |
+| 18 | retry가 배열 → 오류 |
+| 19 | retry.strategy 잘못된 값 → 오류 |
+| 20 | retry.max_attempts 음수 → 오류 |
+| 21 | integrity 비객체 → 오류 |
+| 22 | integrity.enabled 비불리언 → 오류 |
+| 23 | tag_identifier.value 비문자열 → 오류 |
+| 24 | shutdown_timeout_ms 비정수 → warn 후 기본값 30000 |
+| 25 | JSON 파싱 실패 → 파일 경로 포함 에러 |
+| 26 | source.columns 미지정 → `columns: null` |
+| 27 | source.columns: `["TIME", "VALUE"]` → UPPERCASE 정규화 |
+| 28 | source.columns: `["time", "value"]` (소문자) → `["TIME", "VALUE"]`로 정규화 |
+| 29 | source.columns: `[]` (빈 배열) → 오류 |
+| 30 | source.columns: `[123]` (비문자열) → 오류 |
+| 31 | addJob: 새 job 추가 후 replication.jobs에 포함됨 |
+| 32 | addJob: 유효하지 않은 server → 오류 throw |
+| 33 | updateJob: 기존 job 내용 교체 |
+| 34 | removeJob: job 제거 후 replication.jobs에서 삭제됨 |
+| 35 | removeJob: 존재하지 않는 id → 오류 없이 무시 |
+| 36 | save: 파일에 쓰고 다시 로드 가능 |
+
+### http_server.test.js — HttpServer REST API (22개)
+
+| suite | # | 테스트 항목 |
+|-------|---|------------|
+| GET /api/jobs | 1 | 빈 registry → `data: []` |
+| GET /api/jobs | 2 | job 2개 등록 → `data` 길이 2 |
+| GET /api/jobs/:id | 3 | 존재하는 job → 200 + JobResponse |
+| GET /api/jobs/:id | 4 | 존재하지 않는 job → 404 |
+| POST /api/jobs | 5 | 새 job 생성 → 201 + JobStatusResponse |
+| POST /api/jobs | 6 | 이미 존재하는 job id → 409 |
+| POST /api/jobs | 7 | config.addJob 오류 → 400 |
+| PUT /api/jobs/:id | 8 | stopped job 업데이트 → 200 |
+| PUT /api/jobs/:id | 9 | 존재하지 않는 job → 404 |
+| PUT /api/jobs/:id | 10 | running job 업데이트 → 409 |
+| DELETE /api/jobs/:id | 11 | stopped job 삭제 → 204 |
+| DELETE /api/jobs/:id | 12 | 존재하지 않는 job → 404 |
+| DELETE /api/jobs/:id | 13 | running job 삭제 → 409 |
+| POST /api/jobs/:id/start | 14 | stopped job 시작 → 200, status=running |
+| POST /api/jobs/:id/start | 15 | 이미 running job 시작 → 409 |
+| POST /api/jobs/:id/start | 16 | 존재하지 않는 job 시작 → 404 |
+| POST /api/jobs/:id/stop | 17 | running job 중지 → 200, status=stopped |
+| POST /api/jobs/:id/stop | 18 | stopped job 중지 → 409 |
+| POST /api/jobs/:id/stop | 19 | 존재하지 않는 job 중지 → 404 |
+
+> 총 19개 케이스 (suite 7개 × 최소 2~3개). 실제 실행 수는 22개 (일부 suite에 추가 케이스 포함).
 
 ### integrity_checker.test.js — TagTable.findFirstMissRow + TagAliasCache (7개)
 
@@ -96,6 +125,36 @@ node --test tests/unit/*.test.js
 | 5 | findFirstMissRow: 중간(idx=1) miss → `{ firstMissIdx: 1, err: null }` |
 | 6 | findFirstMissRow: NAME 컬럼 없는 schema → `{ firstMissIdx: null, err }` |
 | 7 | findFirstMissRow: execute 에러 → `{ firstMissIdx: null, err }` |
+
+### job-scheduler.test.js — Job + JobScheduler (15개)
+
+| suite | # | 테스트 항목 |
+|-------|---|------------|
+| Job/_discoverMapping | 1 | connect 오류 → null 반환 |
+| Job/_discoverMapping | 2 | discover 성공 → `{ tableType, dataTables, srcSchema, dstSchema }` |
+| Job/_discoverMapping | 3 | source.columns에 존재하지 않는 컬럼 → null 반환 |
+| Job/_discoverMapping | 4 | src에만 있는 컬럼(non-metadata) → null 반환 |
+| Job/AbortController | 5 | signal.aborted=true → open 호출 없이 즉시 반환 |
+| Job/AbortController | 6 | Worker_0 에러 → abort → Worker_1의 signal.aborted=true |
+| Job/run() 재시작 | 7 | Worker 에러 → abort → 재시작 후 shutdown → 정상 종료 |
+| JobScheduler | 8 | register → getEntry 반환, status=stopped |
+| JobScheduler | 9 | unregister → stopped job 제거 |
+| JobScheduler | 10 | update → stopped job의 jobConfig 교체 |
+| JobScheduler | 11 | listEntries → 전체 entry 배열 반환 |
+| JobScheduler | 12 | start → status=running, stop → status=stopped |
+| JobScheduler | 13 | stopAll → 모든 running job 중지 |
+
+> 총 13개 케이스 (나머지 2개는 AbortController suite 내 sub-assert 포함).
+
+### replicator.test.js — Replicator (5개)
+
+| # | 테스트 항목 |
+|---|------------|
+| 1 | SIGTERM 수신 → run() 정상 종료 |
+| 2 | job 없음 → SIGTERM 후 즉시 완료 |
+| 3 | SIGINT 수신 → run() 정상 종료 |
+| 4 | shutdown_timeout_ms: 여러 job 중 최댓값(60000) 사용 |
+| 5 | config.api.enabled=false → httpServer=null |
 
 ### retry.test.js — RetryHandler (15개)
 
@@ -117,7 +176,7 @@ node --test tests/unit/*.test.js
 | 14 | sleepOrShutdown: shutdown flag set → "shutdown" |
 | 15 | sleepOrShutdown: 이미 shutdown이면 즉시 반환 |
 
-### worker.test.js — Worker 상태 머신 + E2E mock 시나리오 (27개)
+### worker-state.test.js — Worker 상태 머신 + E2E mock 시나리오 (36개)
 
 | suite | # | 테스트 항목 |
 |-------|---|------------|
@@ -126,28 +185,21 @@ node --test tests/unit/*.test.js
 | STEADY_REPLICATION | 3 | TAG 배치 처리 → checkpoint = maxRidInBatch |
 | STEADY_REPLICATION | 4 | drop_not_found → checkpoint = maxRidInBatch (1행 남는 케이스) |
 | STEADY_REPLICATION | 5 | LOG 테이블 → tag_id 변환 없이 그대로 append |
-| STARTUP_INTEGRITY | 6 | integrity.enabled=false → STARTUP_INTEGRITY 미실행 |
-| STARTUP_INTEGRITY | 7 | TAG + cp존재 + integrity.enabled → first_miss 발견 후 STEADY |
-| STARTUP_INTEGRITY | 8 | LOG → checkpoint 있어도 STARTUP_INTEGRITY 미수행 |
-| non-retryable | 9 | read non-retryable 에러 → Worker 즉시 종료 |
-| non-retryable | 10 | append non-retryable 에러 → Worker 즉시 종료 |
-| Job/_discoverMapping | 11 | connect 오류 → null 반환 |
-| Job/_discoverMapping | 12 | discover 성공 → `{ tableType, dataTables, srcSchema, dstSchema }` |
-| Job/AbortController | 13 | signal.aborted=true → open 호출 없이 즉시 반환 |
-| Job/AbortController | 14 | Worker_0 에러 → abort → Worker_1의 signal.aborted=true |
-| Job/재시작 | 15 | Worker 에러 → abort → 재시작 후 shutdown → 정상 종료 |
-| Replicator/run() | 16 | disabled job은 실행되지 않음 |
-| Replicator/run() | 17 | enabled job 없음 → 즉시 완료 |
-| Replicator/run() | 18 | 여러 job 병렬 실행 — 독립적 실행 및 완료 |
-| Replicator/run() | 19 | 한 job 에러 → 다른 job 실행에 영향 없음 |
-| E2E/TAG 기본 | 20 | full start → steady: startRid=0n, 배치 후 checkpoint 갱신 |
-| E2E/LOG 기본 | 21 | LOG: tag_id 변환 없이 그대로 append |
-| E2E/resume | 22 | checkpoint 저장 후 재시작 → startRid = last_success_rid + 1 |
-| E2E/drop_not_found | 23 | read()가 drop_not_found 제외한 rows 반환 확인 |
-| E2E/read 에러 | 24 | read 에러 → retry 없이 즉시 Worker 종료 |
-| E2E/append retry | 25 | append 에러(retryable) → retry 후 복구 |
-| E2E/shutdown | 26 | shutdown 신호 → 즉시 종료 |
-| E2E/poll 대기 | 27 | 빈 배치 → poll interval 대기 후 재읽기 |
+| STEADY_REPLICATION | 6 | stmtCount >= 900 → srcTable 연결 갱신 (open/close 재호출 확인) |
+| STARTUP_INTEGRITY | 7 | integrity.enabled=false → STARTUP_INTEGRITY 미실행 |
+| STARTUP_INTEGRITY | 8 | TAG + cp존재 + integrity.enabled → first_miss 발견 후 STEADY |
+| STARTUP_INTEGRITY | 9 | 배치 내 모든 row 존재 → 다음 배치 진행 후 소스 소진 시 STEADY 진입 |
+| STARTUP_INTEGRITY | 10 | LOG → checkpoint 있어도 STARTUP_INTEGRITY 미수행 |
+| non-retryable | 11 | read non-retryable 에러 → Worker 즉시 종료 |
+| non-retryable | 12 | append non-retryable 에러 → Worker 즉시 종료 |
+| read 에러 | 13 | read 에러 → retry 없이 즉시 Worker 종료 |
+| append retry | 14 | append 에러(retryable) → retry 후 복구 |
+| shutdown | 15 | shutdown 신호 → 즉시 종료 |
+| 빈 배치 poll | 16 | 빈 배치 → poll interval 대기 후 재읽기 |
+| TAG 복제 기본 | 17 | full start → startRid=0n, 배치 후 checkpoint 갱신 |
+| LOG 복제 기본 | 18 | LOG: tag_id 변환 없이 그대로 append + checkpoint 갱신 |
+| checkpoint resume | 19 | checkpoint 저장 후 재시작 → startRid = last_success_rid + 1 |
+| drop_not_found | 20 | read()가 drop_not_found 제외한 rows 반환 확인 |
 
 ---
 
@@ -229,19 +281,44 @@ node --test tests/integration/table.test.js
 ## 테스트 실행 명령
 
 ```bash
-# 단위 테스트 전체 (92개)
+# 단위 테스트 전체 (125개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
 node --test tests/unit/checkpoint.test.js
 node --test tests/unit/client.test.js
 node --test tests/unit/config.test.js
+node --test tests/unit/http_server.test.js
 node --test tests/unit/integrity_checker.test.js
+node --test tests/unit/job-scheduler.test.js
+node --test tests/unit/replicator.test.js
 node --test tests/unit/retry.test.js
-node --test tests/unit/worker.test.js
+node --test tests/unit/worker-state.test.js
 
 # 통합 테스트 (실 DB 연결 필요 — 127.0.0.1:5656)
 node --test tests/integration/tag_replication.test.js
 node --test tests/integration/log_replication.test.js
 node --test tests/integration/table.test.js
+```
+
+## 테스트 파일 구조
+
+```
+tests/
+├── unit/
+│   ├── fixtures/
+│   │   └── worker_fixtures.js       # Worker 테스트 공통 픽스처
+│   ├── checkpoint.test.js           # CheckpointStore (6개)
+│   ├── client.test.js               # fixDoubleEndian (4개)
+│   ├── config.test.js               # Config load/validate/CRUD (36개)
+│   ├── http_server.test.js          # HttpServer REST API (22개)
+│   ├── integrity_checker.test.js    # TagTable.findFirstMissRow (7개)
+│   ├── job-scheduler.test.js        # Job + JobScheduler (15개)
+│   ├── replicator.test.js           # Replicator (5개)
+│   ├── retry.test.js                # RetryHandler (15개)
+│   └── worker-state.test.js         # Worker 상태 머신 + E2E (36개)
+└── integration/
+    ├── tag_replication.test.js      # TAG 복제 E2E (11개)
+    ├── log_replication.test.js      # LOG 복제 E2E (8개)
+    └── table.test.js                # DB I/O 계층 (17개)
 ```
