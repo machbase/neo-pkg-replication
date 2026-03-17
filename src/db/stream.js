@@ -1,6 +1,6 @@
 'use strict';
 
-const { getInstance: getLogger } = require('../logger/logger.js');
+const { getInstance: getLogger } = require('../lib/logger.js');
 const { toInt64 } = require('./client.js');
 
 /**
@@ -32,7 +32,7 @@ class MachbaseStream {
    * @param {MachbaseClient} client
    * @param {string} table
    * @param {Array<{ name: string, type: string }>} columns
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async open(client, table, columns) {
     try {
@@ -47,7 +47,7 @@ class MachbaseStream {
   /**
    * 행렬 데이터 append
    * @param {Array<Array>} matrix - 컬럼 순서대로 정렬된 값 배열의 배열
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async append(matrix) {
     if (!matrix || matrix.length === 0) return null;
@@ -63,7 +63,7 @@ class MachbaseStream {
 
   /**
    * 스트림 닫기
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async close() {
     if (this.stream) {

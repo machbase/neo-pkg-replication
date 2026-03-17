@@ -12,33 +12,35 @@ Machbase TAG/LOG 테이블 간 데이터 복제(replication) 도구.
 
 ```
 repli-js/
-├── app.js                        # 진입점 — ConfigLoader → Replicator 실행
-├── job_runner.js                 # Replicator, Job — Worker 병렬 실행 오케스트레이션
+├── app.js                        # 진입점 — Config.load() → Replicator 실행
 ├── config.json                   # 실행 설정 (jobs, 접속 정보 등)
-├── config/
-│   └── config.js                 # ConfigLoader — 설정 파일 로드/검증
-├── core/
-│   ├── types.js                  # ColumnType, Column, TableSchema — 순수 도메인 모델 (I/O 없음)
-│   └── retry.js                  # RetryHandler 유틸리티
-├── db/
-│   ├── client.js                 # MachbaseClient, toInt64 — DB 연결·쿼리 (I/O 계층)
-│   ├── stream.js                 # MachbaseStream, _toCell — append 스트림 래퍼
-│   └── table.js                  # TagAliasCache, LogTable, TagTable, TagDataTable
-├── worker/
-│   └── worker.js                 # Worker 클래스 — 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
-├── checkpoint/
-│   └── store.js                  # CheckpointStore — cp 파일 load/save (atomic write, BigInt 내장)
-├── logger/
-│   └── logger.js                 # Logger 클래스 — 날짜 로테이션, stdout/file 출력
-├── checkpoints/                  # 런타임 생성 — job별 파티션 cp 파일 저장 디렉토리
+├── src/
+│   ├── replicator.js             # Replicator — SIGTERM/SIGINT 처리, JobScheduler 관리
+│   ├── job.js                    # JobScheduler, Job
+│   ├── api/
+│   │   └── http_server.js        # HttpServer — REST API (JobScheduler에만 의존)
+│   ├── config/
+│   │   └── config.js             # Config 클래스 및 config 도메인 클래스 전체
+│   ├── db/
+│   │   ├── client.js             # MachbaseClient, toInt64 — DB 연결·쿼리 (I/O 계층)
+│   │   ├── stream.js             # MachbaseStream, _toCell — append 스트림 래퍼
+│   │   ├── table.js              # TagAliasCache, LogTable, TagTable, TagDataTable
+│   │   └── checkpoint.js         # CheckpointStore — cp 파일 load/save (atomic write, BigInt 내장)
+│   ├── worker/
+│   │   └── worker.js             # Worker 클래스 — 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
+│   └── lib/
+│       ├── logger.js             # Logger 클래스 — 날짜 로테이션, stdout/file 출력
+│       ├── retry.js              # RetryHandler 유틸리티
+│       └── types.js              # ColumnType, Column, TableSchema — 순수 도메인 모델 (I/O 없음)
+├── data/                         # 런타임 생성 — job별 파티션 cp 파일 저장 디렉토리 (고정 경로)
 ├── tests/
 │   ├── unit/
 │   │   ├── checkpoint.test.js          # CheckpointStore 단위 테스트 (6개)
 │   │   ├── client.test.js              # fixDoubleEndian 단위 테스트 (4개)
-│   │   ├── config.test.js              # Config 단위 테스트 (33개)
+│   │   ├── config.test.js              # Config 단위 테스트 (30개)
 │   │   ├── integrity_checker.test.js   # TagTable.findFirstMissRow 단위 테스트 (7개)
 │   │   ├── retry.test.js               # RetryHandler 단위 테스트 (19개)
-│   │   └── worker.test.js              # Worker 상태 머신 + Job/Replicator + E2E mock 시나리오 (27개)
+│   │   └── worker.test.js              # Worker 상태 머신 + Job/JobScheduler/Replicator + E2E mock 시나리오 (27개)
 │   └── integration/
 │       ├── tag_replication.test.js     # TAG 테이블 통합 테스트 (11개)
 │       ├── log_replication.test.js     # LOG 테이블 통합 테스트 (8개)
@@ -53,37 +55,91 @@ repli-js/
 
 ### app.js — 진입점
 
-- `ConfigLoader.load(configPath)` → `initLogger(config.logging)` → `new Replicator(config).run()`
+- `Config.load(configPath)` → `initLogger(config.logging)` → `new Replicator(config).run()`
 - SIGTERM / SIGINT 처리는 `Replicator.run()` 내부에서 담당
 
-### config/config.js — ConfigLoader
+### src/replicator.js — Replicator
 
-- `ConfigLoader.load(filePath)` → config 객체 반환
-- version 3 필수 검증, servers/jobs 구조 검증
-- `_processJob()`: job별 source/target/execution 검증, source.columns UPPERCASE 정규화, tag_identifier/retry/integrity 검증
-- `_mergeExecution(...layers)`: EXECUTION_DEFAULTS → job.execution 2-level merge
+- SIGTERM/SIGINT → `scheduler.stopAll()` → `httpServer.stop()`, shutdown timer 관리
+- `shutdown_timeout_ms`: 활성 job 중 최댓값 사용 (기본 30000ms)
+- `config.api.enabled` 시 `HttpServer` 생성 후 시작
+- job은 자동 시작하지 않음 — API를 통해 개별 시작
+- `module.exports = { Replicator }`
 
-### job_runner.js — Replicator / Job
+### src/job.js — JobScheduler / Job
 
-- **Replicator**: SIGTERM/SIGINT → `shutdownFlag.value = true`, shutdown timer 관리
-  - `shutdown_timeout_ms`: 활성 job 중 최댓값 사용 (기본 30000ms)
-  - `module.exports = { Replicator, Job, Worker }`
+- **JobScheduler**: job 생명주기 관리 (`registry: Map`)
+  - `register(jobConfig)` / `unregister(id)` / `update(jobConfig)` — stopped 상태에서만 가능
+  - `start(id)` → `new Job(...).run()` 실행, status='running'
+  - `stop(id)` → shutdownFlag 설정 후 promise 대기
+  - `stopAll()` → 모든 running entry에 shutdownFlag 설정 후 `Promise.all` 대기
+  - `getEntry(id)` / `listEntries()`
+  - `module.exports = { JobScheduler, Job, Worker }`
 - **Job**: `while(!shutdown)` 루프 (job = 단일 src→dst 복제 단위)
-  - `_discoverMapping(jobConfig, logCtx)` → 소스/대상 스키마 수집 + 검증 (단기 커넥션)
-    - TAG: `TagTable.getDataTables()` → `TagTable.getSchema(dataTableId)` 호출
+  - `_discoverMapping(logCtx)` → 소스/대상 스키마 수집 + 검증 (단기 커넥션)
+    - TAG: `TagTable.getDataTables()` → `TagTable.getSchema()` 호출
     - LOG: `LogTable.getSchema()` 호출
     - src-only 컬럼 검출 (metadata 제외): 소스에만 있는 컬럼 → discover 실패
     - `source.columns` 유효성 검증: schema에 없는 컬럼명 → discover 실패
   - `AbortController`로 Worker × N `Promise.all` 병렬 실행
   - Worker 에러 시 abort → 루프 재시작
 
-### worker/worker.js — Worker 클래스
+### src/api/http_server.js — HttpServer
 
-`Worker(jobId, jobCheckpoint, mapping, tableType, dataTable, srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag)` 클래스. `run(signal)` 메서드에서 3단계 상태 전이:
+- `HttpServer(scheduler, config)` — JobScheduler + Config 인스턴스에만 의존
+- Job CRUD REST API: `GET/POST /api/jobs`, `GET/PUT/DELETE /api/jobs/:id`, `POST /api/jobs/:id/start|stop`
+- `config.addJob()` / `config.updateJob()` / `config.removeJob()` + `config.save()` 연동
+- `module.exports = { HttpServer }`
+
+### src/config/config.js — Config 및 도메인 클래스
+
+config 도메인 클래스 전체가 이 파일에 정의된다.
+
+**config 클래스 계층**
+```
+Config
+ ├─ servers: ServerConfig[]
+ ├─ replication: ReplicationConfig
+ │   └─ jobs: JobConfig[]
+ │       ├─ source: SourceConfig
+ │       │   └─ tag_identifier: TagIdentifierConfig
+ │       ├─ target: TargetConfig
+ │       ├─ integrity: IntegrityConfig (optional)
+ │       └─ retry: RetryConfig (optional)
+ ├─ logging: LoggingConfig
+ │   └─ file: LoggingFileConfig
+ └─ api: ApiConfig
+```
+
+**Config 클래스**
+- `static async load(filePath?)` → `Config` 인스턴스 반환 (기본 경로: `../../config.json`)
+- `async save()` — atomic write (tmp → rename)
+- `addJob(rawJob)` / `updateJob(id, rawJob)` / `removeJob(id)`
+- `module.exports = { Config, JobConfig, ServerConfig, SourceConfig, TargetConfig, IntegrityConfig, RetryConfig, TagIdentifierConfig, LoggingConfig, LoggingFileConfig, ApiConfig, ReplicationConfig, CHECKPOINT_DIRECTORY }`
+
+**각 클래스의 `valid()` 메서드**
+- 생성 후 호출하여 검증. 실패 시 throw.
+- `Config._buildJob(job, servers)` 내부에서 `new XxxConfig(raw)` → `instance.valid()` 패턴 사용
+
+**JobConfig 필드 (flat 구조, execution 중첩 없음)**
+```
+id, shutdown_timeout_ms,
+source (SourceConfig), target (TargetConfig),
+query_limit, rid_range_size, poll_interval_ms,
+start_mode, rid_after, on_save_failure,
+integrity (IntegrityConfig?), retry (RetryConfig?)
+```
+- 기본값: `query_limit=5000`, `rid_range_size=50000`, `poll_interval_ms=1000`, `start_mode='full'`, `on_save_failure='continue'`
+
+**CHECKPOINT_DIRECTORY**: `path.join(__dirname, '../../data')` 고정 경로 (외부 설정 불필요)
+
+### src/worker/worker.js — Worker 클래스
+
+`Worker(jobConfig, tableType, dataTable, srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag)` 클래스. `run(signal)` 메서드에서 3단계 상태 전이:
 
 1. **RESOLVE_START**: cp 파일 로드 → `startRid` 결정
    - cp 존재 → `last_success_rid + 1n`
-   - cp 없음 → `start_mode` 기준 (`full`=0n, `now`=srcTable.getMaxRid()+1n, `rid_after`=BigInt(exec.rid_after))
+   - cp 없음 → `start_mode` 기준 (`full`=0n, `now`=srcTable.getMaxRid()+1n, `rid_after`=BigInt(jobConfig.rid_after))
    - TAG 테이블: `srcTable.loadTagAliasCache()` 로드
 2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 + `integrity.enabled !== false` 시만):
    - `startRid`부터 배치 읽기 → `dstTable.findFirstMissRow()` 대상 DB 존재 확인 (VOLATILE TABLE + JOIN)
@@ -99,13 +155,11 @@ repli-js/
 순수 도메인 모델. I/O 의존성 없음.
 
 - `ColumnType` 클래스: Machbase 컬럼 타입 정의 (`code`, `type`, `safeNull`)
-  - Static 상수: `SHORT`, `USHORT`, `INTEGER`, `UINTEGER`, `LONG`, `ULONG`, `DATETIME`, `FLOAT`, `DOUBLE`, `VARCHAR`, `TEXT`, `CLOB`, `BLOB`, `BINARY`, `IPV4`, `IPV6`, `JSON`, `UNKNOWN`
   - `safeNull`: append 패딩용 타입 안전 null 대체값 (int32→`0`, int64/datetime→`0n`, float→`0.0`, string→`''`)
   - `ColumnType.fromCode(code)` → M$SYS_COLUMNS.TYPE 코드로 인스턴스 반환
 - `Column` 클래스: 테이블 컬럼 메타정보 (`name`, `columnType`, `id`, `category`)
   - `category`: `'key'`(TAG의 NAME 컬럼), `'data'`(일반 데이터 컬럼), `'metadata'`(TAG META 추가 속성)
 - `TableSchema` 클래스: 불변 테이블 컬럼 구조 (`tableType`, `logicalTable`, `columns: Column[]`)
-  - constructor: `(tableType, logicalTable, columns)`
 - `module.exports = { ColumnType, Column, TableSchema }`
 
 ### db/client.js — MachbaseClient
@@ -113,65 +167,88 @@ repli-js/
 - `MachbaseClient` 클래스: `@machbase/ts-client` 연결 래퍼
   - `connect()` / `close()` / `query(sql, values?)` / `appendOpen(table, columns)` / `execute(sql)`
   - `query()` 반환 직후 `fixDoubleEndian()` 자동 적용 (BE/LE 혼재 버그 우회)
-  - **카탈로그 메서드** (DB 구조 조회):
-    - `selectTableType(table)` → `{ type: 'TAG'|'LOG'|'UNSUPPORTED' }`
-    - `selectTagDataTables(logicalTable)` → `[{ data_table, table_id }]` (table_id는 BigInt 그대로)
-    - `selectColumnsByTableName(tableName)` → `[{ NAME, TYPE, ID }]` (META·LOG 컬럼 조회)
-    - `selectColumnsByTableId(tableId)` → `[{ NAME, TYPE, ID }]` (DATA 파티션, BigInt 파라미터 허용)
-    - `selectMaxRid(tableName)` → `BigInt` (빈 테이블이면 `0n`)
-    - `selectTagNames(logicalTable)` → `[{ _ID, name }]` (TAG META 전체 조회)
-    - `selectTagNameByTagId(logicalTable, tagId)` → `string|null` (단건 조회)
-- `toInt64(val)` → BigInt 변환 유틸리티 (stream.js에서 import)
+  - **카탈로그 메서드**: `selectTableType`, `selectTagDataTables`, `selectColumnsByTableName`, `selectColumnsByTableId`, `selectMaxRid`, `selectTagNames`, `selectTagNameByTagId`
+- `toInt64(val)` → BigInt 변환 유틸리티
 - `module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema }`
 
 ### db/stream.js — MachbaseStream / _toCell
 
 - `_toCell(col, val)` → append 가능한 형태로 셀 변환 (순수 변환, 로그 없음)
-  - null/undefined → `col.columnType.safeNull`
-  - int64 → `toInt64(val)` (BigInt 변환)
-  - non-finite float → `col.columnType.safeNull`
-- `MachbaseStream` 클래스: appendOpen 스트림 생명주기 래퍼 (client 생명주기는 호출자 관리)
-  - `open(client, table, columns)` → `Error|null`
-  - `append(matrix)` → `Error|null`
-  - `close()` → `Error|null`
+- `MachbaseStream` 클래스: appendOpen 스트림 생명주기 래퍼
 - `module.exports = { MachbaseStream, _toCell }`
 
 ### db/table.js — TagAliasCache / LogTable / TagTable / TagDataTable
 
-- `TagAliasCache` 클래스: TAG alias 캐시 (tag_id → canonical name)
-  - `set(tagId, name)` / `get(tagId)` / `size` getter
-    - `set()`: name에 `\x00` 포함 시 throw (existSet key 충돌 방지)
-  - `resolve(tagId, tagIdentifier)` → `{ canonical, status: 'ok'|'drop_not_found' }` (캐시에서만 조회)
-  - `TagAliasCache._applyIdentifier(tagName, tagIdentifier)` → prefix/suffix/none 변환
-- `LogTable` 클래스: LOG 테이블의 스키마 조회 + read + append 담당
-  - `constructor(logicalTable, config)` → `MachbaseClient` 내부 생성
-  - `getSchema()` → `Promise<TableSchema>`
-  - `open(useStream?)` / `close()` → DB 연결 + 선택적 append 스트림 열기/닫기
-  - `read(startRid, limit?, rangeSize?)` → `{ rows: [{rid, data}], err }`
-  - `append(rows)` → `Error|null`
-  - `getMaxRid()` → `Promise<BigInt>`
-- `TagTable` 클래스: TAG 논리 테이블의 스키마 조회 + append 담당
-  - `constructor(logicalTable, config)` → `MachbaseClient` 내부 생성
-  - `getSchema(dataTableId)` → `Promise<TableSchema>` (META + DATA 파티션 두 곳 조회)
-  - `getDataTables()` → `Promise<[{ data_table, table_id }]>`
-  - `open(useStream?)` / `close()` / `append(rows)` / `read()` — LogTable과 동일한 인터페이스
-- `TagDataTable` 클래스: TAG 데이터 파티션 단위 읽기 담당
-  - `constructor(dataTable, config)` → `logicalTable`을 `dataTable`에서 역산
-  - `loadTagAliasCache()` → `_TAG_META` 전체 로드 후 내부 `aliasCache` 구성
-  - `read(startRid, limit?, rangeSize?, tagIdentifier?, sourceColumns?)` → `{ rows, err }`
-    - `aliasCache` 설정 시 tagId → canonical name resolve
-    - `drop_not_found` 행: 단건 DB 조회 후 캐시 갱신, 그래도 없으면 제외
-  - `getMaxRid()` / `open()` / `close()`
+- `TagAliasCache`: TAG alias 캐시 (tag_id → canonical name)
+- `LogTable`: LOG 테이블 스키마 조회 + read + append
+- `TagTable`: TAG 논리 테이블 스키마 조회 + append + findFirstMissRow
+- `TagDataTable`: TAG 데이터 파티션 단위 읽기
 - `module.exports = { TagAliasCache, LogTable, TagTable, TagDataTable }`
 
-### checkpoint/store.js
+### checkpoint/store.js — CheckpointStore
 
 - `CheckpointStore(directory)`: `load(jobId, dataTable)` / `save(jobId, dataTable, cp, stats, opts?)`
-- 파일 경로: `{directory}/{jobId}{dataTable}.json` (예: `job-1_TAG_DATA_0.json`)
-- atomic write 내장: `_writeFile()` — `.{hrtime}.tmp` 파일 → `fs.rename`
-- BigInt reviver/replacer 내장: `_parse()` / `_stringify()` (`last_success_rid` 키만 BigInt 복원)
-- `source.data_table` 불일치 또는 파싱 실패 → logger 후 `{ cp: null, exists: false }` 반환
-- `opts.on_save_failure === 'abort'` 시 저장 실패를 throw로 전파
+- 파일 경로: `{directory}/{jobId}_{dataTable}.json`
+- atomic write 내장 (`.{hrtime}.tmp` → `fs.rename`)
+- BigInt reviver/replacer 내장 (`last_success_rid` 키만 BigInt 복원)
+
+## config.json 형식
+
+```json
+{
+  "version": 3,
+  "servers": [
+    { "name": "src", "host": "...", "port": 5656, "user": "SYS", "password": "MANAGER" },
+    { "name": "dst", "host": "...", "port": 5656, "user": "SYS", "password": "MANAGER" }
+  ],
+  "logging": {
+    "level": "info",
+    "stdout": true,
+    "file": { "enabled": false, "directory": "./logs" }
+  },
+  "api": { "enabled": true, "port": 8080, "cors": { "origin": "*" } },
+  "replication": {
+    "jobs": [{
+      "id": "job-1",
+      "shutdown_timeout_ms": 30000,
+      "source": {
+        "server": "src",
+        "table": "TAG",
+        "columns": ["TIME", "VALUE"],
+        "tag_identifier": { "mode": "none" }
+      },
+      "target": { "server": "dst", "table": "TAG2" },
+      "start_mode": "full",
+      "poll_interval_ms": 1000,
+      "query_limit": 1000,
+      "rid_range_size": 50000,
+      "on_save_failure": "continue",
+      "integrity": { "enabled": true },
+      "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
+    }]
+  }
+}
+```
+
+**주요 변경 (v3):**
+- `servers`: object(Map) → array, 각 항목에 `name` 필드 추가
+- `execution` 블록 제거 — job 필드로 flat하게 통합
+- `checkpoint` 설정 제거 — `data/` 디렉토리로 고정
+
+`source.columns` 필드:
+- 미지정(`null`) → 소스 테이블의 모든 데이터 컬럼 SELECT
+- `["TIME", "VALUE"]` → 지정된 컬럼만 SELECT (대소문자 무관, UPPERCASE 정규화)
+- 빈 배열(`[]`) 또는 비문자열 항목 → config 검증 오류 (throw)
+
+`source.tag_identifier` 필드:
+- `{ "mode": "none" }` → 태그명 그대로 사용 (기본값)
+- `{ "mode": "prefix", "value": "site1/" }` → 태그명 앞에 prefix 추가
+- `{ "mode": "suffix", "value": "_copy" }` → 태그명 뒤에 suffix 추가
+
+`start_mode` 필드:
+- `"full"` → RID 0부터 전체 복제
+- `"now"` → 현재 최대 RID+1부터 시작 (이전 데이터 무시)
+- `"rid_after"` → `rid_after` 값 이후부터 시작 (`rid_after` 필드 필수)
 
 ## @machbase/ts-client API 참조
 
@@ -200,13 +277,6 @@ repli-js/
 | `query()` | `(sql, values?) → Promise<[rows, fields]>` | SQL 쿼리 실행 |
 | `execute()` | `(sql, values?) → Promise<[result, fields]>` | SQL 실행 |
 | `appendOpen()` | `(table, columns, options?) → Promise<AppendStreamSession>` | Append 스트림 오픈 |
-| `appendBatch()` | `(table, columns, rows, options?) → Promise<AppendBatchResult>` | Append 배치 실행 |
-
-### AppendStreamSession
-| 메서드 | 시그니처 | 설명 |
-|--------|----------|------|
-| `append()` | `(rows: AppendRowInput[]) → Promise<number>` | 로우 추가 |
-| `close()` | `() → Promise<void>` | 스트림 닫기 |
 
 ### 컬럼 타입 매핑
 | Machbase 내부 타입 코드 | 이름 |
@@ -220,62 +290,6 @@ repli-js/
 | 49 | text |
 | 6 | datetime |
 | 61 | json |
-
-## config.json 형식
-
-```json
-{
-  "version": 3,
-  "servers": {
-    "src": { "host": "...", "port": 5656, "user": "sys", "password": "manager" },
-    "dst": { "host": "...", "port": 5656, "user": "sys", "password": "manager" }
-  },
-  "logging": {
-    "level": "info",
-    "stdout": true,
-    "file": { "enabled": false, "directory": "./logs" }
-  },
-  "replication": {
-    "jobs": [{
-      "id": "job-1",
-      "enabled": true,
-      "shutdown_timeout_ms": 30000,
-      "checkpoint": { "directory": "./checkpoints" },
-      "source": {
-        "server": "src",
-        "table": "TAG",
-        "columns": ["TIME", "VALUE"],
-        "tag_identifier": { "mode": "none" }
-      },
-      "target": { "server": "dst", "table": "TAG2" },
-      "execution": {
-        "start_mode": "full",
-        "poll_interval_ms": 1000,
-        "query_limit": 1000,
-        "rid_range_size": 50000,
-        "on_save_failure": "continue",
-        "integrity": { "enabled": true },
-        "retry": { "max_attempts": 5, "base_delay_ms": 100, "max_delay_ms": 30000 }
-      }
-    }]
-  }
-}
-```
-
-`source.columns` 필드:
-- 미지정(`null`) → 소스 테이블의 모든 데이터 컬럼 SELECT
-- `["TIME", "VALUE"]` → 지정된 컬럼만 SELECT (대소문자 무관, 내부적으로 UPPERCASE 정규화)
-- 빈 배열(`[]`) 또는 비문자열 항목 → config 검증 오류 (throw)
-
-`source.tag_identifier` 필드:
-- `{ "mode": "none" }` → 태그명 그대로 사용 (기본값)
-- `{ "mode": "prefix", "value": "site1/" }` → 태그명 앞에 prefix 추가
-- `{ "mode": "suffix", "value": "_copy" }` → 태그명 뒤에 suffix 추가
-
-`execution.start_mode` 필드:
-- `"full"` → RID 0부터 전체 복제
-- `"now"` → 현재 최대 RID+1부터 시작 (이전 데이터 무시)
-- `"rid_after"` → `rid_after` 값 이후부터 시작 (`rid_after` 필드 필수)
 
 ## Machbase TAG 테이블 내부 구조
 
@@ -298,9 +312,9 @@ LIMIT 1000
 - **비동기 패턴**: `async/await`
 - **BigInt 처리**: RID 값은 BigInt. JSON 직렬화 시 `BigInt → string` 변환 필요
 - **에러 처리**: `@machbase/ts-client`의 `QueryError` 클래스로 DB 에러 구분
-- **로깅**: `logger/logger.js`의 `Logger` 클래스 사용. `logger.info(stage, fields)` / `logger.warn(...)` / `logger.error(...)` 형태로 호출. 날짜 기반 로테이션, stdout/file 독립 제어 지원.
+- **로깅**: `lib/logger.js`의 `Logger` 클래스 사용. `logger.info(stage, fields)` / `logger.warn(...)` / `logger.error(...)` 형태로 호출.
 - **코드 스타일**: 기존 파일의 세미콜론 스타일을 따를 것
-- **단일 연결 제약**: `@machbase/ts-client` 연결 하나로 동시 query + append 불가 ("Unexpected protocol N" 오류) → Worker별 독립 연결 사용 (설계 결정 B-01)
+- **단일 연결 제약**: `@machbase/ts-client` 연결 하나로 동시 query + append 불가 → Worker별 독립 연결 사용 (설계 결정 B-01)
 
 ## 테스트 실행
 
@@ -314,16 +328,13 @@ node --test tests/integration/log_replication.test.js
 node --test tests/integration/table.test.js
 ```
 
-현재 테스트 현황: **92 단위 = 92 pass / 0 fail** (`node --test tests/unit/*.test.js`)
+현재 테스트 현황: **93 단위 = 93 pass / 0 fail** (`node --test tests/unit/*.test.js`)
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
 - client.test.js: fixDoubleEndian (4개)
-- config.test.js: 설정 검증 (33개)
+- config.test.js: 설정 검증 (30개)
 - integrity_checker.test.js: TagTable.findFirstMissRow (7개)
-- retry.test.js: RetryHandler 백오프 로직 (15개)
-- worker.test.js: Worker 상태 머신 + Job/Replicator + E2E mock 시나리오 (27개)
-- tag_replication.test.js: TAG 복제 통합 테스트 (11개)
-- log_replication.test.js: LOG 복제 통합 테스트 (8개)
-- table.test.js: LogTable/TagTable/TagDataTable 통합 테스트 (17개)
+- retry.test.js: RetryHandler 백오프 로직 (19개)
+- worker.test.js: Worker 상태 머신 + Job/JobScheduler/Replicator + E2E mock 시나리오 (27개)
 
 ## 실행 방법
 

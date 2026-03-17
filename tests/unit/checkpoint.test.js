@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
-const CheckpointStore = require('../../checkpoint/store.js');
+const CheckpointStore = require('../../src/db/checkpoint.js');
 
 function tmpDir() {
   return path.join(os.tmpdir(), `cp_test_${Date.now()}_${Math.random().toString(36).slice(2)}`);

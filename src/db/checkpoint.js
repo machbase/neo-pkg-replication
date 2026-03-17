@@ -1,6 +1,6 @@
 'use strict';
 
-const { getInstance: getLogger } = require('../logger/logger.js');
+const { getInstance: getLogger } = require('../lib/logger.js');
 
 const fs = require('fs/promises');
 const path = require('path');
@@ -55,7 +55,9 @@ class CheckpointStore {
 
   /**
    * 체크포인트 로드
-   * @returns {{ cp: object|null, exists: boolean, err: Error|null }}
+   * @param {string} jobId
+   * @param {string} dataTable
+   * @returns {Promise<{ cp: object|null, exists: boolean, err: Error|null }>}
    */
   async load(jobId, dataTable) {
     const filePath = this._filePath(jobId, dataTable);
@@ -103,7 +105,7 @@ class CheckpointStore {
    * 체크포인트 저장 (atomic write)
    * @param {string} jobId
    * @param {string} dataTable
-   * @param {{ last_success_rid: BigInt, source_server?: string, source_table?: string }} cp
+   * @param {{ last_success_rid: bigint, source_server?: string, source_table?: string }} cp
    * @param {{ rows_read: number, rows_written: number, dropped_no_meta: number, skipped_exists: number }} stats
    * @param {{ on_save_failure?: 'continue'|'abort' }} [opts]
    * @returns {Error|null}

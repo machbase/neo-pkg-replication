@@ -1,7 +1,7 @@
 'use strict';
 
 const { createConnection, QueryError } = require('@machbase/ts-client');
-const { ColumnType, Column, TableSchema } = require('../core/types.js');
+const { ColumnType, Column, TableSchema } = require('./types.js');
 
 // ── @machbase/ts-client FLOAT/DOUBLE endian 버그 우회 ────────────────────────
 //
@@ -90,6 +90,11 @@ class MachbaseClient {
     return this.conn.execute(sql);
   }
 
+  /**
+   * 테이블 타입 조회
+   * @param {string} tableName
+   * @returns {Promise<{ type: 'TAG'|'LOG'|'UNSUPPORTED' }>}
+   */
   async selectTableType(tableName) {
     const rows = await this.query(
       'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ?',
@@ -103,6 +108,11 @@ class MachbaseClient {
     }
   }
 
+  /**
+   * TAG 데이터 파티션 목록 조회
+   * @param {string} tableName - 논리 테이블명
+   * @returns {Promise<Array<{ data_table: string }>>}
+   */
   async selectTagDataTables(tableName) {
     const pattern = `_${tableName}_DATA_%`;
     const sql = `
@@ -135,8 +145,8 @@ class MachbaseClient {
 
   /**
    * 테이블의 최대 RID 조회
-   * @param {string} table
-   * @returns {Promise<BigInt>} 빈 테이블이면 0n
+   * @param {string} tableName
+   * @returns {Promise<bigint>} 빈 테이블이면 0n
    */
   async selectMaxRid(tableName) {
     const rows = await this.query(`SELECT MAX(_RID) as max_rid FROM ${tableName}`);

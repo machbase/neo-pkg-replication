@@ -129,7 +129,7 @@ _TAG_DATA_3  ──┘
 ## 테스트
 
 ```bash
-# 전체 단위 테스트 (92개)
+# 전체 단위 테스트 (95개)
 node --test tests/unit/*.test.js
 
 # 통합 테스트 (실 DB 연결 필요 — 127.0.0.1:5656)
@@ -138,7 +138,7 @@ node --test tests/integration/log_replication.test.js
 node --test tests/integration/table.test.js
 ```
 
-현재 92개 단위 테스트 pass. 통합 테스트는 실 DB 연결 시 pass.
+현재 95개 단위 테스트 pass. 통합 테스트는 실 DB 연결 시 pass.
 
 ## 로그 형식
 
@@ -156,7 +156,7 @@ node --test tests/integration/table.test.js
 
 `@machbase/ts-client@0.9.3`의 쿼리 결과 디코더(`decodeFixedField`)가 `FLT32`/`FLT64` 타입을 항상 Little-Endian으로 읽지만, Machbase TAG 파티션에 따라 서버가 Big-Endian으로 저장하는 경우가 있어 값이 손상된다.
 
-`db/client.js`의 `fixDoubleEndian()` 함수가 `MachbaseClient.query()` 반환 직후 자동으로 보정한다. denormal(비정규 부동소수점) 판별로 손상 여부를 감지한 뒤 바이트 순서를 뒤집어 재해석한다. 라이브러리 재설치 후에도 프로젝트 코드 내에서 보정이 적용된다.
+`src/db/client.js`의 `fixDoubleEndian()` 함수가 `MachbaseClient.query()` 반환 직후 자동으로 보정한다. denormal(비정규 부동소수점) 판별로 손상 여부를 감지한 뒤 바이트 순서를 뒤집어 재해석한다. 라이브러리 재설치 후에도 프로젝트 코드 내에서 보정이 적용된다.
 
 상세 분석은 [`docs/ENDIAN_BUG.md`](docs/ENDIAN_BUG.md)를 참고한다.
 
@@ -165,24 +165,29 @@ node --test tests/integration/table.test.js
 ```
 repli-js/
 ├── app.js               # 진입점
-├── job_runner.js        # Job 오케스트레이션
-├── config/config.js     # 설정 로드/검증
-├── core/
-│   ├── types.js         # ColumnType, Column, TableSchema (순수 도메인 모델)
-│   └── retry.js         # 재시도 유틸리티
-├── db/
-│   ├── client.js        # MachbaseClient (endian 우회 포함)
-│   ├── stream.js        # MachbaseStream, _toCell (append 스트림 래퍼)
-│   └── table.js         # LogTable, TagTable, TagDataTable, TagAliasCache
-├── worker/
-│   └── worker.js        # Worker 상태 머신
-├── checkpoint/
-│   └── store.js         # 체크포인트 관리 (atomic write, BigInt 지원 내장)
+├── src/
+│   ├── replicator.js    # Replicator (SIGTERM/SIGINT, JobScheduler 관리)
+│   ├── job.js           # JobScheduler, Job (복제 루프)
+│   ├── api/
+│   │   └── http_server.js  # REST API
+│   ├── config/
+│   │   └── config.js    # 설정 로드/검증
+│   ├── db/
+│   │   ├── client.js    # MachbaseClient (endian 우회 포함)
+│   │   ├── stream.js    # MachbaseStream, _toCell (append 스트림 래퍼)
+│   │   ├── table.js     # LogTable, TagTable, TagDataTable, TagAliasCache
+│   │   └── checkpoint.js  # 체크포인트 관리 (atomic write, BigInt 지원 내장)
+│   ├── worker/
+│   │   └── worker.js    # Worker 상태 머신
+│   └── lib/
+│       ├── logger.js    # Logger (날짜 로테이션, stdout/file)
+│       ├── retry.js     # 재시도 유틸리티
+│       └── types.js     # ColumnType, Column, TableSchema (순수 도메인 모델)
 ├── docs/
 │   ├── PROJECT.md       # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 │   └── ENDIAN_BUG.md    # @machbase/ts-client endian 버그 상세 분석
 ├── checkpoints/         # 런타임 생성 — cp 파일 저장 위치
 └── tests/
-    ├── unit/            # 단위 테스트 (92개)
+    ├── unit/            # 단위 테스트 (95개)
     └── integration/     # 통합 테스트 (36개, 실 DB 필요)
 ```

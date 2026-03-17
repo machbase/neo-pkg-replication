@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { MachbaseClient } = require('../../db/client.js');
+const { MachbaseClient } = require('../../src/db/client.js');
 
 // fixDoubleEndian()은 MachbaseClient.query() 반환 직전에 적용됨.
 // ts-client connection을 mock하여 손상된 값을 주입하고 복원 여부를 검증한다.

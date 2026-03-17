@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "api": { "enabled": true, "port": 8080 },
+  "api": { "enabled": true, "port": 8080, "cors": { "origin": "*" } },
   "logging": {
     "level": "info",
     "stdout": false,
@@ -9,28 +9,27 @@
       "directory": "./logs"
     }
   },
-  "servers": {
-    "src": {
+  "servers": [
+    {
+      "name": "src",
       "host": "192.168.1.183",
       "port": 5656,
       "user": "SYS",
       "password": "MANAGER"
     },
-    "dst": {
+    {
+      "name": "dst",
       "host": "192.168.1.183",
       "port": 5656,
       "user": "SYS",
       "password": "MANAGER"
     }
-  },
+  ],
   "replication": {
     "jobs": [
       {
         "id": "job-1",
         "shutdown_timeout_ms": 30000,
-        "checkpoint": {
-          "directory": "./checkpoints"
-        },
         "source": {
           "server": "src",
           "table": "TAG",
@@ -40,14 +39,12 @@
           "server": "dst",
           "table": "TAG2"
         },
-        "execution": {
-          "query_limit": 1000,
-          "poll_interval_ms": 1000,
-          "start_mode": "full",
-          "on_save_failure": "continue",
-          "integrity": {
-            "enabled": true
-          }
+        "query_limit": 1000,
+        "poll_interval_ms": 1000,
+        "start_mode": "full",
+        "on_save_failure": "continue",
+        "integrity": {
+          "enabled": true
         }
       }
     ]

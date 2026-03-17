@@ -2,8 +2,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { TagAliasCache, TagTable } = require('../../db/table.js');
-const { ColumnType, Column, TableSchema } = require('../../core/types.js');
+const { TagAliasCache, TagTable } = require('../../src/db/table.js');
+const { ColumnType, Column, TableSchema } = require('../../src/db/types.js');
 
 // ─── TagAliasCache._applyIdentifier ──────────────────────────────────────────
 

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "job_id": "test-job-2",
+  "source": {
+    "server": "src",
+    "table": "TAG",
+    "data_table": "_TAG_DATA_0"
+  },
+  "checkpoint": {
+    "last_success_rid": "12",
+    "updated_at": "2026-03-17T02:04:11.431Z"
+  }
+}

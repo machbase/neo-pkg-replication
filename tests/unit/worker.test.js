@@ -6,8 +6,10 @@ const path = require('path');
 const fs = require('fs/promises');
 const os = require('os');
 
-const { Worker } = require('../../worker/worker.js');
-const { Job, Replicator } = require('../../job_runner.js');
+const { Worker } = require('../../src/worker/worker.js');
+const { Job, JobScheduler } = require('../../src/job.js');
+const { Replicator } = require('../../src/replicator.js');
+const { CHECKPOINT_DIRECTORY } = require('../../src/config/config.js');
 
 // ─── 테스트 픽스처 ───────────────────────────────────────────────────────────
 
@@ -62,8 +64,8 @@ function makeSignal() {
  * TagDataTable / TagTable / LogTable prototype을 mock하고 복원 함수를 반환
  */
 function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
-  const tableMod = require('../../db/table.js');
-  const clientMod = require('../../db/client.js');
+  const tableMod = require('../../src/db/table.js');
+  const clientMod = require('../../src/db/client.js');
 
   // MachbaseClient connect/close mock (STARTUP_INTEGRITY intConn 포함)
   const origConnect = clientMod.MachbaseClient.prototype.connect;
@@ -130,22 +132,19 @@ function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
 }
 
 /** TAG Worker 생성 헬퍼 */
-function makeTagWorker(jobId, tmpDir, mappingOverrides, shutdownFlag) {
+function makeTagWorker(jobId, _tmpDir, overrides, shutdownFlag) {
   const schema = makeTagSchema();
   return new Worker(
     {
       id: jobId,
-      checkpoint: { directory: tmpDir },
       source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
       target: { server: 'dst', table: 'TAG2' },
-      execution: {
-        query_limit: 100,
-        poll_interval_ms: 20,
-        start_mode: 'full',
-        on_save_failure: 'continue',
-        integrity: { enabled: false },
-        ...mappingOverrides,
-      },
+      query_limit: 100,
+      poll_interval_ms: 20,
+      start_mode: 'full',
+      on_save_failure: 'continue',
+      integrity: { enabled: false },
+      ...overrides,
     },
     'TAG',
     '_TAG_DATA_0',
@@ -158,22 +157,19 @@ function makeTagWorker(jobId, tmpDir, mappingOverrides, shutdownFlag) {
 }
 
 /** LOG Worker 생성 헬퍼 */
-function makeLogWorker(jobId, tmpDir, mappingOverrides, shutdownFlag) {
+function makeLogWorker(jobId, _tmpDir, overrides, shutdownFlag) {
   const schema = makeLogSchema();
   return new Worker(
     {
       id: jobId,
-      checkpoint: { directory: tmpDir },
       source: { server: 'src', table: 'LOG', tag_identifier: { mode: 'none', value: '' }, columns: null },
       target: { server: 'dst', table: 'LOG2' },
-      execution: {
-        query_limit: 100,
-        poll_interval_ms: 20,
-        start_mode: 'full',
-        on_save_failure: 'continue',
-        integrity: { enabled: false },
-        ...mappingOverrides,
-      },
+      query_limit: 100,
+      poll_interval_ms: 20,
+      start_mode: 'full',
+      on_save_failure: 'continue',
+      integrity: { enabled: false },
+      ...overrides,
     },
     'LOG',
     '_LOG_DATA_0',
@@ -189,7 +185,10 @@ function makeLogWorker(jobId, tmpDir, mappingOverrides, shutdownFlag) {
 
 describe('Worker — RESOLVE_START', () => {
   test('체크포인트 없음 + start_mode=full → startRid=0n 으로 시작 후 빈 배치 대기 후 shutdown', async () => {
-    const tmpDir = await makeTmpDir();
+    const CheckpointStore = require('../../src/db/checkpoint.js');
+    const cpFile = path.join(CHECKPOINT_DIRECTORY, 'test-job_TAG_DATA_0.json');
+    await fs.rm(cpFile, { force: true });
+
     const shutdownFlag = makeShutdownFlag(50);
     const readCalls = [];
 
@@ -201,21 +200,21 @@ describe('Worker — RESOLVE_START', () => {
     });
 
     try {
-      const worker = makeTagWorker('test-job', tmpDir, {}, shutdownFlag);
+      const worker = makeTagWorker('test-job', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.ok(readCalls.length >= 1, '최소 1회 이상 read 호출되어야 함');
       assert.equal(readCalls[0].startRid, 0n, 'start_mode=full → startRid=0n');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await fs.rm(cpFile, { force: true });
     }
   });
 
   test('체크포인트 있음 → last_success_rid에서 재개', async () => {
-    const tmpDir = await makeTmpDir();
-    const CheckpointStore = require('../../checkpoint/store.js');
-    const store = new CheckpointStore(tmpDir);
+    const CheckpointStore = require('../../src/db/checkpoint.js');
+    const cpFile = path.join(CHECKPOINT_DIRECTORY, 'test-job_TAG_DATA_0.json');
+    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
 
     await store.save('test-job', '_TAG_DATA_0', {
       last_success_rid: 1234n,
@@ -234,14 +233,14 @@ describe('Worker — RESOLVE_START', () => {
     });
 
     try {
-      const worker = makeTagWorker('test-job', tmpDir, {}, shutdownFlag);
+      const worker = makeTagWorker('test-job', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.ok(readCalls.length >= 1);
       assert.equal(readCalls[0], 1235n, '체크포인트 last_success_rid=1234n → startRid=1235n (1234n+1n)');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await fs.rm(cpFile, { force: true });
     }
   });
 
@@ -249,7 +248,6 @@ describe('Worker — RESOLVE_START', () => {
 
 describe('Worker — STEADY_REPLICATION', () => {
   test('TAG 배치 처리 → checkpoint가 maxRid+1로 갱신됨', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let batchCall = 0;
     const appendedRows = [];
@@ -277,22 +275,20 @@ describe('Worker — STEADY_REPLICATION', () => {
     });
 
     try {
-      const worker = makeTagWorker('test-job-2', tmpDir, {}, shutdownFlag);
+      const worker = makeTagWorker('test-job-2', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
-      const CheckpointStore = require('../../checkpoint/store.js');
-      const store = new CheckpointStore(tmpDir);
+      const CheckpointStore = require('../../src/db/checkpoint.js');
+      const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
       const { cp } = await store.load('test-job-2', '_TAG_DATA_0');
       assert.equal(cp.last_success_rid, 12n, 'checkpoint = maxRid(12n) — 마지막 성공 RID (inclusive)');
       assert.equal(appendedRows.length, 3, '3개 row가 append되어야 함');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 
   test('drop_not_found → read()가 제외 후 빈 rows, checkpoint = maxRidInBatch (all-drop 케이스)', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let batchCall = 0;
     const appendedRows = [];
@@ -321,17 +317,16 @@ describe('Worker — STEADY_REPLICATION', () => {
     });
 
     try {
-      const worker = makeTagWorker('test-alldrop', tmpDir, {}, shutdownFlag);
+      const worker = makeTagWorker('test-alldrop', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
-      const CheckpointStore = require('../../checkpoint/store.js');
-      const store = new CheckpointStore(tmpDir);
+      const CheckpointStore = require('../../src/db/checkpoint.js');
+      const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
       const { cp } = await store.load('test-alldrop', '_TAG_DATA_0');
       assert.equal(cp.last_success_rid, 5n, 'checkpoint = maxRidInBatch(5n) — 마지막 성공 RID (inclusive)');
       assert.equal(appendedRows.length, 1, '1개 row append');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 
@@ -374,10 +369,8 @@ describe('Worker — STEADY_REPLICATION', () => {
 
 describe('Worker — STARTUP_INTEGRITY', () => {
   test('integrity.enabled=false → STARTUP_INTEGRITY 미실행, 즉시 STEADY 진입', async () => {
-    const tmpDir = await makeTmpDir();
-
-    const CheckpointStore = require('../../checkpoint/store.js');
-    const store = new CheckpointStore(tmpDir);
+    const CheckpointStore = require('../../src/db/checkpoint.js');
+    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
     await store.save('test-int', '_TAG_DATA_0', {
       last_success_rid: 10n,
       source_server: 'src',
@@ -388,7 +381,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     const readCalls = [];
     const findFirstMissRowCalls = [];
 
-    const tableMod = require('../../db/table.js');
+    const tableMod = require('../../src/db/table.js');
     const origFindFirstMissRow = tableMod.TagTable.prototype.findFirstMissRow;
     tableMod.TagTable.prototype.findFirstMissRow = async function() {
       findFirstMissRowCalls.push(true);
@@ -403,7 +396,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     });
 
     try {
-      const worker = makeTagWorker('test-int', tmpDir, { integrity: { enabled: false } }, shutdownFlag);
+      const worker = makeTagWorker('test-int', null, { integrity: { enabled: false } }, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.equal(findFirstMissRowCalls.length, 0, 'integrity.enabled=false → findFirstMissRow 미호출');
@@ -411,15 +404,12 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     } finally {
       tableMod.TagTable.prototype.findFirstMissRow = origFindFirstMissRow;
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 
   test('TAG + checkpoint존재 + integrity.enabled → STARTUP_INTEGRITY 수행, first_miss 발견 후 STEADY', async () => {
-    const tmpDir = await makeTmpDir();
-
-    const CheckpointStore = require('../../checkpoint/store.js');
-    const store = new CheckpointStore(tmpDir);
+    const CheckpointStore = require('../../src/db/checkpoint.js');
+    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
     await store.save('test-int2', '_TAG_DATA_0', {
       last_success_rid: 100n,
       source_server: 'src',
@@ -430,7 +420,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     let steadyReadCalls = [];
     let integrityReadDone = false;
 
-    const tableMod = require('../../db/table.js');
+    const tableMod = require('../../src/db/table.js');
     const origFindFirstMissRow = tableMod.TagTable.prototype.findFirstMissRow;
     // time===1000n인 row는 존재, 2000n은 miss → idx=1 반환
     tableMod.TagTable.prototype.findFirstMissRow = async function(rows) {
@@ -465,7 +455,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     });
 
     try {
-      const worker = makeTagWorker('test-int2', tmpDir, { integrity: { enabled: true } }, shutdownFlag);
+      const worker = makeTagWorker('test-int2', null, { integrity: { enabled: true } }, shutdownFlag);
       await worker.run(makeSignal());
 
       const { cp } = await store.load('test-int2', '_TAG_DATA_0');
@@ -474,15 +464,12 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     } finally {
       tableMod.TagTable.prototype.findFirstMissRow = origFindFirstMissRow;
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 
   test('LOG 테이블 → checkpoint 있어도 STARTUP_INTEGRITY 미수행', async () => {
-    const tmpDir = await makeTmpDir();
-
-    const CheckpointStore = require('../../checkpoint/store.js');
-    const store = new CheckpointStore(tmpDir);
+    const CheckpointStore = require('../../src/db/checkpoint.js');
+    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
     await store.save('test-log-int', '_LOG_DATA_0', {
       last_success_rid: 50n,
       source_server: 'src',
@@ -492,7 +479,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     const shutdownFlag = makeShutdownFlag(30);
     const findFirstMissRowCalls = [];
 
-    const tableMod = require('../../db/table.js');
+    const tableMod = require('../../src/db/table.js');
     const origFindFirstMissRow = tableMod.TagTable.prototype.findFirstMissRow;
     tableMod.TagTable.prototype.findFirstMissRow = async function() {
       findFirstMissRowCalls.push(true);
@@ -504,14 +491,14 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     });
 
     try {
-      const worker = makeLogWorker('test-log-int', tmpDir, { integrity: { enabled: true } }, shutdownFlag);
+      const worker = makeLogWorker('test-log-int', null, { integrity: { enabled: true } }, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.equal(findFirstMissRowCalls.length, 0, 'LOG 테이블 → findFirstMissRow 미호출');
     } finally {
       tableMod.TagTable.prototype.findFirstMissRow = origFindFirstMissRow;
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await fs.rm(path.join(CHECKPOINT_DIRECTORY, 'test-log-int_LOG_DATA_0.json'), { force: true });
     }
   });
 });
@@ -523,15 +510,14 @@ describe('Job — _discoverMapping', () => {
     const shutdownFlag = { value: false };
     const jobConfig = {
       id: 'job-disc-fail',
-      checkpoint: { directory: '/tmp' },
       source: { server: 'src', table: 'TAG' },
       target: { server: 'dst', table: 'TAG2' },
-      execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
+      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
     };
-    const servers = {
-      src: { host: '127.0.0.1', port: 1, user: 'x', password: 'x' },
-      dst: { host: '127.0.0.1', port: 1, user: 'x', password: 'x' },
-    };
+    const servers = [
+      { name: 'src', host: '127.0.0.1', port: 1, user: 'x', password: 'x' },
+      { name: 'dst', host: '127.0.0.1', port: 1, user: 'x', password: 'x' },
+    ];
 
     const job = new Job(jobConfig, servers, shutdownFlag);
     const logCtx = { job_id: 'job-disc-fail' };
@@ -543,16 +529,15 @@ describe('Job — _discoverMapping', () => {
 
   test('discover 성공 → { tableType, dataTables, srcSchema, dstSchema } 반환', async () => {
     const shutdownFlag = { value: false };
-    const servers = {
-      src: { host: 'mock', port: 5656, user: 'sys', password: 'manager' },
-      dst: { host: 'mock', port: 5656, user: 'sys', password: 'manager' },
-    };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
     const jobConfig = {
       id: 'job-disc-ok',
-      checkpoint: { directory: '/tmp' },
       source: { server: 'src', table: 'TAG' },
       target: { server: 'dst', table: 'TAG' },
-      execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
+      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
     };
 
     const mockSchema = {
@@ -587,11 +572,11 @@ describe('Job — _discoverMapping', () => {
 
 describe('Job — AbortController 전파', () => {
   // 이 describe 블록의 테스트는 실제 Worker.run() 구현 로직을 검증한다.
-  // Worker prototype을 mock하고 job_runner.js를 재로드해서 실제 코드 경로를 실행한다.
+  // Worker prototype을 mock하고 job.js를 재로드해서 실제 코드 경로를 실행한다.
 
   function setupWorkerMocks({ onWorkerRun } = {}) {
-    const workerMod = require('../../worker/worker.js');
-    const tableMod = require('../../db/table.js');
+    const workerMod = require('../../src/worker/worker.js');
+    const tableMod = require('../../src/db/table.js');
 
     const origWorkerRun = workerMod.Worker.prototype.run;
     const origTagDataOpen = tableMod.TagDataTable.prototype.open;
@@ -606,11 +591,11 @@ describe('Job — AbortController 전파', () => {
 
     if (onWorkerRun) workerMod.Worker.prototype.run = onWorkerRun;
 
-    // job_runner.js를 캐시에서 제거 후 재로드 — mock된 의존성을 클로저로 캡처하게 함
-    const jobRunnerKey = require.resolve('../../job_runner.js');
+    // job.js를 캐시에서 제거 후 재로드 — mock된 의존성을 클로저로 캡처하게 함
+    const jobRunnerKey = require.resolve('../../src/job.js');
     const origJobRunnerCache = require.cache[jobRunnerKey];
     delete require.cache[jobRunnerKey];
-    const { Job: JobClass } = require('../../job_runner.js');
+    const { Job: JobClass } = require('../../src/job.js');
 
     function restore() {
       workerMod.Worker.prototype.run = origWorkerRun;
@@ -629,7 +614,7 @@ describe('Job — AbortController 전파', () => {
   }
 
   test('signal.aborted=true이면 Worker.run()이 open 호출 없이 즉시 반환됨', async () => {
-    const tableMod = require('../../db/table.js');
+    const tableMod = require('../../src/db/table.js');
     let openCalled = false;
     const origOpen = tableMod.TagDataTable.prototype.open;
     tableMod.TagDataTable.prototype.open = async function() { openCalled = true; };
@@ -637,14 +622,13 @@ describe('Job — AbortController 전파', () => {
     try {
       const mockSchema = makeTagSchema();
       const shutdownFlag = { value: false };
-      const { Worker: WorkerClass } = require('../../worker/worker.js');
+      const { Worker: WorkerClass } = require('../../src/worker/worker.js');
       const worker = new WorkerClass(
         {
           id: 'job-signal-test',
-          checkpoint: { directory: '/tmp' },
           source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
           target: { server: 'dst', table: 'TAG' },
-          execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100 },
+          start_mode: 'full', poll_interval_ms: 20, query_limit: 100,
         },
         'TAG', '_TAG_DATA_0', mockSchema, mockSchema,
         { host: 'mock', port: 1 }, { host: 'mock', port: 1 }, shutdownFlag,
@@ -694,16 +678,15 @@ describe('Job — AbortController 전파', () => {
     });
 
     const shutdownFlag = { value: false };
-    const servers = {
-      src: { host: 'mock', port: 5656, user: 'sys', password: 'manager' },
-      dst: { host: 'mock', port: 5656, user: 'sys', password: 'manager' },
-    };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
     const jobConfig = {
       id: 'job-abort-test',
-      checkpoint: { directory: '/tmp' },
       source: { server: 'src', table: 'TAG', tag_identifier: { mode: 'none', value: '' }, columns: null },
       target: { server: 'dst', table: 'TAG' },
-      execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
+      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
     };
     const mockSchema = makeTagSchema();
 
@@ -738,21 +721,20 @@ describe('Job — AbortController 전파', () => {
 describe('Job — run() 재시작 동작', () => {
   test('Worker 에러 → abort → 재시작 후 shutdown → 정상 종료', async () => {
     const shutdownFlag = { value: false };
-    const servers = {
-      src: { host: 'mock', port: 5656, user: 'sys', password: 'manager' },
-      dst: { host: 'mock', port: 5656, user: 'sys', password: 'manager' },
-    };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
     const jobConfig = {
       id: 'job-restart',
-      checkpoint: { directory: '/tmp' },
       source: { server: 'src', table: 'TAG' },
       target: { server: 'dst', table: 'TAG' },
-      execution: { start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false } },
+      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
     };
 
     const mockSchema = makeTagSchema();
 
-    const { Worker: WorkerClass } = require('../../worker/worker.js');
+    const { Worker: WorkerClass } = require('../../src/worker/worker.js');
     const origWorkerRun = WorkerClass.prototype.run;
     let workerRunCount = 0;
     WorkerClass.prototype.run = async function(_signal) {
@@ -857,7 +839,6 @@ describe('Worker — non-retryable 에러 처리', () => {
 
 describe('Worker — TAG 복제 기본 흐름', () => {
   test('full start → steady: startRid=0n 으로 시작, 배치 후 checkpoint 갱신', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let batchCall = 0;
     const appendedRows = [];
@@ -884,27 +865,29 @@ describe('Worker — TAG 복제 기본 흐름', () => {
       },
     });
 
+    const cpFile = path.join(CHECKPOINT_DIRECTORY, 'fw-tag-1_TAG_DATA_0.json');
+    await fs.rm(cpFile, { force: true });
+
     try {
-      const worker = makeTagWorker('fw-tag-1', tmpDir, {}, shutdownFlag);
+      const worker = makeTagWorker('fw-tag-1', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.equal(appendedRows.length, 2);
       assert.equal(appendedRows[0].NAME, 'sensor_a');
 
-      const CheckpointStore = require('../../checkpoint/store.js');
-      const store = new CheckpointStore(tmpDir);
+      const CheckpointStore = require('../../src/db/checkpoint.js');
+      const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
       const { cp } = await store.load('fw-tag-1', '_TAG_DATA_0');
       assert.equal(cp.last_success_rid, 2n);
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await fs.rm(cpFile, { force: true });
     }
   });
 });
 
 describe('Worker — LOG 복제 기본 흐름', () => {
   test('LOG: tag_id 변환 없이 그대로 append', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let batchCall = 0;
     const appendedRows = [];
@@ -930,28 +913,26 @@ describe('Worker — LOG 복제 기본 흐름', () => {
     });
 
     try {
-      const worker = makeLogWorker('fw-log-1', tmpDir, {}, shutdownFlag);
+      const worker = makeLogWorker('fw-log-1', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.equal(appendedRows.length, 1);
       assert.equal(appendedRows[0].NAME, 'machine_a');
 
-      const CheckpointStore = require('../../checkpoint/store.js');
-      const store = new CheckpointStore(tmpDir);
+      const CheckpointStore = require('../../src/db/checkpoint.js');
+      const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
       const { cp } = await store.load('fw-log-1', '_LOG_DATA_0');
       assert.equal(cp.last_success_rid, 10n);
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 });
 
 describe('Worker — checkpoint resume', () => {
   test('checkpoint 저장 후 재시작 → startRid = last_success_rid + 1', async () => {
-    const tmpDir = await makeTmpDir();
-    const CheckpointStore = require('../../checkpoint/store.js');
-    const store = new CheckpointStore(tmpDir);
+    const CheckpointStore = require('../../src/db/checkpoint.js');
+    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
 
     await store.save('fw-resume', '_TAG_DATA_0', {
       last_success_rid: 999n,
@@ -970,21 +951,19 @@ describe('Worker — checkpoint resume', () => {
     });
 
     try {
-      const worker = makeTagWorker('fw-resume', tmpDir, {}, shutdownFlag);
+      const worker = makeTagWorker('fw-resume', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.ok(readCalls.length >= 1);
       assert.equal(readCalls[0], 1000n, 'checkpoint 999n → startRid=1000n');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 });
 
 describe('Worker — drop_not_found', () => {
   test('read()가 drop_not_found 제외한 rows 반환 → 배치 rows.length로 확인', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let batchCall = 0;
     const appendedRows = [];
@@ -1010,21 +989,19 @@ describe('Worker — drop_not_found', () => {
     });
 
     try {
-      const worker = makeTagWorker('fw-drop', tmpDir, {}, shutdownFlag);
+      const worker = makeTagWorker('fw-drop', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.equal(appendedRows.length, 1, 'drop_not_found 제외 후 1개만 append');
       assert.equal(appendedRows[0].NAME, 'sensor_ok');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 });
 
 describe('Worker — read 에러', () => {
   test('read 에러 → retry 없이 즉시 Worker 종료', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let readCallCount = 0;
 
@@ -1037,7 +1014,7 @@ describe('Worker — read 에러', () => {
     });
 
     try {
-      const worker = makeTagWorker('fw-read-err', tmpDir,
+      const worker = makeTagWorker('fw-read-err', null,
         { retry: { max_attempts: 5, base_delay_ms: 5, max_delay_ms: 20 } },
         shutdownFlag);
       await worker.run(makeSignal());
@@ -1046,14 +1023,12 @@ describe('Worker — read 에러', () => {
       assert.equal(shutdownFlag.value, false, 'shutdownFlag는 변경되지 않아야 함');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 });
 
 describe('Worker — append 에러 retry', () => {
   test('append 에러(retryable) → retry 후 복구', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let batchCall = 0;
     let appendAttempt = 0;
@@ -1084,7 +1059,7 @@ describe('Worker — append 에러 retry', () => {
     });
 
     try {
-      const worker = makeTagWorker('fw-append-retry', tmpDir,
+      const worker = makeTagWorker('fw-append-retry', null,
         { retry: { max_attempts: 5, base_delay_ms: 5, max_delay_ms: 20 } },
         shutdownFlag);
       await worker.run(makeSignal());
@@ -1093,14 +1068,12 @@ describe('Worker — append 에러 retry', () => {
       assert.equal(appendedRows.length, 1, '복구 후 1개 append');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 });
 
 describe('Worker — shutdown 신호', () => {
   test('shutdown 신호 처리 — 즉시 종료', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = makeShutdownFlag(10);
 
     const { restore } = setupWorkerPrototypeMocks({
@@ -1110,21 +1083,19 @@ describe('Worker — shutdown 신호', () => {
     const startTime = Date.now();
 
     try {
-      const worker = makeTagWorker('fw-shutdown', tmpDir, { poll_interval_ms: 5000 }, shutdownFlag);
+      const worker = makeTagWorker('fw-shutdown', null, { poll_interval_ms: 5000 }, shutdownFlag);
       await worker.run(makeSignal());
 
       const elapsed = Date.now() - startTime;
       assert.ok(elapsed < 500, `shutdown 후 즉시 종료되어야 함 (elapsed: ${elapsed}ms)`);
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 });
 
 describe('Worker — 빈 배치 poll 대기', () => {
   test('빈 배치 → poll interval 대기 후 다시 읽기', async () => {
-    const tmpDir = await makeTmpDir();
     const shutdownFlag = { value: false };
     let readCallCount = 0;
 
@@ -1137,13 +1108,115 @@ describe('Worker — 빈 배치 poll 대기', () => {
     });
 
     try {
-      const worker = makeTagWorker('fw-poll', tmpDir, { poll_interval_ms: 10 }, shutdownFlag);
+      const worker = makeTagWorker('fw-poll', null, { poll_interval_ms: 10 }, shutdownFlag);
       await worker.run(makeSignal());
 
       assert.ok(readCallCount >= 2, '빈 배치 후 poll 대기 → 재읽기 확인');
     } finally {
       restore();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('JobScheduler', () => {
+  test('register → getEntry 반환, status=stopped', () => {
+    const scheduler = new JobScheduler([]);
+    const jobConfig = { id: 'sched-1', source: {}, target: {} };
+    scheduler.register(jobConfig);
+    const entry = scheduler.getEntry('sched-1');
+    assert.ok(entry, 'entry가 존재해야 함');
+    assert.equal(entry.status, 'stopped');
+    assert.equal(entry.jobConfig.id, 'sched-1');
+  });
+
+  test('unregister → stopped job 제거', () => {
+    const scheduler = new JobScheduler([]);
+    scheduler.register({ id: 'sched-unreg' });
+    scheduler.unregister('sched-unreg');
+    assert.equal(scheduler.getEntry('sched-unreg'), undefined);
+  });
+
+  test('update → stopped job의 jobConfig 교체', () => {
+    const scheduler = new JobScheduler([]);
+    scheduler.register({ id: 'sched-upd', value: 1 });
+    scheduler.update({ id: 'sched-upd', value: 2 });
+    assert.equal(scheduler.getEntry('sched-upd').jobConfig.value, 2);
+  });
+
+  test('listEntries → 전체 entry 배열 반환', () => {
+    const scheduler = new JobScheduler([]);
+    scheduler.register({ id: 'a' });
+    scheduler.register({ id: 'b' });
+    const entries = scheduler.listEntries();
+    assert.equal(entries.length, 2);
+  });
+
+  test('start → status=running, stop → status=stopped', async () => {
+    const scheduler = new JobScheduler([
+      { name: 'src', host: 'mock', port: 1, user: 'x', password: 'x' },
+    ]);
+    const jobConfig = {
+      id: 'sched-run',
+      source: { server: 'src', table: 'TAG' },
+      target: { server: 'src', table: 'TAG2' },
+      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+    };
+    scheduler.register(jobConfig);
+
+    // Job._discoverMapping을 mock하여 즉시 shutdown
+    const { Job: JobClass } = require('../../src/job.js');
+    const origDiscover = JobClass.prototype._discoverMapping;
+    JobClass.prototype._discoverMapping = async function() {
+      // shutdownFlag 설정하여 루프 탈출
+      this.shutdownFlag.value = true;
+      return null;
+    };
+
+    try {
+      scheduler.start('sched-run');
+      const entry = scheduler.getEntry('sched-run');
+      assert.equal(entry.status, 'running');
+      await entry.promise;
+      assert.equal(entry.status, 'stopped');
+    } finally {
+      JobClass.prototype._discoverMapping = origDiscover;
+    }
+  });
+
+  test('stopAll → 모든 running job 중지', async () => {
+    const scheduler = new JobScheduler([
+      { name: 'src', host: 'mock', port: 1, user: 'x', password: 'x' },
+    ]);
+    const makeJob = (id) => ({
+      id,
+      source: { server: 'src', table: 'TAG' },
+      target: { server: 'src', table: 'TAG2' },
+      start_mode: 'full', poll_interval_ms: 20, query_limit: 100, integrity: { enabled: false },
+    });
+
+    scheduler.register(makeJob('stop-all-1'));
+    scheduler.register(makeJob('stop-all-2'));
+
+    const { Job: JobClass } = require('../../src/job.js');
+    const origDiscover = JobClass.prototype._discoverMapping;
+    JobClass.prototype._discoverMapping = async function() {
+      // shutdownFlag가 설정될 때까지 대기
+      await new Promise(resolve => {
+        const check = () => { if (this.shutdownFlag.value) resolve(); else setTimeout(check, 10); };
+        check();
+      });
+      return null;
+    };
+
+    try {
+      scheduler.start('stop-all-1');
+      scheduler.start('stop-all-2');
+      await scheduler.stopAll();
+
+      assert.equal(scheduler.getEntry('stop-all-1').status, 'stopped');
+      assert.equal(scheduler.getEntry('stop-all-2').status, 'stopped');
+    } finally {
+      JobClass.prototype._discoverMapping = origDiscover;
     }
   });
 });
@@ -1151,7 +1224,7 @@ describe('Worker — 빈 배치 poll 대기', () => {
 describe('Replicator — run()', () => {
   test('SIGTERM 수신 → shutdownFlag 설정 후 run() 완료', async () => {
     const config = {
-      servers: {},
+      servers: [],
       replication: {
         jobs: [
           { id: 'job-1', shutdown_timeout_ms: 30000 },
@@ -1170,7 +1243,7 @@ describe('Replicator — run()', () => {
 
   test('job 없음 → SIGTERM 후 즉시 완료', async () => {
     const config = {
-      servers: {},
+      servers: [],
       replication: { jobs: [] },
     };
 

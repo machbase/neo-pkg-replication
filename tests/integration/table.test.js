@@ -10,8 +10,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { LogTable, TagTable, TagDataTable } = require('../../db/table.js');
-const { MachbaseClient } = require('../../db/client.js');
+const { LogTable, TagTable, TagDataTable } = require('../../src/db/table.js');
+const { MachbaseClient } = require('../../src/db/client.js');
 
 // ─── 접속 설정 ────────────────────────────────────────────────────────────────
 

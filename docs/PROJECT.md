@@ -2,7 +2,7 @@
 
 **프로젝트**: Machbase TAG / Log 테이블 복제 도구
 **런타임**: Node.js v22 (CommonJS)
-**최종 수정**: 2026-03-12
+**최종 수정**: 2026-03-17 (config 도메인 클래스 도입, execution flat화, servers array 전환)
 
 ---
 
@@ -71,30 +71,35 @@
 
 ```
 repli-js/
-├── app.js                      # 진입점 — ConfigLoader → Replicator.run()
+├── app.js                      # 진입점 — Config.load() → Replicator.run()
 ├── config.json                 # 설정 파일 (v3 스키마)
-├── config/
-│   └── config.js               # M1: ConfigLoader
-├── core/
-│   ├── types.js                # ColumnType, Column, TableSchema (순수 도메인 모델)
-│   └── retry.js                # M8: RetryHandler
-├── db/
-│   ├── client.js               # MachbaseClient, fixDoubleEndian(), toInt64
-│   ├── stream.js               # MachbaseStream, _toCell (append 스트림 래퍼)
-│   └── table.js                # TagAliasCache, LogTable, TagTable, TagDataTable
-├── checkpoint/
-│   └── store.js                # M3: CheckpointStore (atomic write, BigInt 지원 내장)
-├── worker/
-│   └── worker.js               # M9: Worker 상태 머신
-├── job_runner.js               # Replicator, Job, Worker 클래스 (재시작 루프 포함)
+├── src/
+│   ├── replicator.js           # Replicator — SIGTERM/SIGINT, JobScheduler 관리
+│   ├── job.js                  # JobScheduler, Job (재시작 루프 포함)
+│   ├── api/
+│   │   └── http_server.js      # HttpServer — REST API (JobScheduler에만 의존)
+│   ├── config/
+│   │   └── config.js           # Config + 도메인 클래스 전체 (ServerConfig, JobConfig 등)
+│   ├── db/
+│   │   ├── client.js           # MachbaseClient, fixDoubleEndian(), toInt64
+│   │   ├── stream.js           # MachbaseStream, _toCell (append 스트림 래퍼)
+│   │   ├── table.js            # TagAliasCache, LogTable, TagTable, TagDataTable
+│   │   └── checkpoint.js       # CheckpointStore (atomic write, BigInt 지원 내장)
+│   ├── worker/
+│   │   └── worker.js           # Worker 상태 머신
+│   └── lib/
+│       ├── logger.js           # Logger 클래스 (날짜 로테이션, stdout/file)
+│       ├── retry.js            # RetryHandler
+│       └── types.js            # ColumnType, Column, TableSchema (순수 도메인 모델)
+├── data/                       # 런타임 생성 — cp 파일 저장 디렉토리 (고정 경로)
 ├── tests/
 │   ├── unit/
 │   │   ├── checkpoint.test.js        # CheckpointStore 단위 테스트 (6개)
 │   │   ├── client.test.js            # fixDoubleEndian 단위 테스트 (4개)
-│   │   ├── config.test.js            # Config 단위 테스트 (33개)
+│   │   ├── config.test.js            # Config 단위 테스트 (30개)
 │   │   ├── integrity_checker.test.js # TagTable.findFirstMissRow 단위 테스트 (7개)
 │   │   ├── retry.test.js             # RetryHandler 단위 테스트 (19개)
-│   │   └── worker.test.js            # Worker 상태 머신 + E2E mock 시나리오 (27개)
+│   │   └── worker.test.js            # Worker/Job/JobScheduler/Replicator + E2E mock (27개)
 │   └── integration/
 │       ├── tag_replication.test.js   # TAG 테이블 통합 테스트 (11개)
 │       ├── log_replication.test.js   # LOG 테이블 통합 테스트 (8개)
@@ -111,17 +116,18 @@ repli-js/
 ┌──────────────────────────────────────────────────────────────┐
 │  Main Process                                                │
 │                                                              │
-│  app.js → ConfigLoader → new Replicator(config).run()        │
+│  app.js → Config.load() → new Replicator(config).run()       │
 │                              │                               │
 │           Replicator         │                               │
-│           ├─ Job (job당 1개, 독립 루프)                       │
-│           │   ├─ _discoverMapping() — MachbaseClient(단기)   │
-│           │   ├─ AbortController                              │
-│           │   └─ Worker × N  (Promise.all, 병렬)             │
-│           │       ├─ TagDataTable/LogTable — 소스 DB 읽기     │
-│           │       ├─ TagTable/LogTable — 대상 DB 쓰기        │
-│           │       └─ Worker.run() — 상태 머신                │
-│           └─ Job (다른 job — 독립 실행)                       │
+│           ├─ HttpServer  (REST API, JobScheduler에만 의존)    │
+│           └─ JobScheduler                                    │
+│               └─ Job (job당 1개, 독립 루프)                   │
+│                   ├─ _discoverMapping() — MachbaseClient(단기)│
+│                   ├─ AbortController                          │
+│                   └─ Worker × N  (Promise.all, 병렬)         │
+│                       ├─ TagDataTable/LogTable — 소스 DB 읽기 │
+│                       ├─ TagTable/LogTable — 대상 DB 쓰기    │
+│                       └─ Worker.run() — 상태 머신            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -182,74 +188,48 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) → STEADY
 | 필드 | 타입 | 필수 | 설명 |
 |------|------|------|------|
 | version | int | ✅ | 3 고정 |
-| servers | map\<string, ServerConfig\> | ✅ | 서버 별칭 → 접속 정보 |
-| replication.jobs | Job[] | ✅ | 복제 작업 목록 |
+| servers | ServerConfig[] | ✅ | 서버 접속 정보 배열 (name 필드로 참조) |
+| replication.jobs | JobConfig[] | ✅ | 복제 작업 목록 |
+| logging | LoggingConfig | — | 로깅 설정 |
+| api | ApiConfig | — | REST API 설정 |
 
 ### 3.2 ServerConfig
 
-```js
-{
-  host: string,
-  port: number,
-  user: string,
-  password: string,
-  database?: string,
-  timezone?: string,
-}
+```json
+{ "name": "src", "host": "...", "port": 5656, "user": "SYS", "password": "MANAGER" }
 ```
 
-### 3.3 Job
+### 3.3 JobConfig (flat 구조 — execution 블록 없음)
 
 | 필드 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
-| job_id | string | — | 고유 식별자 |
-| enabled | bool | — | 실행 여부 |
+| id | string | — | 고유 식별자 |
 | shutdown_timeout_ms | int | 30000 | Worker 종료 대기 타임아웃 (ms) |
-| checkpoint.directory | string | — | 체크포인트 파일 저장 경로 |
-| checkpoint.on_save_failure | "continue"\|"abort" | "continue" | 저장 실패 정책 |
-| integrity.enabled | bool | — | 재시작 정합성 유지 여부 |
-| integrity.mode | "existence_only" | — | 정합성 비교 방식 (현재 고정) |
-| retry.enabled | bool | — | 재시도 활성화 |
-| retry.strategy | "exponential"\|"linear" | — | 대기 증가 방식 |
-| retry.initial_delay_ms | int | — | 최초 재시도 대기 (ms) |
-| retry.max_delay_ms | int | — | 최대 재시도 대기 (ms) |
-| retry.multiplier | float | — | 지수 증가 계수 |
-| retry.jitter | bool | — | 랜덤 변동 적용 |
-| retry.max_attempts | int\|null | null | 최대 횟수 (null = 무한) |
-| execution_defaults.query_limit | int | 5000 | 배치당 최대 레코드 수 |
-| execution_defaults.poll_interval_ms | int | — | 폴링 주기 (ms) |
-| logging.level | "debug"\|"info"\|"warn"\|"error" | — | 로그 레벨 |
-| logging.log_dir | string | — | 로그 파일 경로 |
+| source | SourceConfig | ✅ | 소스 설정 |
+| target | TargetConfig | ✅ | 대상 설정 |
+| query_limit | int | 5000 | 배치당 최대 레코드 수 |
+| rid_range_size | int | 50000 | RID 범위 힌트 크기 |
+| poll_interval_ms | int | 1000 | 폴링 주기 (ms) |
+| start_mode | "full"\|"now"\|"rid_after" | "full" | 최초 실행 시작 기준 |
+| rid_after | string | — | start_mode=rid_after 시 기준 rid |
+| on_save_failure | "continue"\|"abort" | "continue" | checkpoint 저장 실패 정책 |
+| integrity | IntegrityConfig | — | 재시작 정합성 설정 |
+| retry | RetryConfig | — | 재시도 설정 |
 
-### 3.4 Mapping
+### 3.4 SourceConfig / TargetConfig
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| mapping_id | string | 고유 식별자 |
-| source.server | string | servers 별칭 참조 |
+| source.server | string | servers[].name 참조 |
 | source.table | string | 원본 논리 테이블명 |
-| source.columns | string[]\|null | SELECT 허용 컬럼 목록. null이면 전체 컬럼. 대소문자 무관(UPPERCASE 정규화). |
-| source.start_mode | "full"\|"now"\|"rid_after" | 최초 실행 시작 기준 |
-| source.rid_after | int\|null | start_mode=rid_after 시 기준 rid |
-| source.tag_identifier.mode | "prefix"\|"suffix"\|"none" | tag name 식별자 방식 |
-| source.tag_identifier.value | string | 적용 문자열 (구분자 포함) |
-| source.execution | ExecutionOptions | source 레벨 실행 옵션 override |
-| target.server | string | servers 별칭 참조 |
+| source.columns | string[]\|null | SELECT 허용 컬럼 목록. null이면 전체 컬럼. UPPERCASE 정규화. |
+| source.tag_identifier | TagIdentifierConfig | tag name 식별자 방식 (mode: prefix/suffix/none) |
+| target.server | string | servers[].name 참조 |
 | target.table | string | 대상 테이블명 (사전 생성 필요) |
-| execution | ExecutionOptions | mapping 레벨 실행 옵션 override (최우선) |
 
-### 3.5 execution 필드 레벨 merge 규칙
+### 3.5 체크포인트 파일 포맷
 
-각 필드(`query_limit`, `poll_interval_ms`)는 **독립적으로** 다음 우선순위를 따른다:
-```
-1순위: mapping.execution.{field}
-2순위: source.execution.{field}
-3순위: job.execution_defaults.{field}
-```
-
-### 3.6 체크포인트 파일 포맷
-
-**파일명**: `{checkpoint.directory}/{job_id}__{data_table}.json`
+**저장 경로**: `data/{job_id}_{data_table}.json` (고정, 설정 불필요)
 
 ```json
 {
@@ -271,30 +251,45 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) → STEADY
 
 ## 4. 모듈 명세
 
-### M1. ConfigLoader (`config/config.js`)
+### M1. Config (`src/config/config.js`)
 
 ```js
-ConfigLoader.load(filePath) → Config
+// 로드
+const config = await Config.load(filePath?)   // 기본: ./config.json
+
+// 저장 (atomic write)
+await config.save()
+
+// Job CRUD
+config.addJob(rawJob)           → JobConfig
+config.updateJob(id, rawJob)    → JobConfig
+config.removeJob(id)
 ```
 
-**구현 항목**
-- JSON.parse로 파일 읽기
-- 필수 필드 검증: version==3, servers, replication.jobs
-- servers 별칭 참조 유효성 (source.server, target.server가 servers에 존재)
-- start_mode 값 범위: "full" | "now" | "rid_after"
-- rid_after: start_mode=="rid_after"일 때 필수
-- on_save_failure: "continue" | "abort" (기본값: "continue")
-- shutdown_timeout_ms: 양의 정수 (기본값: 30000)
-- query_limit 기본값: 5000
-- execution 필드 레벨 merge: mapping > source > job (필드 독립 적용)
-- `source.columns` 검증 및 정규화:
-  - `null`/`undefined` → `columns: null` (전체 컬럼)
-  - 비어있지 않은 문자열 배열 → UPPERCASE 정규화 후 `mapping.source.columns`에 저장
-  - 빈 배열 또는 비문자열 항목 → `level="error"` 로그 + 해당 mapping 스킵
+**도메인 클래스 및 valid() 패턴**
+- `new XxxConfig(raw)` → `instance.valid()` 순서로 생성·검증
+- `Config._buildJob(job, servers)` 내부에서 모든 하위 클래스 생성
+- 각 클래스의 검증 책임:
+  - `ServerConfig.valid()`: name/host/port/user/password 필수
+  - `SourceConfig.valid(jobId, servers)`: table 필수, server 참조 유효성, columns/tag_identifier 검증
+  - `TargetConfig.valid(jobId, servers)`: table 필수, server 참조 유효성
+  - `TagIdentifierConfig.valid(jobId)`: mode 값 범위, value 타입
+  - `IntegrityConfig.valid(jobId)`: enabled boolean
+  - `RetryConfig.valid(jobId)`: strategy/max_attempts/delay 값 범위
+  - `LoggingConfig.valid()` + `LoggingFileConfig.valid()`: level/stdout/file 검증
+  - `JobConfig.valid(servers)`: 모든 execution 필드 + source/target 위임 검증
+
+**JobConfig 기본값** (constructor에서 `??` 연산자로 적용)
+- `query_limit=5000`, `rid_range_size=50000`, `poll_interval_ms=1000`, `start_mode='full'`, `on_save_failure='continue'`
+
+**source.columns 정규화**
+- `null`/`undefined` → `columns: null` (전체 컬럼)
+- 비어있지 않은 문자열 배열 → UPPERCASE 정규화
+- 빈 배열 또는 비문자열 항목 → throw
 
 ---
 
-### M2. MachbaseClient 카탈로그 메서드 (`db/client.js`)
+### M2. MachbaseClient 카탈로그 메서드 (`src/db/client.js`)
 
 ```js
 conn.getTableType(table) → { type: "TAG"|"LOG"|"UNSUPPORTED" }
@@ -313,7 +308,7 @@ conn.getColumnsByTableId(tableId) → [{ NAME, TYPE, ID }]
 
 ---
 
-### M3. CheckpointStore (`checkpoint/store.js`)
+### M3. CheckpointStore (`src/db/checkpoint.js`)
 
 ```js
 CheckpointStore.load(jobId, dataTable) → { cp, exists, err }
@@ -331,7 +326,7 @@ CheckpointStore.save(jobId, dataTable, cp, stats) → err
 
 ---
 
-### M4. TagAliasCache / LogTable / TagTable / TagDataTable (`db/table.js`)
+### M4. TagAliasCache / LogTable / TagTable / TagDataTable (`src/db/table.js`)
 
 ```js
 // ── TagAliasCache ──
@@ -387,7 +382,7 @@ LIMIT  limit
 
 ---
 
-### M5. ColumnType / Column / TableSchema (`core/types.js`)
+### M5. ColumnType / Column / TableSchema (`src/lib/types.js`)
 
 ```js
 // ColumnType 정적 상수: SHORT, INTEGER, LONG, ULONG, DATETIME, FLOAT, DOUBLE, VARCHAR, ...
@@ -409,7 +404,7 @@ schema.columns          // Column[] 전체 배열 (dataColumns + metadataColumns
 
 ---
 
-### M6. TagTable / LogTable — findFirstMissRow() (`db/table.js`)
+### M6. TagTable / LogTable — findFirstMissRow() (`src/db/table.js`)
 
 ```js
 await tagTable.findFirstMissRow(rows, client) → { firstMissIdx: number|null, err }
@@ -433,7 +428,7 @@ await logTable.findFirstMissRow(rows, client) → { firstMissIdx: number|null, e
 
 ---
 
-### M7. MachbaseStream / _toCell (`db/stream.js`)
+### M7. MachbaseStream / _toCell (`src/db/stream.js`)
 
 ```js
 // ── MachbaseStream ──
@@ -455,7 +450,7 @@ _toCell(col, val) → appendable value
 
 ---
 
-### M8. RetryHandler (`core/retry.js`)
+### M8. RetryHandler (`src/lib/retry.js`)
 
 ```js
 RetryHandler.shouldRetry(err) → bool
@@ -474,7 +469,7 @@ RetryHandler.sleepOrShutdown(ms, shutdownFlag) → Promise<"timeout"|"shutdown">
 
 ---
 
-### M9. Worker (`worker/worker.js`)
+### M9. Worker (`src/worker/worker.js`)
 
 ```js
 runDataTableWorker({
@@ -530,9 +525,12 @@ while NOT shutdown_requested:
 
 ---
 
-### Replicator / Job / Worker (`job_runner.js`)
+### Replicator / JobScheduler / Job / Worker
 
-클래스 구조: `Replicator.run()` → `Job.run()` × N (Promise.all, 독립 루프) → `Worker.run(signal)`
+- **`src/replicator.js`**: `Replicator` — SIGTERM/SIGINT 처리, `JobScheduler.stopAll()`, `HttpServer` 시작/종료
+- **`src/job.js`**: `JobScheduler` (job 생명주기), `Job` (복제 루프)
+
+클래스 구조: `Replicator.run()` → `JobScheduler.start(id)` → `Job.run()` → `Worker.run(signal)`
 
 **`Job.run()` 구현 항목**
 1. `while (!shutdown)` 루프:
@@ -589,9 +587,9 @@ while NOT shutdown_requested:
 ### 5.1 초기화 흐름
 
 ```
-1. ConfigLoader.load()
-2. enabled == true인 job 선택
-3. Replicator.run() → Job × N 병렬 실행 (Promise.all)
+1. Config.load()
+2. Replicator.run() → JobScheduler 초기화 (job 자동 시작 없음, API로 개별 시작)
+3. HttpServer 시작 (api.enabled=true 시)
 4. 각 Job.run() 루프:
    a. _discoverMapping() — MachbaseClient(단기) 생성 후 close
       - 테이블 TYPE 조회
@@ -834,29 +832,35 @@ SIGTERM 수신
 
 ```mermaid
 graph TD
-    app["app.js"] --> JR["Replicator/Job\njob_runner.js"]
+    app["app.js"] --> R["Replicator\nsrc/replicator.js"]
+    R --> JS["JobScheduler/Job\nsrc/job.js"]
+    R --> HS["HttpServer\nsrc/api/http_server.js"]
 
-    JR --> CL["M1 ConfigLoader\nconfig/config.js"]
-    JR --> MC["M2 MachbaseClient\ndb/client.js"]
-    JR --> W["Worker\nworker/worker.js"]
+    JS --> CL["M1 Config\nsrc/config/config.js"]
+    JS --> MC["M2 MachbaseClient\nsrc/db/client.js"]
+    JS --> W["Worker\nsrc/worker/worker.js"]
 
-    W --> CP["M3 CheckpointStore\ncheckpoint/store.js"]
-    W --> TBL["M4 db/table.js\nLogTable/TagTable\nTagDataTable/TagAliasCache"]
-    W --> RH["M8 RetryHandler\ncore/retry.js"]
+    W --> CP["M3 CheckpointStore\nsrc/db/checkpoint.js"]
+    W --> TBL["M4 src/db/table.js\nLogTable/TagTable\nTagDataTable/TagAliasCache"]
+    W --> RH["M8 RetryHandler\nsrc/lib/retry.js"]
 
-    TBL --> ST["M7 MachbaseStream\ndb/stream.js"]
+    TBL --> ST["M7 MachbaseStream\nsrc/db/stream.js"]
     TBL --> src_conn["source_conn\nMachbaseClient"]
     ST --> tgt_conn["target_conn\nMachbaseClient"]
 
-    TBL --> TY["core/types.js\nColumnType/Column/TableSchema"]
+    TBL --> TY["src/lib/types.js\nColumnType/Column/TableSchema"]
 ```
 
 ### 10.2 클래스 다이어그램
 
 ```mermaid
 classDiagram
-    class ConfigLoader {
-        +load(filePath) Config
+    class Config {
+        +load(filePath) Config$
+        +save()
+        +addJob(raw) JobConfig
+        +updateJob(id, raw) JobConfig
+        +removeJob(id)
     }
     class MachbaseClient {
         +connect()
@@ -917,7 +921,7 @@ classDiagram
     Replicator --> Job
     Job --> Worker
     Job --> MachbaseClient
-    Job --> ConfigLoader
+    Job --> Config
 
     Worker --> CheckpointStore
     Worker --> Reader

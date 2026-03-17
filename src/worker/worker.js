@@ -1,10 +1,11 @@
 'use strict';
 
-const CheckpointStore = require('../checkpoint/store.js');
-const RetryHandler = require('../core/retry.js');
+const CheckpointStore = require('../db/checkpoint.js');
+const RetryHandler = require('../lib/retry.js');
 const { MachbaseClient } = require('../db/client.js');
 const { TagDataTable, TagTable, LogTable } = require('../db/table.js');
-const { getInstance: getLogger } = require('../logger/logger.js');
+const { getInstance: getLogger } = require('../lib/logger.js');
+const { CHECKPOINT_DIRECTORY } = require('../config/config.js');
 
 // ─── 상수 ────────────────────────────────────────────────────────────────────
 
@@ -175,14 +176,13 @@ class Worker {
    */
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
     const { jobConfig, tableType, dataTable } = this;
-    const exec = jobConfig.execution;
-    const batchSize = exec.query_limit || 5000;
-    const ridRangeSize = exec.rid_range_size || 50000;
-    const pollIntervalMs = exec.poll_interval_ms || 1000;
-    const sourceColumns = jobConfig.source.columns || null;
-    const tagIdentifier = jobConfig.source.tag_identifier || { mode: 'none', value: '' };
-    const retry = new RetryHandler(exec.retry || {});
-    const checkpointStore = new CheckpointStore(jobConfig.checkpoint.directory);
+    const batchSize = jobConfig.query_limit;
+    const ridRangeSize = jobConfig.rid_range_size;
+    const pollIntervalMs = jobConfig.poll_interval_ms;
+    const sourceColumns = jobConfig.source.columns;
+    const tagIdentifier = jobConfig.source.tag_identifier;
+    const retry = new RetryHandler(jobConfig.retry ?? {});
+    const checkpointStore = new CheckpointStore(CHECKPOINT_DIRECTORY);
     const logCtx = { job_id: jobConfig.id, data_table: dataTable };
 
     // ═══════════════════════════════════════════════════════════
@@ -196,7 +196,7 @@ class Worker {
       startRid = cp.last_success_rid + 1n;
       getLogger().info('worker', { ...logCtx, msg: `resume from checkpoint, start_rid=${startRid}` });
     } else {
-      const startMode = exec.start_mode || 'full';
+      const startMode = jobConfig.start_mode;
       if (startMode === 'now') {
         try {
           const maxRidVal = await srcTable.getMaxRid();
@@ -206,7 +206,7 @@ class Worker {
           return;
         }
       } else if (startMode === 'rid_after') {
-        startRid = BigInt(exec.rid_after || 0);
+        startRid = BigInt(jobConfig.rid_after);
       } else {
         startRid = 0n; // 'full'
       }
@@ -228,7 +228,7 @@ class Worker {
 
     const doIntegrity = tableType === 'TAG'
       && cpExists
-      && (exec.integrity?.enabled !== false);
+      && (jobConfig.integrity === undefined || jobConfig.integrity.enabled !== false);
 
     if (doIntegrity) {
       const result = await this._runStartupIntegrity({
@@ -308,7 +308,7 @@ class Worker {
         last_success_rid: maxRidInBatch,
         source_server: jobConfig.source.server,
         source_table: jobConfig.source.table,
-      }, batchStats, { on_save_failure: exec.on_save_failure });
+      }, batchStats, { on_save_failure: jobConfig.on_save_failure });
 
       startRid = maxRidInBatch + 1n;
     }
@@ -404,7 +404,7 @@ class Worker {
             last_success_rid: safeCpRid,
             source_server: jobConfig.source.server,
             source_table: jobConfig.source.table,
-          }, batchStats, { on_save_failure: jobConfig.execution.on_save_failure });
+          }, batchStats, { on_save_failure: jobConfig.on_save_failure });
           startRid = firstMissRid;
           getLogger().info('worker', {
             ...logCtx,
@@ -418,7 +418,7 @@ class Worker {
           last_success_rid: maxRidInBatch,
           source_server: jobConfig.source.server,
           source_table: jobConfig.source.table,
-        }, batchStats, { on_save_failure: jobConfig.execution.on_save_failure });
+        }, batchStats, { on_save_failure: jobConfig.on_save_failure });
         integrityRid = maxRidInBatch + 1n;
         getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY: batch all confirmed, next_rid=${integrityRid}` });
       } finally {

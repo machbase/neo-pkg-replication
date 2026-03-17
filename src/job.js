@@ -3,7 +3,68 @@
 const { MachbaseClient } = require('./db/client.js');
 const { TagTable, LogTable } = require('./db/table.js');
 const { Worker } = require('./worker/worker.js');
-const { getInstance: getLogger } = require('./logger/logger.js');
+const { getInstance: getLogger } = require('./lib/logger.js');
+
+// ─── JobScheduler ─────────────────────────────────────────────────────────────
+
+class JobScheduler {
+  constructor(servers) {
+    this.servers = servers;
+    // id → { jobConfig, shutdownFlag, promise, status: 'running'|'stopped' }
+    this.registry = new Map();
+  }
+
+  register(jobConfig) {
+    this.registry.set(jobConfig.id, { jobConfig, shutdownFlag: { value: false }, promise: null, status: 'stopped' });
+  }
+
+  unregister(id) {
+    const entry = this.registry.get(id);
+    if (!entry || entry.status === 'running') return;
+    this.registry.delete(id);
+  }
+
+  update(jobConfig) {
+    const entry = this.registry.get(jobConfig.id);
+    if (!entry || entry.status === 'running') return;
+    entry.jobConfig = jobConfig;
+  }
+
+  start(id) {
+    const entry = this.registry.get(id);
+    if (!entry || entry.status === 'running') return;
+    const shutdownFlag = { value: false };
+    entry.shutdownFlag = shutdownFlag;
+    entry.status = 'running';
+    entry.promise = new Job(entry.jobConfig, this.servers, shutdownFlag)
+      .run()
+      .catch(err => getLogger().error('job', { job_id: id, msg: `job error: ${err.message}` }))
+      .finally(() => { entry.status = 'stopped'; });
+  }
+
+  async stop(id) {
+    const entry = this.registry.get(id);
+    if (!entry || entry.status !== 'running') return;
+    entry.shutdownFlag.value = true;
+    await entry.promise;
+  }
+
+  getEntry(id) {
+    return this.registry.get(id);
+  }
+
+  listEntries() {
+    return Array.from(this.registry.values());
+  }
+
+  async stopAll() {
+    const running = Array.from(this.registry.values()).filter(e => e.status === 'running');
+    for (const entry of running) {
+      entry.shutdownFlag.value = true;
+    }
+    await Promise.all(running.map(e => e.promise));
+  }
+}
 
 // ─── Job ──────────────────────────────────────────────────────────────────────
 
@@ -15,17 +76,13 @@ class Job {
   }
 
   /**
-   * source.columns 유효성 검증 헬퍼
-   * @returns {true|null} null = 검증 실패
-   */
-  /**
    * 소스/대상 스키마 수집 (단기 커넥션 사용 후 즉시 반납)
    * @returns {{ tableType, dataTables, srcSchema, dstSchema }}|null  null = 실패
    */
   async _discoverMapping(logCtx) {
     const { source, target } = this.jobConfig;
-    const srcConfig = this.servers[source.server];
-    const dstConfig = this.servers[target.server];
+    const srcConfig = this.servers.find(s => s.name === source.server);
+    const dstConfig = this.servers.find(s => s.name === target.server);
 
     let tableType;
     let dataTables;
@@ -50,7 +107,7 @@ class Job {
             await table.client.connect();
             const src = await table.getDataTables();
             if (src.length === 0) {
-              getLogger().error('job_runner', { ...logCtx, msg: `no data partitions found, skipping job` });
+              getLogger().error('job', { ...logCtx, msg: `no data partitions found, skipping job` });
               return null;
             }
             dataTables = src.map(t => t.data_table);
@@ -63,7 +120,7 @@ class Job {
             const actualCols = new Set(srcSchema.columns.map(c => c.name));
             const unknownCols = source.columns.filter(c => !actualCols.has(c));
             if (unknownCols.length > 0) {
-              getLogger().error('job_runner', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
+              getLogger().error('job', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
               return null;
             }
           }
@@ -73,7 +130,7 @@ class Job {
             await dst.client.connect();
             const dstTables = await dst.getDataTables();
             if (dstTables.length === 0) {
-              getLogger().error('job_runner', { ...logCtx, msg: `no target data partitions found, skipping job` });
+              getLogger().error('job', { ...logCtx, msg: `no target data partitions found, skipping job` });
               return null;
             }
             dstSchema = await dst.getSchema();
@@ -97,7 +154,7 @@ class Job {
             const actualCols = new Set(srcSchema.columns.map(c => c.name));
             const unknownCols = source.columns.filter(c => !actualCols.has(c));
             if (unknownCols.length > 0) {
-              getLogger().error('job_runner', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
+              getLogger().error('job', { ...logCtx, msg: `source.columns contains columns not found in source table: ${unknownCols.join(', ')}, skipping job` });
               return null;
             }
           }
@@ -112,11 +169,11 @@ class Job {
           break;
         }
         default:
-          getLogger().error('job_runner', { ...logCtx, msg: `unsupported table type, skipping job` });
+          getLogger().error('job', { ...logCtx, msg: `unsupported table type, skipping job` });
           return null;
       }
     } catch (err) {
-      getLogger().error('job_runner', { ...logCtx, msg: `discover failed: ${err.message}` });
+      getLogger().error('job', { ...logCtx, msg: `discover failed: ${err.message}` });
       return null;
     }
 
@@ -126,7 +183,7 @@ class Job {
       .filter(c => c.category !== 'metadata' && !dstNames.has(c.name))
       .map(c => c.name);
     if (srcOnlyCols.length > 0) {
-      getLogger().error('job_runner', { ...logCtx, msg: `source has columns not present in destination: ${srcOnlyCols.join(', ')}, skipping job` });
+      getLogger().error('job', { ...logCtx, msg: `source has columns not present in destination: ${srcOnlyCols.join(', ')}, skipping job` });
       return null;
     }
 
@@ -141,7 +198,7 @@ class Job {
     const { id, source, target } = this.jobConfig;
     const logCtx = { job_id: id };
 
-    getLogger().info('job_runner', { ...logCtx, msg: 'job start' });
+    getLogger().info('job', { ...logCtx, msg: 'job start' });
 
     while (!shutdownFlag.value) {
       const jobCtx = {
@@ -153,16 +210,16 @@ class Job {
       const discovered = await this._discoverMapping(jobCtx);
       if (!discovered) {
         if (shutdownFlag.value) break;
-        getLogger().warn('job_runner', { ...logCtx, msg: 'discover failed, retrying in 5s' });
+        getLogger().warn('job', { ...logCtx, msg: 'discover failed, retrying in 5s' });
         await new Promise(resolve => setTimeout(resolve, 5000));
         continue;
       }
 
       const { tableType, dataTables, srcSchema, dstSchema } = discovered;
-      const srcConfig = this.servers[source.server];
-      const dstConfig = this.servers[target.server];
+      const srcConfig = this.servers.find(s => s.name === source.server);
+      const dstConfig = this.servers.find(s => s.name === target.server);
 
-      getLogger().info('job_runner', {
+      getLogger().info('job', {
         ...jobCtx,
         table_type: tableType,
         data_tables: dataTables.join(','),
@@ -189,16 +246,16 @@ class Job {
       try {
         await Promise.all(workers.map(w =>
           w.run(signal).catch(err => {
-            getLogger().error('job_runner', { ...logCtx, data_table: w.dataTable, msg: `worker error: ${err.message}` });
+            getLogger().error('job', { ...logCtx, data_table: w.dataTable, msg: `worker error: ${err.message}` });
             ac.abort();
             throw err;
           })
         ));
-        getLogger().info('job_runner', { ...logCtx, msg: 'all workers finished' });
+        getLogger().info('job', { ...logCtx, msg: 'all workers finished' });
       } catch (_err) {
         // 에러 로그는 위에서 처리됨. shutdown 중이 아니면 재시작.
         if (!shutdownFlag.value) {
-          getLogger().info('job_runner', { ...logCtx, msg: 'workers aborted, restarting job' });
+          getLogger().info('job', { ...logCtx, msg: 'workers aborted, restarting job' });
         }
       }
 
@@ -206,86 +263,8 @@ class Job {
       if (shutdownFlag.value) break;
     }
 
-    getLogger().info('job_runner', { ...logCtx, msg: 'job stopped' });
+    getLogger().info('job', { ...logCtx, msg: 'job stopped' });
   }
 }
 
-// ─── Replicator ───────────────────────────────────────────────────────────────
-
-class Replicator {
-  constructor(config, configPath = null) {
-    this.config = config;
-    this.configPath = configPath;
-    // id → { jobConfig, shutdownFlag, promise, status: 'running'|'stopped' }
-    this.jobRegistry = new Map();
-  }
-
-  _startJob(jobConfig) {
-    const shutdownFlag = { value: false };
-    const entry = { jobConfig, shutdownFlag, promise: null, status: 'running' };
-    this.jobRegistry.set(jobConfig.id, entry);
-    entry.promise = new Job(jobConfig, this.config.servers, shutdownFlag)
-      .run()
-      .catch(err => getLogger().error('job_runner', { job_id: jobConfig.id, msg: `job error: ${err.message}` }))
-      .finally(() => { entry.status = 'stopped'; });
-  }
-
-  async _stopJob(id) {
-    const entry = this.jobRegistry.get(id);
-    if (!entry || entry.status !== 'running') return;
-    entry.shutdownFlag.value = true;
-    await entry.promise;
-  }
-
-  _startShutdownTimer(shutdownTimeoutMs) {
-    const handle = setTimeout(() => {
-      getLogger().warn('job_runner', { msg: `shutdown timeout (${shutdownTimeoutMs}ms) exceeded, forcing exit` });
-      process.exit(1);
-    }, shutdownTimeoutMs);
-    // Node.js 프로세스 종료를 막지 않도록 unref
-    if (handle.unref) handle.unref();
-    return handle;
-  }
-
-  async run() {
-    const { config } = this;
-    const shutdownFlag = { value: false };
-
-    // shutdown_timeout_ms: 모든 job 중 최댓값 사용, 없으면 기본값
-    let shutdownTimeoutMs = 30000;
-    const maxTimeout = Math.max(0, ...config.replication.jobs.map(j => j.shutdown_timeout_ms || 0));
-    if (maxTimeout > 0) shutdownTimeoutMs = maxTimeout;
-
-    let timeoutHandle;
-    const startShutdown = (signal) => {
-      if (shutdownFlag.value) return;
-      getLogger().info('job_runner', { msg: `${signal} received, graceful shutdown initiated` });
-      shutdownFlag.value = true;
-      timeoutHandle = this._startShutdownTimer(shutdownTimeoutMs);
-    };
-
-    process.once('SIGTERM', () => startShutdown('SIGTERM'));
-    process.once('SIGINT', () => startShutdown('SIGINT'));
-
-    getLogger().banner(`repli starting — ${config.replication.jobs.length} job(s) registered`);
-    getLogger().info('job_runner', { msg: `${config.replication.jobs.length} job(s) registered, none started automatically` });
-
-    // config에서 로드된 job들을 jobRegistry에 등록 (stopped 상태)
-    for (const jobConfig of config.replication.jobs) {
-      if (!this.jobRegistry.has(jobConfig.id)) {
-        this.jobRegistry.set(jobConfig.id, { jobConfig, shutdownFlag: { value: false }, promise: null, status: 'stopped' });
-      }
-    }
-
-    // job은 자동 시작하지 않음 — API를 통해 개별 시작
-    await new Promise(resolve => {
-      const check = () => { if (shutdownFlag.value) resolve(); else setTimeout(check, 500); };
-      check();
-    });
-
-    clearTimeout(timeoutHandle);
-    getLogger().info('job_runner', { msg: 'all jobs completed' });
-  }
-}
-
-module.exports = { Replicator, Job, Worker };
+module.exports = { JobScheduler, Job, Worker };

@@ -116,27 +116,4 @@ class TableSchema {
   }
 }
 
-// ─── JobConfig ───────────────────────────────────────────────────────────────
-
-/**
- * _processJob()이 반환하는 정제된 job 설정
- *
- * @property {string} id
- * @property {number} shutdown_timeout_ms
- * @property {{ directory: string }} checkpoint
- * @property {{ server: string, table: string, tag_identifier: { mode: string, value: string }, columns: string[]|null }} source
- * @property {{ server: string, table: string }} target
- * @property {{ query_limit: number, rid_range_size: number, poll_interval_ms: number, start_mode: string, on_save_failure: string, rid_after?: string, integrity?: object, retry?: object }} execution
- */
-class JobConfig {
-  constructor({ id, shutdown_timeout_ms, checkpoint, source, target, execution }) {
-    this.id                  = id;
-    this.shutdown_timeout_ms = shutdown_timeout_ms;
-    this.checkpoint          = checkpoint;
-    this.source              = source;
-    this.target              = target;
-    this.execution           = execution;
-  }
-}
-
-module.exports = { ColumnType, Column, TableSchema, JobConfig };
+module.exports = { ColumnType, Column, TableSchema };

@@ -1,66 +1,10 @@
 'use strict';
 
-const { ColumnType, Column, TableSchema } = require('../core/types.js');
+const { ColumnType, Column, TableSchema } = require('./types.js');
 const { MachbaseClient } = require('./client.js');
 const { MachbaseStream, _toCell } = require('./stream.js');
-const { getInstance: getLogger } = require('../logger/logger.js');
+const { getInstance: getLogger } = require('../lib/logger.js');
 
-/**
- * TAG alias 캐시
- *
- * tag_id(_ID) → name 매핑을 보관하는 순수 캐시.
- * DB 조회는 TagTable.loadTagAliasCache()가 담당하고,
- * TagDataTable.setTagAliasCache()로 주입하여 read() 시 사용한다.
- */
-class TagAliasCache {
-  constructor() {
-    /** @type {Map<bigint, string>} */
-    this._map = new Map();
-  }
-
-  get size() { return this._map.size; }
-
-  /**
-   * 항목 추가
-   * @param {number|bigint} tagId
-   * @param {string} name
-   */
-  set(tagId, name) {
-    if (name.includes('\x00')) {
-      throw new Error(`tag name contains null byte: ${JSON.stringify(name)}`);
-    }
-    this._map.set(BigInt(tagId), name);
-  }
-
-  /**
-   * tag_id → name 조회
-   * @param {number|bigint} tagId
-   * @returns {string|undefined}
-   */
-  get(tagId) {
-    return this._map.get(BigInt(tagId));
-  }
-
-  /**
-   * tag_id → canonical name 변환 (캐시에서만 조회)
-   * @param {number|bigint} tagId
-   * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
-   * @returns {{ canonical: string|null, status: 'ok'|'drop_not_found' }}
-   */
-  resolve(tagId, tagIdentifier) {
-    const tagName = this._map.get(BigInt(tagId));
-    if (tagName === undefined) return { canonical: null, status: 'drop_not_found' };
-    const canonical = TagAliasCache._applyIdentifier(tagName, tagIdentifier);
-    return { canonical, status: 'ok' };
-  }
-
-  static _applyIdentifier(tagName, tagIdentifier) {
-    if (!tagIdentifier || tagIdentifier.mode === 'none') return tagName;
-    if (tagIdentifier.mode === 'prefix') return (tagIdentifier.value || '') + tagName;
-    if (tagIdentifier.mode === 'suffix') return tagName + (tagIdentifier.value || '');
-    return tagName;
-  }
-}
 
 /**
  * LOG 테이블 복제 클래스
@@ -83,7 +27,7 @@ class LogTable {
 
   /**
    * 테이블 컬럼 목록 조회
-   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
+   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>>}
    */
   async getColumns() {
     return this.client.selectColumnsByTableName(this.logicalTable);
@@ -110,7 +54,7 @@ class LogTable {
   /**
    * DB 연결 + 선택적으로 append 스트림 열기
    * @param {boolean} [useStream=false] - true면 append 스트림도 함께 열기
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async open(useStream = false) {
     await this.client.connect();
@@ -127,7 +71,7 @@ class LogTable {
 
   /**
    * append 스트림 + DB 연결 닫기
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async close() {
     let firstErr = null;
@@ -141,7 +85,7 @@ class LogTable {
 
   /**
    * 테이블의 최대 RID 조회
-   * @returns {Promise<BigInt>}
+   * @returns {Promise<bigint>}
    */
   async getMaxRid() {
     return this.client.selectMaxRid(this.logicalTable);
@@ -149,10 +93,10 @@ class LogTable {
 
   /**
    * RID 기반 배치 읽기
-   * @param {BigInt} startRid
+   * @param {bigint} startRid
    * @param {number} [limit=1000]
    * @param {number} [rangeSize=50000]
-   * @returns {{ rows: Array<{ rid: BigInt, data: object }>, err: Error|null }}
+   * @returns {Promise<{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }>}
    */
   async read(startRid, limit = 1000, rangeSize = 50000) {
     const tableName = this.logicalTable;
@@ -195,7 +139,7 @@ class LogTable {
   /**
    * 배치 데이터 append
    * @param {Array<object>} rows - 컬럼명 기준 객체 배열
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async append(rows) {
     if (!rows || rows.length === 0) return null;
@@ -217,9 +161,10 @@ class LogTable {
 
   /**
    * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
+   * schema에 NAME 컬럼이 있어야 한다.
    * @param {Array<{ canonical: string, time: bigint }>} rows
    * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
-   * @returns {{ firstMissIdx: number|null, err: Error|null }}
+   * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
    */
   async findFirstMissRow(rows, client) {
     if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
@@ -276,6 +221,70 @@ class LogTable {
   }
 }
 
+
+/**
+ * TAG alias 캐시
+ *
+ * tag_id(_ID) → name 매핑을 보관하는 순수 캐시.
+ * DB 조회는 TagTable.loadTagAliasCache()가 담당하고,
+ * TagDataTable.setTagAliasCache()로 주입하여 read() 시 사용한다.
+ */
+class TagAliasCache {
+  constructor() {
+    /** @type {Map<bigint, string>} */
+    this._map = new Map();
+  }
+
+  get size() { return this._map.size; }
+
+  /**
+   * 항목 추가
+   * @param {number|bigint} tagId
+   * @param {string} name
+   */
+  set(tagId, name) {
+    if (name.includes('\x00')) {
+      throw new Error(`tag name contains null byte: ${JSON.stringify(name)}`);
+    }
+    this._map.set(BigInt(tagId), name);
+  }
+
+  /**
+   * tag_id → name 조회
+   * @param {number|bigint} tagId
+   * @returns {string|undefined}
+   */
+  get(tagId) {
+    return this._map.get(BigInt(tagId));
+  }
+
+  /**
+   * tag_id → canonical name 변환 (캐시에서만 조회)
+   * @param {number|bigint} tagId
+   * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
+   * @returns {{ canonical: string|null, status: 'ok'|'drop_not_found' }}
+   */
+  resolve(tagId, tagIdentifier) {
+    const tagName = this._map.get(BigInt(tagId));
+    if (tagName === undefined) return { canonical: null, status: 'drop_not_found' };
+    const canonical = TagAliasCache._applyIdentifier(tagName, tagIdentifier);
+    return { canonical, status: 'ok' };
+  }
+
+  /**
+   * tagIdentifier 설정에 따라 tagName을 변환
+   * @param {string} tagName
+   * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
+   * @returns {string}
+   */
+  static _applyIdentifier(tagName, tagIdentifier) {
+    if (!tagIdentifier || tagIdentifier.mode === 'none') return tagName;
+    if (tagIdentifier.mode === 'prefix') return (tagIdentifier.value || '') + tagName;
+    if (tagIdentifier.mode === 'suffix') return tagName + (tagIdentifier.value || '');
+    return tagName;
+  }
+}
+
 /**
  * TAG 테이블 복제 클래스
  *
@@ -298,16 +307,15 @@ class TagTable {
 
   /**
    * 컬럼 목록 조회
-   * @param {string} tableName
-   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number }>>}
+   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>>}
    */
-   async getColumns() {
+  async getColumns() {
     return this.client.selectColumnsByTableName(this.logicalTable);
   }
 
   /**
    * TAG 스키마 조회 후 반환
-   * META + DATA 파티션 두 곳에서 컬럼 조회
+   * META 테이블에서 컬럼 목록을 조회하여 TableSchema 생성
    * @returns {Promise<TableSchema>}
    */
   async getSchema() {
@@ -327,7 +335,7 @@ class TagTable {
   }
 
   /**
-   * DATA 파티션 목록 조회
+   * TAG 데이터 파티션 목록 조회
    * @returns {Promise<Array<{ data_table: string }>>}
    */
   async getDataTables() {
@@ -345,7 +353,7 @@ class TagTable {
   /**
    * DB 연결 + 선택적으로 append 스트림 열기
    * @param {boolean} [useStream=false] - true면 append 스트림도 함께 열기
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async open(useStream = false) {
     await this.client.connect();
@@ -362,7 +370,7 @@ class TagTable {
 
   /**
    * append 스트림 + DB 연결 닫기
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async close() {
     let firstErr = null;
@@ -401,7 +409,7 @@ class TagTable {
   /**
    * 배치 데이터 append
    * @param {Array<object>} rows - 컬럼명 기준 객체 배열
-   * @returns {Error|null}
+   * @returns {Promise<Error|null>}
    */
   async append(rows) {
     if (!rows || rows.length === 0) return null;
@@ -423,9 +431,10 @@ class TagTable {
 
   /**
    * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
+   * schema에 NAME 컬럼이 있어야 한다.
    * @param {Array<{ canonical: string, time: bigint }>} rows
    * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
-   * @returns {{ firstMissIdx: number|null, err: Error|null }}
+   * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
    */
   async findFirstMissRow(rows, client) {
     if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
@@ -558,14 +567,14 @@ class TagDataTable {
    * RID 기반 배치 읽기
    *
    * aliasCache가 설정된 경우 tagId를 canonical name으로 resolve하여 data.NAME에 채운다.
-   * resolve 결과가 'drop_not_found'인 행은 결과에서 제외되고,
-   * 'retry_error'인 행은 err를 반환하며 읽기를 중단한다.
+   * resolve 결과가 'drop_not_found'인 행은 결과에서 제외된다.
    *
-   * @param {BigInt} startRid
+   * @param {bigint} startRid
    * @param {number} [limit=1000]
    * @param {number} [rangeSize=50000]
    * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} [tagIdentifier=null]
-   * @returns {{ rows: Array<{ rid: BigInt, data: object }>, err: Error|null }}
+   * @param {string[]|null} [sourceColumns=null] - 읽을 컬럼명 목록 (null이면 전체)
+   * @returns {Promise<{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }>}
    */
   async read(startRid, limit = 1000, rangeSize = 50000, tagIdentifier = null, sourceColumns = null) {
     const tableName = this.dataTable;
