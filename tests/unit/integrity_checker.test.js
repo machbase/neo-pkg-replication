@@ -49,7 +49,7 @@ function makeMockClient({ queryResult = [] } = {}) {
 test('findFirstMissRow: 빈 rows → { firstMissIdx: null, err: null }', async () => {
   const table = makeTagTableForTest();
   const client = makeMockClient();
-  const { firstMissIdx, err } = await table.findFirstMissRow([], client);
+  const { firstMissIdx, err } = await table.findFirstMissRow([], client, 'test');
   assert.equal(err, null);
   assert.equal(firstMissIdx, null);
 });
@@ -62,7 +62,7 @@ test('findFirstMissRow: 모든 rows 존재 → { firstMissIdx: null, err: null }
     { canonical: 'sensor_a', time: 1000n },
     { canonical: 'sensor_b', time: 2000n },
   ];
-  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client);
+  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client, 'test');
   assert.equal(err, null);
   assert.equal(firstMissIdx, null);
 });
@@ -75,7 +75,7 @@ test('findFirstMissRow: 첫 번째(idx=0) miss → { firstMissIdx: 0, err: null 
     { canonical: 'sensor_a', time: 1000n },
     { canonical: 'sensor_b', time: 2000n },
   ];
-  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client);
+  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client, 'test');
   assert.equal(err, null);
   assert.equal(firstMissIdx, 0);
 });
@@ -89,7 +89,7 @@ test('findFirstMissRow: 중간(idx=1) miss → { firstMissIdx: 1, err: null }', 
     { canonical: 'sensor_b', time: 2000n },
     { canonical: 'sensor_c', time: 3000n },
   ];
-  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client);
+  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client, 'test');
   assert.equal(err, null);
   assert.equal(firstMissIdx, 1);
 });
@@ -102,7 +102,7 @@ test('findFirstMissRow: NAME 컬럼 없는 schema → { firstMissIdx: null, err 
   table.setSchema(schema);
   const client = makeMockClient();
   const rows = [{ canonical: 'sensor_a', time: 1000n }];
-  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client);
+  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client, 'test');
   assert.ok(err instanceof Error, 'err가 Error 인스턴스여야 함');
   assert.match(err.message, /NAME column not found/);
   assert.equal(firstMissIdx, null);
@@ -116,7 +116,7 @@ test('findFirstMissRow: execute 에러 → { firstMissIdx: null, err }', async (
     query: async () => [],
   };
   const rows = [{ canonical: 'sensor_a', time: 1000n }];
-  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client);
+  const { firstMissIdx, err } = await table.findFirstMissRow(rows, client, 'test');
   assert.ok(err instanceof Error, 'err가 Error 인스턴스여야 함');
   assert.equal(firstMissIdx, null);
 });

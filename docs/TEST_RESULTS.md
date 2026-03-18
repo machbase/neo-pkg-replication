@@ -1,7 +1,7 @@
 # 테스트 결과 보고서
 
 **프로젝트**: repli-js
-**수행일**: 2026-03-17
+**수행일**: 2026-03-18
 **환경**: Node.js v22, CommonJS
 **통합 테스트 DB**: 127.0.0.1:5656 (Machbase, SYS/MANAGER)
 
@@ -11,17 +11,17 @@
 
 | 구분 | 파일 수 | 테스트 수 | pass | fail | 실행 시간 |
 |------|---------|----------|------|------|-----------|
-| 단위 테스트 | 9개 | 163개 | **163** | 0 | ~2.6초 |
+| 단위 테스트 | 10개 | 161개 | **161** | 0 | ~0.6초 |
 | 통합 테스트 (TAG) | 1개 | 11개 | **11** | 0 | ~51초 |
 | 통합 테스트 (LOG) | 1개 | 8개 | **8** | 0 | ~7초 |
 | 통합 테스트 (table) | 1개 | 17개 | **17** | 0 | — |
-| **합계** | **12개** | **199개** | **199** | **0** | — |
+| **합계** | **13개** | **197개** | **197** | **0** | — |
 
 > 통합 테스트는 127.0.0.1:5656 DB 접근 가능 시 실행.
 
 ---
 
-## 단위 테스트 (163개 pass)
+## 단위 테스트 (161개 pass)
 
 ```
 node --test tests/unit/*.test.js
@@ -47,14 +47,14 @@ node --test tests/unit/*.test.js
 | 3 | 0, Infinity, NaN은 변환하지 않음 |
 | 4 | number 아닌 값은 변환하지 않음 |
 
-### config.test.js — Config (40개)
+### config.test.js — Config (47개)
 
 | # | 테스트 항목 |
 |---|------------|
 | 1 | 정상 config 로드 |
 | 2 | version != 3 → 오류 |
-| 3 | servers 없음 → 오류 |
-| 4 | replication.jobs 없음 → 오류 |
+| 3 | servers 없음 → 빈 배열 |
+| 4 | replication.jobs 없음 → 빈 배열 |
 | 5 | 존재하지 않는 source server → 오류 |
 | 6 | startMode=ridAfter + ridAfter 없음 → 오류 |
 | 7 | startMode=ridAfter + ridAfter 있음 → 정상 로드 |
@@ -92,7 +92,7 @@ node --test tests/unit/*.test.js
 | 39 | target.autoCreate: true + table: "TAG_COPY" → valid 통과 |
 | 40 | target.autoCreate 미지정 + table: "" → config 오류 (autoCreate 기본 false) |
 
-### http_server.test.js — HttpServer REST API (22개)
+### http_server.test.js — HttpServer Jobs REST API (19개)
 
 | suite | # | 테스트 항목 |
 |-------|---|------------|
@@ -116,7 +116,33 @@ node --test tests/unit/*.test.js
 | POST /api/jobs/:id/stop | 18 | stopped job 중지 → 409 |
 | POST /api/jobs/:id/stop | 19 | 존재하지 않는 job 중지 → 404 |
 
-> 총 19개 케이스 (suite 7개 × 최소 2~3개). 실제 실행 수는 22개 (일부 suite에 추가 케이스 포함).
+### http_server_servers.test.js — HttpServer Servers REST API (23개)
+
+| suite | # | 테스트 항목 |
+|-------|---|------------|
+| GET /api/servers | 1 | 빈 목록 → `data: []` |
+| GET /api/servers | 2 | 2개 등록 → `data` 길이 2, password 미포함 |
+| GET /api/servers/:name | 3 | 존재하는 서버 → 200 + ServerResponse |
+| GET /api/servers/:name | 4 | 존재하지 않는 서버 → 404 |
+| POST /api/servers | 5 | 정상 생성 → 201 + ServerResponse |
+| POST /api/servers | 6 | 중복 name → 409 |
+| POST /api/servers | 7 | 검증 오류(host 없음) → 400 |
+| PUT /api/servers/:name | 8 | 정상 업데이트 → 200 + ServerResponse |
+| PUT /api/servers/:name | 9 | 존재하지 않는 서버 → 404 |
+| PUT /api/servers/:name | 10 | 검증 오류(host 없음) → 400 |
+| DELETE /api/servers/:name | 11 | 정상 삭제 → 204 |
+| DELETE /api/servers/:name | 12 | 존재하지 않는 서버 → 404 |
+| DELETE /api/servers/:name | 13 | job이 참조 중 → 409 |
+| GET /api/servers/:name/health | 14 | 연결 성공 → ok: true |
+| GET /api/servers/:name/health | 15 | 연결 실패 → ok: false, reason에 메시지 |
+| GET /api/servers/:name/health | 16 | 서버 없음 → 404 |
+| GET /api/servers/:name/tables | 17 | 테이블 목록 반환 (TAG/LOG 타입 변환 포함) |
+| GET /api/servers/:name/tables | 18 | 서버 없음 → 404 |
+| GET /api/servers/:name/tables | 19 | connect 오류 → 500 |
+| GET /api/servers/:name/tables/:table/schema | 20 | 컬럼 목록 반환 |
+| GET /api/servers/:name/tables/:table/schema | 21 | 테이블 없음(빈 결과) → 404 |
+| GET /api/servers/:name/tables/:table/schema | 22 | 서버 없음 → 404 |
+| GET /api/servers/:name/tables/:table/schema | 23 | connect 오류 → 500 |
 
 ### integrity_checker.test.js — TagTable.findFirstMissRow + TagAliasCache (7개)
 
@@ -152,15 +178,11 @@ node --test tests/unit/*.test.js
 | JobScheduler | 16 | start → status=running, stop → status=stopped |
 | JobScheduler | 17 | stopAll → 모든 running job 중지 |
 
-### replicator.test.js — Replicator (5개)
+### replicator.test.js — Replicator (1개)
 
 | # | 테스트 항목 |
 |---|------------|
 | 1 | SIGTERM 수신 → run() 정상 종료 |
-| 2 | job 없음 → SIGTERM 후 즉시 완료 |
-| 3 | SIGINT 수신 → run() 정상 종료 |
-| 4 | shutdownTimeoutMs: 여러 job 중 최댓값(60000) 사용 |
-| 5 | config.api.enabled=false → httpServer=null |
 
 ### retry.test.js — RetryHandler (15개)
 
@@ -182,7 +204,7 @@ node --test tests/unit/*.test.js
 | 14 | sleepOrShutdown: shutdown flag set → "shutdown" |
 | 15 | sleepOrShutdown: 이미 shutdown이면 즉시 반환 |
 
-### worker-state.test.js — Worker 상태 머신 + E2E mock 시나리오 (36개)
+### worker-state.test.js — Worker 상태 머신 + E2E mock 시나리오 (20개)
 
 | suite | # | 테스트 항목 |
 |-------|---|------------|
@@ -287,7 +309,7 @@ node --test tests/integration/table.test.js
 ## 테스트 실행 명령
 
 ```bash
-# 단위 테스트 전체 (163개)
+# 단위 테스트 전체 (161개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
@@ -295,6 +317,7 @@ node --test tests/unit/checkpoint.test.js
 node --test tests/unit/client.test.js
 node --test tests/unit/config.test.js
 node --test tests/unit/http_server.test.js
+node --test tests/unit/http_server_servers.test.js
 node --test tests/unit/integrity_checker.test.js
 node --test tests/unit/job-scheduler.test.js
 node --test tests/unit/replicator.test.js
@@ -316,13 +339,14 @@ tests/
 │   │   └── worker_fixtures.js       # Worker 테스트 공통 픽스처
 │   ├── checkpoint.test.js           # CheckpointStore (6개)
 │   ├── client.test.js               # fixDoubleEndian (4개)
-│   ├── config.test.js               # Config load/validate/CRUD (40개)
-│   ├── http_server.test.js          # HttpServer REST API (22개)
+│   ├── config.test.js               # Config load/validate/CRUD (47개)
+│   ├── http_server.test.js          # HttpServer Jobs REST API (19개)
+│   ├── http_server_servers.test.js  # HttpServer Servers REST API (23개)
 │   ├── integrity_checker.test.js    # TagTable.findFirstMissRow (7개)
 │   ├── job-scheduler.test.js        # Job + JobScheduler (19개)
-│   ├── replicator.test.js           # Replicator (5개)
+│   ├── replicator.test.js           # Replicator (1개)
 │   ├── retry.test.js                # RetryHandler (15개)
-│   └── worker-state.test.js         # Worker 상태 머신 + E2E (36개)
+│   └── worker-state.test.js         # Worker 상태 머신 + E2E (20개)
 └── integration/
     ├── tag_replication.test.js      # TAG 복제 E2E (11개)
     ├── log_replication.test.js      # LOG 복제 E2E (8개)

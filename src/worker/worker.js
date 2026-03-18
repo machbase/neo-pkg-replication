@@ -122,8 +122,8 @@ class Worker {
     const { jobConfig, tableType, dataTable,
             srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag } = this;
     const logCtx = {
-      jobId: jobConfig.id,
-      dataTable,
+      job_id: jobConfig.id,
+      partition: dataTable,
     };
 
     if (signal.aborted) return;
@@ -183,7 +183,7 @@ class Worker {
     const tagIdentifier = jobConfig.source.tagIdentifier;
     const retry = new RetryHandler(jobConfig.retry ?? {});
     const checkpointStore = new CheckpointStore(CHECKPOINT_DIRECTORY);
-    const logCtx = { jobId: jobConfig.id, dataTable };
+    const logCtx = { job_id: jobConfig.id, partition: dataTable };
 
     // ═══════════════════════════════════════════════════════════
     // RESOLVE_START — 시작 RID 결정
@@ -194,7 +194,7 @@ class Worker {
 
     if (cpExists && cp) {
       startRid = cp.lastSuccessRid + 1n;
-      getLogger().info('worker', { ...logCtx, msg: `resume from checkpoint, startRid=${startRid}` });
+      getLogger().info('worker', { ...logCtx, startRid: String(startRid), msg: 'resume from checkpoint' });
     } else {
       const startMode = jobConfig.startMode;
       if (startMode === 'now') {
@@ -202,7 +202,7 @@ class Worker {
           const maxRidVal = await srcTable.getMaxRid();
           startRid = maxRidVal + 1n;
         } catch (err) {
-          getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (startMode=now), skipping job: ${err.message}` });
+          getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (startMode=now): ${err.message}` });
           return;
         }
       } else if (startMode === 'ridAfter') {
@@ -210,7 +210,7 @@ class Worker {
       } else {
         startRid = 0n; // 'full'
       }
-      getLogger().info('worker', { ...logCtx, msg: `startMode=${startMode}, startRid=${startRid}` });
+      getLogger().info('worker', { ...logCtx, startMode, startRid: String(startRid), msg: 'worker start' });
     }
 
     // TAG alias cache 로드
@@ -252,8 +252,6 @@ class Worker {
     // STEADY_REPLICATION — 메인 복제 루프
     // ═══════════════════════════════════════════════════════════
 
-    getLogger().info('worker', { ...logCtx, msg: `STEADY_REPLICATION start, startRid=${startRid}` });
-
     let stmtCount = 0;
 
     while (!shutdownFlag.value) {
@@ -263,7 +261,7 @@ class Worker {
           await srcTable.close();
           await srcTable.open();
           stmtCount = 0;
-          getLogger().info('worker', { ...logCtx, msg: 'sourceConn refreshed (statement ID threshold)' });
+          getLogger().debug('worker', { ...logCtx, msg: 'sourceConn refreshed (statement ID threshold)' });
         } catch (refreshErr) {
           getLogger().error('worker', { ...logCtx, msg: `sourceConn refresh failed: ${refreshErr.message}` });
           return;
@@ -334,7 +332,7 @@ class Worker {
   }) {
     const { jobConfig, dataTable, dstConfig } = this;
 
-    getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY start, fromRid=${startRid}` });
+    getLogger().info('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
     let integrityRid = startRid;
     const integrityBatchSize = Math.min(batchSize, INTEGRITY_BATCH_LIMIT);
 
@@ -358,7 +356,7 @@ class Worker {
         if (rows.length === 0) {
           // 소스의 모든 데이터가 대상에 존재함 → STEADY 진입
           startRid = integrityRid;
-          getLogger().info('worker', { ...logCtx, msg: 'STARTUP_INTEGRITY: all rows confirmed, entering STEADY' });
+          getLogger().debug('worker', { ...logCtx, toRid: String(integrityRid), msg: 'integrity check: all rows confirmed' });
           outcome = 'break'; break;
         }
 
@@ -372,7 +370,7 @@ class Worker {
         // 2단계: VOLATILE TABLE + JOIN으로 첫 번째 miss row 탐색
         const { firstMissIdx, err: batchErr } = resolved.length === 0
           ? { firstMissIdx: null, err: null }
-          : await dstTable.findFirstMissRow(resolved, intConn);
+          : await dstTable.findFirstMissRow(resolved, intConn, dataTable);
 
         if (batchErr) {
           getLogger().error('worker', { ...logCtx, msg: `findFirstMissRow failed: ${batchErr.message}` });
@@ -405,10 +403,7 @@ class Worker {
             sourceTable:    jobConfig.source.table,
           }, batchStats, { onSaveFailure: jobConfig.onSaveFailure });
           startRid = firstMissRid;
-          getLogger().info('worker', {
-            ...logCtx,
-            msg: `STARTUP_INTEGRITY: firstMissRid=${firstMissRid}, safeCpRid=${safeCpRid}, entering STEADY`
-          });
+          getLogger().info('worker', { ...logCtx, firstMissRid: String(firstMissRid), safeCpRid: String(safeCpRid), msg: 'integrity check: first missing row found' });
           outcome = 'break'; break;
         }
 
@@ -419,7 +414,7 @@ class Worker {
           sourceTable:    jobConfig.source.table,
         }, batchStats, { onSaveFailure: jobConfig.onSaveFailure });
         integrityRid = maxRidInBatch + 1n;
-        getLogger().info('worker', { ...logCtx, msg: `STARTUP_INTEGRITY: batch all confirmed, nextRid=${integrityRid}` });
+        getLogger().debug('worker', { ...logCtx, nextRid: String(integrityRid), msg: 'integrity check: batch confirmed' });
       } finally {
         await intConn.close().catch(() => {});
       }

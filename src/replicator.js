@@ -44,8 +44,7 @@ class Replicator {
     process.once('SIGTERM', () => startShutdown('SIGTERM'));
     process.once('SIGINT', () => startShutdown('SIGINT'));
 
-    getLogger().banner(`repli starting — ${config.replication.jobs.length} job(s) registered`);
-    getLogger().info('replicator', { msg: `${config.replication.jobs.length} job(s) registered, none started automatically` });
+    getLogger().banner(`repli starting — ${config.replication.jobs.length} job(s) configured`);
 
     // config에서 로드된 job들을 scheduler에 등록 (stopped 상태)
     for (const jobConfig of config.replication.jobs) {
@@ -68,7 +67,7 @@ class Replicator {
     });
 
     clearTimeout(timeoutHandle);
-    getLogger().info('replicator', { msg: 'all jobs completed' });
+    process.exit(0);
   }
 }
 

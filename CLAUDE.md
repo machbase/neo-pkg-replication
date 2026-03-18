@@ -321,7 +321,12 @@ LIMIT 1000
 - **비동기 패턴**: `async/await`
 - **BigInt 처리**: RID 값은 BigInt. JSON 직렬화 시 `BigInt → string` 변환 필요
 - **에러 처리**: `@machbase/ts-client`의 `QueryError` 클래스로 DB 에러 구분
-- **로깅**: `lib/logger.js`의 `Logger` 클래스 사용. `logger.info(stage, fields)` / `logger.warn(...)` / `logger.error(...)` 형태로 호출.
+- **로깅**: `lib/logger.js`의 `Logger` 클래스 사용. `logger.trace(...)` / `logger.debug(...)` / `logger.info(...)` / `logger.warn(...)` / `logger.error(...)` 형태로 호출.
+  - `trace`: 매우 상세한 값 변환 로그 (예: fixDoubleEndian)
+  - `debug`: 반복성 내부 상태 진단 로그 (예: stmtCount 갱신, STARTUP_INTEGRITY 배치 진행)
+  - `info`: 상태 전환 및 정상 동작 로그 (예: job start/stop, checkpoint_saved, STEADY 진입)
+  - `warn`: 예상치 못한 상황, 계속 실행 가능 (예: alias cache miss, MAX(_RID) fallback)
+  - `error`: 실패·스킵·오류
 - **코드 스타일**: 기존 파일의 세미콜론 스타일을 따를 것
 - **단일 연결 제약**: `@machbase/ts-client` 연결 하나로 동시 query + append 불가 → Worker별 독립 연결 사용 (설계 결정 B-01)
 
@@ -337,16 +342,17 @@ node --test tests/integration/log_replication.test.js
 node --test tests/integration/table.test.js
 ```
 
-현재 테스트 현황: **163 단위 = 163 pass / 0 fail** (`node --test tests/unit/*.test.js`)
+현재 테스트 현황: **161 단위 = 161 pass / 0 fail** (`node --test tests/unit/*.test.js`)
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
 - client.test.js: fixDoubleEndian (4개)
-- config.test.js: 설정 검증 + addJob/updateJob/removeJob/save + autoCreate (40개)
-- http_server.test.js: REST API 7개 엔드포인트 (22개)
+- config.test.js: 설정 검증 + addJob/updateJob/removeJob/save + autoCreate (47개)
+- http_server.test.js: Jobs REST API 7개 엔드포인트 (19개)
+- http_server_servers.test.js: Servers REST API 8개 엔드포인트 (23개)
 - integrity_checker.test.js: TagTable.findFirstMissRow (7개)
 - job-scheduler.test.js: Job._discoverMapping + autoCreate + AbortController 전파 + JobScheduler (19개)
-- replicator.test.js: Replicator SIGTERM/SIGINT/shutdown_timeout_ms (5개)
+- replicator.test.js: Replicator SIGTERM (1개)
 - retry.test.js: RetryHandler 백오프 로직 (15개)
-- worker-state.test.js: Worker 상태 머신 + E2E mock 시나리오 (stmtCount 갱신 포함) (15개)
+- worker-state.test.js: Worker 상태 머신 + E2E mock 시나리오 (stmtCount 갱신 포함) (20개)
 
 ## 실행 방법
 

@@ -3,7 +3,7 @@
 **버전**: `@machbase/ts-client@0.9.3`
 **발견**: 2026-02-26 통합 테스트 중
 **영향 범위**: TAG 데이터 파티션에서 FLOAT/DOUBLE 컬럼을 쿼리할 때 일부 파티션의 값이 손상됨
-**우회 위치**: `machbase/machbase.js` — `fixDoubleEndian()`
+**우회 위치**: `src/db/client.js` — `fixDoubleEndian()`
 
 ---
 
@@ -152,25 +152,47 @@ BE로 저장된 값을 LE로 잘못 읽으면, **지수 부분(exponent)**이 �
 
 ### 4.1 핵심 아이디어
 
-- BE→LE 잘못 읽기의 결과는 **반드시 denormal**이다.
-- denormal을 탐지하면 바이트를 뒤집어(`LE → BE 재해석`) 원래 값을 복원한다.
-- 실측값은 denormal이 아니므로 오탐 없이 적용 가능하다.
+BE→LE 잘못 읽기의 결과는 주로 **denormal**이지만, 일부 BE 값은 LE로 읽었을 때 **매우 큰 정수**처럼 보이기도 한다.
+두 가지 패턴을 모두 탐지하여 바이트를 뒤집어(`LE → BE 재해석`) 원래 값을 복원한다.
 
-### 4.2 구현 코드 (`machbase/machbase.js`)
+**패턴 1 — denormal**: `abs < FLOAT_MIN_NORMAL (1.175e-38)`
+- BE로 저장된 값을 LE로 읽으면 지수 비트가 거의 0이 되어 IEEE 754 denormal로 해석됨
+- 예: `3200.0` (BE: `40 A9 00 00 ...`) → LE 해석 → `2.14e-319`
+
+**패턴 2 — 큰 정수**: `Number.isInteger(v) && abs > 0xffffffff`
+- 일부 BE 이중정밀도 값은 LE로 읽으면 매우 큰 정수처럼 보임
+- 예: `1.732051` (BE double) → LE 해석 → `-2.077e+34` (정수, 절댓값 > 2³²)
+- 실측 센서값이 이 범위의 정수(> 4,294,967,295)인 경우는 실무상 없음
+
+복원 전략:
+1. DOUBLE(8바이트) 기준 BE 재해석 시도 → 결과가 정규수(`>= DOUBLE_MIN_NORMAL`)이면 채택
+2. 아니면 FLOAT(4바이트) 기준 BE 재해석
+
+### 4.2 구현 코드 (`src/db/client.js`)
 
 ```js
 const _fixBuf = Buffer.allocUnsafe(8);
 const DOUBLE_MIN_NORMAL = 2.2250738585072014e-308;
+const FLOAT_MIN_NORMAL  = 1.1754943508222875e-38;
 
 function fixDoubleEndian(rows) {
   for (const row of rows) {
     for (const key of Object.keys(row)) {
       const v = row[key];
-      if (typeof v !== 'number') continue;
-      if (v !== 0 && Math.abs(v) < DOUBLE_MIN_NORMAL) {
-        // 라이브러리가 LE로 읽은 바이트를 BE로 재해석하면 원래 값이 나온다
+      if (typeof v !== 'number' || v === 0 || !isFinite(v)) continue;
+      const abs = Math.abs(v);
+      // BE→LE 오독 패턴 두 가지:
+      //   1. denormal: abs < FLOAT_MIN_NORMAL
+      //   2. 큰 정수: Number.isInteger(v) && abs > 0xffffffff
+      if (abs < FLOAT_MIN_NORMAL || (Number.isInteger(v) && abs > 0xffffffff)) {
         _fixBuf.writeDoubleLE(v, 0);
-        row[key] = _fixBuf.readDoubleBE(0);
+        const asDoubleBE = _fixBuf.readDoubleBE(0);
+        if (Math.abs(asDoubleBE) >= DOUBLE_MIN_NORMAL) {
+          row[key] = asDoubleBE;  // DOUBLE 컬럼 BE→LE 오독
+        } else {
+          _fixBuf.writeFloatLE(v, 0);
+          row[key] = _fixBuf.readFloatBE(0);  // FLOAT 컬럼 BE→LE 오독
+        }
       }
     }
   }
@@ -202,13 +224,13 @@ async query(sql, values) {
 
 ### 4.4 오탐 위험성 검토
 
-| 상황 | 위험 여부 | 이유 |
-|------|----------|------|
-| 실측 센서값(온도/압력/RPM/유량 등) | 없음 | 실무 범위(~1e6)가 denormal과 무관 |
-| 0.0 값 | 없음 | `v !== 0` 조건으로 제외 |
-| NaN | 없음 | `Math.abs(NaN) < threshold`는 false |
-| Infinity | 없음 | `Math.abs(Infinity)`는 Infinity |
-| 정말 극소값이 데이터인 경우 | 이론적 가능 | 나노단위 물리량(e.g. 전자 전하량 ~1.6e-19)이라면 오탐 가능. 현 프로젝트 데이터 특성상 해당 없음 |
+| 상황 | 패턴 | 위험 여부 | 이유 |
+|------|------|----------|------|
+| 실측 센서값(온도/압력/RPM/유량 등) | — | 없음 | 실무 범위(~1e6)가 두 패턴 모두 해당 없음 |
+| 0.0 값 | — | 없음 | `v === 0` 조건으로 제외 |
+| NaN / Infinity | — | 없음 | `!isFinite(v)` 조건으로 제외 |
+| 나노단위 물리량 (e.g. ~1.6e-19) | 패턴 1 | 이론적 가능 | FLOAT_MIN_NORMAL(1.175e-38) 미만이므로 오탐 가능. 현 프로젝트 데이터 특성상 해당 없음 |
+| 4GB 초과 정수 센서값 | 패턴 2 | 이론적 가능 | `Number.isInteger(v) && abs > 0xffffffff` 조건에 해당. 실무상 해당 없음 |
 
 ---
 
@@ -258,5 +280,5 @@ function decodeFixedField(column, field, serverEndian = 0) {
 ## 7. 유지보수 지침
 
 1. **라이브러리 업그레이드 시**: `decodeFixedField()`의 FLT32/FLT64 처리가 수정됐는지 확인. 수정됐다면 `fixDoubleEndian()`을 제거해도 무방.
-2. **`npm install` 재실행 후**: 우회 코드가 `machbase/machbase.js` 프로젝트 코드에 있으므로 재발하지 않는다. 라이브러리를 교체해도 별도 조치 불필요.
+2. **`npm install` 재실행 후**: 우회 코드가 `src/db/client.js` 프로젝트 코드에 있으므로 재발하지 않는다. 라이브러리를 교체해도 별도 조치 불필요.
 3. **새 컬럼 타입 추가 시**: FLT32/FLT64 외 다른 부동소수점 타입이 추가된다면 `fixDoubleEndian()`의 `typeof v !== 'number'` 조건으로 자동 처리된다.

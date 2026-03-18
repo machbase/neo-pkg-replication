@@ -27,7 +27,7 @@ POST {{baseUrl}}/api/servers
 Content-Type: application/json
 
 {
-  "name": "new-server",
+  "name": "{{serverName}}",
   "host": "192.168.1.183",
   "port": 5656,
   "user": "SYS",
@@ -37,7 +37,7 @@ Content-Type: application/json
 ###
 
 ### 서버 수정
-PUT {{baseUrl}}/api/servers/new-server
+PUT {{baseUrl}}/api/servers/{{serverName}}
 Content-Type: application/json
 
 {
@@ -50,7 +50,7 @@ Content-Type: application/json
 ###
 
 ### 서버 삭제
-DELETE {{baseUrl}}/api/servers/new-server
+DELETE {{baseUrl}}/api/servers/{{serverName}}
 
 ###
 
@@ -81,14 +81,15 @@ POST {{baseUrl}}/api/jobs
 Content-Type: application/json
 
 {
-  "id": "job-new",
+  "id": "{{jobId}}",
   "source": {
-    "server": "src",
-    "table": "TAG"
+    "server": "{{serverName}}",
+    "table": "{{tableName}}"
   },
   "target": {
-    "server": "dst",
-    "table": "TAG2"
+    "server": "{{serverName}}",
+    "table": "{{tableName}}",
+    "autoCreate": false
   },
   "startMode": "full",
   "pollIntervalMs": 1000,
@@ -99,21 +100,22 @@ Content-Type: application/json
 ###
 
 ### job 수정
-PUT {{baseUrl}}/api/jobs/job-new
+PUT {{baseUrl}}/api/jobs/{{jobId}}
 Content-Type: application/json
 
 {
   "source": {
-    "server": "src",
-    "table": "TAG"
+    "server": "{{serverName}}",
+    "table": "{{tableName}}"
   },
   "target": {
-    "server": "dst",
-    "table": "TAG2"
+    "server": "{{serverName}}",
+    "table": "{{tableName}}_COPY",
+    "autoCreate": true
   },
-  "startMode": "now",
-  "pollIntervalMs": 2000,
-  "queryLimit": 5000,
+  "startMode": "full",
+  "pollIntervalMs": 1000,
+  "queryLimit": 1000,
   "onSaveFailure": "continue"
 }
 
@@ -130,4 +132,4 @@ POST {{baseUrl}}/api/jobs/{{jobId}}/stop
 ###
 
 ### job 삭제
-DELETE {{baseUrl}}/api/jobs/job-new
+DELETE {{baseUrl}}/api/jobs/{{jobId}}

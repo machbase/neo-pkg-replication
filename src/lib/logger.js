@@ -3,8 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
-const LEVEL_LABEL = { debug: 'DEBUG', info: 'INFO ', warn: 'WARN ', error: 'ERROR' };
+const LEVELS = { trace: -1, debug: 0, info: 1, warn: 2, error: 3 };
+const LEVEL_LABEL = { trace: 'TRACE', debug: 'DEBUG', info: 'INFO ', warn: 'WARN ', error: 'ERROR' };
 
 /**
  * Logger — 날짜 기반 로테이션, stdout/file 독립 제어
@@ -33,6 +33,7 @@ class Logger {
 
   // ── 공개 API ─────────────────────────────────────────────────────────────
 
+  trace(stage, fields) { this._write('trace', stage, fields); }
   debug(stage, fields) { this._write('debug', stage, fields); }
   info(stage, fields)  { this._write('info',  stage, fields); }
   warn(stage, fields)  { this._write('warn',  stage, fields); }

@@ -142,6 +142,14 @@ class Job {
 
           if (!_validateSourceColumns(source, srcSchema, logCtx)) return null;
 
+          if (source.columns) {
+            const missing = ['NAME', 'TIME'].filter(c => !source.columns.includes(c));
+            if (missing.length > 0) {
+              getLogger().error('job', { ...logCtx, msg: `source.columns missing required TAG columns: ${missing.join(', ')}, skipping job` });
+              return null;
+            }
+          }
+
           const dst = new TagTable(dstConfig, targetTable);
           try {
             await dst.client.connect();
@@ -232,19 +240,18 @@ class Job {
     const { id, source, target } = this.jobConfig;
     const logCtx = { job_id: id };
 
-    getLogger().info('job', { ...logCtx, msg: 'job start' });
+    const jobCtx = {
+      ...logCtx,
+      source: `${source.server}/${source.table}`,
+      target: `${target.server}/${target.table || source.table}`,
+    };
+    getLogger().info('job', { ...jobCtx, msg: 'job start' });
 
     while (!shutdownFlag.value) {
-      const jobCtx = {
-        ...logCtx,
-        source: `${source.server}/${source.table}`,
-        target: `${target.server}/${target.table}`,
-      };
-
       const discovered = await this._discoverMapping(jobCtx);
       if (!discovered) {
         if (shutdownFlag.value) break;
-        getLogger().warn('job', { ...logCtx, msg: 'discover failed, retrying in 5s' });
+        getLogger().warn('job', { ...jobCtx, msg: 'discover failed, retrying in 5s' });
         await new Promise(resolve => setTimeout(resolve, 5000));
         continue;
       }
@@ -256,8 +263,8 @@ class Job {
       getLogger().info('job', {
         ...jobCtx,
         table_type: tableType,
-        data_tables: dataTables.join(','),
-        msg: `discover ok, spawning ${dataTables.length} worker(s)`,
+        partitions: dataTables.length,
+        msg: `starting ${dataTables.length} worker(s)`,
       });
 
       const workers = dataTables.map(dataTable =>
@@ -280,16 +287,16 @@ class Job {
       try {
         await Promise.all(workers.map(w =>
           w.run(signal).catch(err => {
-            getLogger().error('job', { ...logCtx, data_table: w.dataTable, msg: `worker error: ${err.message}` });
+            getLogger().error('job', { ...jobCtx, partition: w.dataTable, msg: `worker error: ${err.message}` });
             ac.abort();
             throw err;
           })
         ));
-        getLogger().info('job', { ...logCtx, msg: 'all workers finished' });
+        getLogger().info('job', { ...jobCtx, msg: 'all workers finished' });
       } catch (_err) {
         // 에러 로그는 위에서 처리됨. shutdown 중이 아니면 재시작.
         if (!shutdownFlag.value) {
-          getLogger().info('job', { ...logCtx, msg: 'workers aborted, restarting job' });
+          getLogger().info('job', { ...jobCtx, msg: 'workers aborted, restarting job' });
         }
       }
 
@@ -297,7 +304,7 @@ class Job {
       if (shutdownFlag.value) break;
     }
 
-    getLogger().info('job', { ...logCtx, msg: 'job stopped' });
+    getLogger().info('job', { ...jobCtx, msg: 'job stopped' });
   }
 }
 

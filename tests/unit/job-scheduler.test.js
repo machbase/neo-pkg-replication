@@ -109,6 +109,90 @@ describe('Job — _discoverMapping', () => {
     }
   });
 
+  test('TAG: source.columns에 NAME 누락 → null 반환', async () => {
+    const shutdownFlag = { value: false };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
+    const jobConfig = {
+      id: 'job-tag-missing-name',
+      source: { server: 'src', table: 'TAG', columns: ['TIME', 'VALUE'] },
+      target: { server: 'dst', table: 'TAG2', autoCreate: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
+    };
+
+    const mockSchema = makeTagSchema();
+    const tableMod = require('../../src/db/table.js');
+    const clientMod = require('../../src/db/client.js');
+
+    const origConnect = clientMod.MachbaseClient.prototype.connect;
+    const origClose = clientMod.MachbaseClient.prototype.close;
+    const origSelectTableType = clientMod.MachbaseClient.prototype.selectTableType;
+    const origGetDataTables = tableMod.TagTable.prototype.getDataTables;
+    const origGetSchema = tableMod.TagTable.prototype.getSchema;
+
+    clientMod.MachbaseClient.prototype.connect = async function() {};
+    clientMod.MachbaseClient.prototype.close = async function() {};
+    clientMod.MachbaseClient.prototype.selectTableType = async function() { return { type: 'TAG' }; };
+    tableMod.TagTable.prototype.getDataTables = async function() { return [{ data_table: '_TAG_DATA_0' }]; };
+    tableMod.TagTable.prototype.getSchema = async function() { return mockSchema; };
+
+    try {
+      const job = new Job(jobConfig, servers, shutdownFlag);
+      const result = await job._discoverMapping({ job_id: 'job-tag-missing-name' });
+      assert.equal(result, null, 'TAG source.columns에 NAME 누락 → null 반환');
+    } finally {
+      clientMod.MachbaseClient.prototype.connect = origConnect;
+      clientMod.MachbaseClient.prototype.close = origClose;
+      clientMod.MachbaseClient.prototype.selectTableType = origSelectTableType;
+      tableMod.TagTable.prototype.getDataTables = origGetDataTables;
+      tableMod.TagTable.prototype.getSchema = origGetSchema;
+    }
+  });
+
+  test('TAG: source.columns에 TIME 누락 → null 반환', async () => {
+    const shutdownFlag = { value: false };
+    const servers = [
+      { name: 'src', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+      { name: 'dst', host: 'mock', port: 5656, user: 'sys', password: 'manager' },
+    ];
+    const jobConfig = {
+      id: 'job-tag-missing-time',
+      source: { server: 'src', table: 'TAG', columns: ['NAME', 'VALUE'] },
+      target: { server: 'dst', table: 'TAG2', autoCreate: false },
+      startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
+    };
+
+    const mockSchema = makeTagSchema();
+    const tableMod = require('../../src/db/table.js');
+    const clientMod = require('../../src/db/client.js');
+
+    const origConnect = clientMod.MachbaseClient.prototype.connect;
+    const origClose = clientMod.MachbaseClient.prototype.close;
+    const origSelectTableType = clientMod.MachbaseClient.prototype.selectTableType;
+    const origGetDataTables = tableMod.TagTable.prototype.getDataTables;
+    const origGetSchema = tableMod.TagTable.prototype.getSchema;
+
+    clientMod.MachbaseClient.prototype.connect = async function() {};
+    clientMod.MachbaseClient.prototype.close = async function() {};
+    clientMod.MachbaseClient.prototype.selectTableType = async function() { return { type: 'TAG' }; };
+    tableMod.TagTable.prototype.getDataTables = async function() { return [{ data_table: '_TAG_DATA_0' }]; };
+    tableMod.TagTable.prototype.getSchema = async function() { return mockSchema; };
+
+    try {
+      const job = new Job(jobConfig, servers, shutdownFlag);
+      const result = await job._discoverMapping({ job_id: 'job-tag-missing-time' });
+      assert.equal(result, null, 'TAG source.columns에 TIME 누락 → null 반환');
+    } finally {
+      clientMod.MachbaseClient.prototype.connect = origConnect;
+      clientMod.MachbaseClient.prototype.close = origClose;
+      clientMod.MachbaseClient.prototype.selectTableType = origSelectTableType;
+      tableMod.TagTable.prototype.getDataTables = origGetDataTables;
+      tableMod.TagTable.prototype.getSchema = origGetSchema;
+    }
+  });
+
   test('src에만 있는 컬럼(non-metadata) → null 반환', async () => {
     const shutdownFlag = { value: false };
     const servers = [

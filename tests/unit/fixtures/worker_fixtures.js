@@ -57,11 +57,12 @@ function makeSignal() {
 
 /**
  * Worker 단위 테스트용 prototype mock 설정
- * TagDataTable / TagTable / LogTable prototype을 mock하고 복원 함수를 반환
+ * TagDataTable / TagTable / LogTable / CheckpointStore prototype을 mock하고 복원 함수를 반환
  */
 function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
   const tableMod = require('../../../src/db/table.js');
   const clientMod = require('../../../src/db/client.js');
+  const CheckpointStore = require('../../../src/db/checkpoint.js');
 
   // MachbaseClient connect/close mock (STARTUP_INTEGRITY intConn 포함)
   const origConnect = clientMod.MachbaseClient.prototype.connect;
@@ -83,6 +84,36 @@ function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
   const origLogClose = tableMod.LogTable.prototype.close;
   const origLogRead = tableMod.LogTable.prototype.read;
   const origLogAppend = tableMod.LogTable.prototype.append;
+
+  // CheckpointStore mock — 파일 I/O 없이 메모리로 동작
+  const origCpLoad = CheckpointStore.prototype.load;
+  const origCpSave = CheckpointStore.prototype.save;
+  const cpStore = {};  // key → { lastSuccessRid: bigint }
+  CheckpointStore.prototype.load = async function(jobId, dataTable) {
+    const key = `${jobId}_${dataTable}`;
+    const saved = cpStore[key];
+    if (saved) return { cp: { lastSuccessRid: saved.lastSuccessRid }, exists: true, err: null };
+    return { cp: null, exists: false, err: null };
+  };
+  CheckpointStore.prototype.save = async function(jobId, dataTable, cp) {
+    const key = `${jobId}_${dataTable}`;
+    cpStore[key] = { lastSuccessRid: cp.lastSuccessRid };
+    return null;
+  };
+
+  /** 테스트에서 초기 체크포인트 값을 주입하는 헬퍼 */
+  function seedCheckpoint(jobId, dataTable, lastSuccessRid) {
+    const key = `${jobId}_${dataTable}`;
+    cpStore[key] = { lastSuccessRid };
+  }
+
+  /** 테스트에서 mock cpStore에서 체크포인트를 읽는 헬퍼 */
+  function getCheckpoint(jobId, dataTable) {
+    const key = `${jobId}_${dataTable}`;
+    const saved = cpStore[key];
+    if (saved) return { cp: { lastSuccessRid: saved.lastSuccessRid }, exists: true, err: null };
+    return { cp: null, exists: false, err: null };
+  }
 
   tableMod.TagDataTable.prototype.open = async function() {};
   tableMod.TagDataTable.prototype.close = async function() { return null; };
@@ -108,6 +139,8 @@ function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
     : async function() { return null; };
 
   function restore() {
+    CheckpointStore.prototype.load = origCpLoad;
+    CheckpointStore.prototype.save = origCpSave;
     clientMod.MachbaseClient.prototype.connect = origConnect;
     clientMod.MachbaseClient.prototype.close = origClose;
     tableMod.TagDataTable.prototype.open = origTagDataOpen;
@@ -124,7 +157,7 @@ function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
     tableMod.LogTable.prototype.append = origLogAppend;
   }
 
-  return { restore };
+  return { restore, seedCheckpoint, getCheckpoint };
 }
 
 /** TAG Worker 생성 헬퍼 */

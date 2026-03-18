@@ -2,6 +2,7 @@
 
 const { createConnection, QueryError } = require('@machbase/ts-client');
 const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
+const { getInstance: getLogger } = require('../lib/logger.js');
 
 // ── @machbase/ts-client FLOAT/DOUBLE endian 버그 우회 ────────────────────────
 //
@@ -16,10 +17,11 @@ const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_ME
 //   된다. 예: 3200.0 → 2.1407e-319, 85.0 → 2.083044e-317.
 //
 // 우회 방법 (fixDoubleEndian):
-//   BE로 저장된 값을 LE로 잘못 읽으면 반드시 denormal(|v| < 2.225e-308)이 된다.
-//   실측 센서값이 우연히 denormal 범위에 들어오는 경우는 실무상 없으므로,
-//   number 타입 필드가 denormal이면 바이트를 뒤집어(LE→BE 재해석) 원래 값으로
-//   복원한다. MachbaseClient.query() 반환 직전에 모든 row에 적용된다.
+//   BE로 저장된 값을 LE로 잘못 읽으면 대부분 denormal(|v| < 2.225e-308)이 된다.
+//   그러나 일부 BE 값은 LE로 읽었을 때 매우 큰 정수(isInteger && |v| > 0xffffffff)가
+//   되기도 한다. 예: BE 1.732051 → LE -2.077e+34 (정수, 절댓값 > 2^32).
+//   두 경우 모두 바이트를 뒤집어(LE→BE 재해석) 원래 값으로 복원한다.
+//   MachbaseClient.query() 반환 직전에 모든 row에 적용된다.
 //
 // 라이브러리 재설치(npm install) 후에도 이 우회 코드가 있으므로 재발하지 않는다.
 // 상세 분석: PROJECT.md 11.5절
@@ -44,19 +46,25 @@ function fixDoubleEndian(rows) {
       const v = row[key];
       if (typeof v !== 'number' || v === 0 || !isFinite(v)) continue;
       const abs = Math.abs(v);
-      if (abs < FLOAT_MIN_NORMAL) {
+      // BE→LE 오독 패턴 두 가지:
+      //   1. denormal: abs < FLOAT_MIN_NORMAL
+      //   2. 큰 정수: Number.isInteger(v) && abs > 0xffffffff
+      //      (일부 BE double 값을 LE로 읽으면 매우 큰 정수처럼 보임)
+      if (abs < FLOAT_MIN_NORMAL || (Number.isInteger(v) && abs > 0xffffffff)) {
         // denormal 범위: DOUBLE(8바이트) 또는 FLOAT(4바이트) BE→LE 오독 가능성
-        // DOUBLE 기준으로 먼저 시도한 후, 복원값이 FLOAT_MIN_NORMAL 이상이면 정상 복원된 것으로 판단
+        // DOUBLE 기준으로 먼저 시도한 후, 복원값이 DOUBLE_MIN_NORMAL 이상이면 정상 복원된 것으로 판단
         _fixBuf.writeDoubleLE(v, 0);
         const asDoubleBE = _fixBuf.readDoubleBE(0);
         if (Math.abs(asDoubleBE) >= DOUBLE_MIN_NORMAL) {
           // DOUBLE 컬럼이 BE로 저장된 경우
+          getLogger().trace('client', { msg: `fixDoubleEndian DOUBLE: col='${key}' raw=${v} → ${asDoubleBE}` });
           row[key] = asDoubleBE;
-        } else if (abs < FLOAT_MIN_NORMAL) {
+        } else {
           // FLOAT 컬럼 시도: 라이브러리가 4바이트 LE로 읽었을 가능성
-          // 한계: NaN/Infinity로 변환된 경우 복원 불가
           _fixBuf.writeFloatLE(v, 0);
-          row[key] = _fixBuf.readFloatBE(0);
+          const asFloatBE = _fixBuf.readFloatBE(0);
+          getLogger().trace('client', { msg: `fixDoubleEndian FLOAT: col='${key}' raw=${v} → ${asFloatBE}` });
+          row[key] = asFloatBE;
         }
       }
     }

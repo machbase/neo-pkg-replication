@@ -2,11 +2,7 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('path');
-const fs = require('fs/promises');
 
-const { CHECKPOINT_DIRECTORY } = require('../../src/config/config.js');
-const CheckpointStore = require('../../src/db/checkpoint.js');
 const {
   makeShutdownFlag, makeSignal,
   setupWorkerPrototypeMocks, makeTagWorker, makeLogWorker,
@@ -16,9 +12,6 @@ const {
 
 describe('Worker — RESOLVE_START', () => {
   test('체크포인트 없음 + startMode=full → startRid=0n 으로 시작 후 빈 배치 대기 후 shutdown', async () => {
-    const cpFile = path.join(CHECKPOINT_DIRECTORY, 'test-job_TAG_DATA_0.json');
-    await fs.rm(cpFile, { force: true });
-
     const shutdownFlag = makeShutdownFlag(50);
     const readCalls = [];
 
@@ -37,29 +30,20 @@ describe('Worker — RESOLVE_START', () => {
       assert.equal(readCalls[0].startRid, 0n, 'startMode=full → startRid=0n');
     } finally {
       restore();
-      await fs.rm(cpFile, { force: true });
     }
   });
 
   test('체크포인트 있음 → lastSuccessRid에서 재개', async () => {
-    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-    const cpFile = path.join(CHECKPOINT_DIRECTORY, 'test-job_TAG_DATA_0.json');
-
-    await store.save('test-job', '_TAG_DATA_0', {
-      lastSuccessRid: 1234n,
-      sourceServer: 'src',
-      sourceTable: 'TAG',
-    }, { rowsRead: 10, rowsWritten: 10, droppedNoMeta: 0, skippedExists: 0 });
-
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, seedCheckpoint } = setupWorkerPrototypeMocks({
       readFn: (startRid) => {
         readCalls.push(startRid);
         return { rows: [], err: null };
       },
     });
+    seedCheckpoint('test-job', '_TAG_DATA_0', 1234n);
 
     try {
       const worker = makeTagWorker('test-job', null, {}, shutdownFlag);
@@ -69,7 +53,6 @@ describe('Worker — RESOLVE_START', () => {
       assert.equal(readCalls[0], 1235n, '체크포인트 lastSuccessRid=1234n → startRid=1235n (1234n+1n)');
     } finally {
       restore();
-      await fs.rm(cpFile, { force: true });
     }
   });
 });
@@ -82,7 +65,7 @@ describe('Worker — STEADY_REPLICATION', () => {
     let batchCall = 0;
     const appendedRows = [];
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, getCheckpoint } = setupWorkerPrototypeMocks({
       readFn: (startRid) => {
         batchCall++;
         if (batchCall === 1) {
@@ -108,8 +91,7 @@ describe('Worker — STEADY_REPLICATION', () => {
       const worker = makeTagWorker('test-job-2', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
-      const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-      const { cp } = await store.load('test-job-2', '_TAG_DATA_0');
+      const { cp } = getCheckpoint('test-job-2', '_TAG_DATA_0');
       assert.equal(cp.lastSuccessRid, 12n, 'checkpoint = maxRid(12n)');
       assert.equal(appendedRows.length, 3, '3개 row가 append되어야 함');
     } finally {
@@ -122,7 +104,7 @@ describe('Worker — STEADY_REPLICATION', () => {
     let batchCall = 0;
     const appendedRows = [];
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, getCheckpoint } = setupWorkerPrototypeMocks({
       readFn: () => {
         batchCall++;
         if (batchCall === 1) {
@@ -146,8 +128,7 @@ describe('Worker — STEADY_REPLICATION', () => {
       const worker = makeTagWorker('test-alldrop', null, {}, shutdownFlag);
       await worker.run(makeSignal());
 
-      const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-      const { cp } = await store.load('test-alldrop', '_TAG_DATA_0');
+      const { cp } = getCheckpoint('test-alldrop', '_TAG_DATA_0');
       assert.equal(cp.lastSuccessRid, 5n, 'checkpoint = maxRidInBatch(5n)');
       assert.equal(appendedRows.length, 1, '1개 row append');
     } finally {
@@ -161,7 +142,7 @@ describe('Worker — STEADY_REPLICATION', () => {
     const appendedRows = [];
 
     const { restore } = setupWorkerPrototypeMocks({
-      readFn: (startRid) => {
+      readFn: () => {
         batchCall++;
         if (batchCall === 1) {
           return {
@@ -248,13 +229,6 @@ describe('Worker — STEADY_REPLICATION', () => {
 
 describe('Worker — STARTUP_INTEGRITY', () => {
   test('integrity.enabled=false → STARTUP_INTEGRITY 미실행, 즉시 STEADY 진입', async () => {
-    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-    await store.save('test-int', '_TAG_DATA_0', {
-      lastSuccessRid: 10n,
-      sourceServer: 'src',
-      sourceTable: 'TAG',
-    }, { rowsRead: 5, rowsWritten: 5, droppedNoMeta: 0, skippedExists: 0 });
-
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];
     const findFirstMissRowCalls = [];
@@ -266,12 +240,13 @@ describe('Worker — STARTUP_INTEGRITY', () => {
       return { firstMissIdx: null, err: null };
     };
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, seedCheckpoint } = setupWorkerPrototypeMocks({
       readFn: (startRid) => {
         readCalls.push(startRid);
         return { rows: [], err: null };
       },
     });
+    seedCheckpoint('test-int', '_TAG_DATA_0', 10n);
 
     try {
       const worker = makeTagWorker('test-int', null, { integrity: { enabled: false } }, shutdownFlag);
@@ -286,13 +261,6 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   });
 
   test('TAG + checkpoint존재 + integrity.enabled → STARTUP_INTEGRITY 수행, firstMiss 발견 후 STEADY', async () => {
-    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-    await store.save('test-int2', '_TAG_DATA_0', {
-      lastSuccessRid: 100n,
-      sourceServer: 'src',
-      sourceTable: 'TAG',
-    }, { rowsRead: 5, rowsWritten: 5, droppedNoMeta: 0, skippedExists: 0 });
-
     const shutdownFlag = { value: false };
     let steadyReadCalls = [];
     let integrityReadDone = false;
@@ -309,7 +277,7 @@ describe('Worker — STARTUP_INTEGRITY', () => {
 
     const appendedRows = [];
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, seedCheckpoint, getCheckpoint } = setupWorkerPrototypeMocks({
       readFn: (startRid) => {
         if (!integrityReadDone) {
           integrityReadDone = true;
@@ -330,12 +298,13 @@ describe('Worker — STARTUP_INTEGRITY', () => {
         return null;
       },
     });
+    seedCheckpoint('test-int2', '_TAG_DATA_0', 100n);
 
     try {
       const worker = makeTagWorker('test-int2', null, { integrity: { enabled: true } }, shutdownFlag);
       await worker.run(makeSignal());
 
-      const { cp } = await store.load('test-int2', '_TAG_DATA_0');
+      const { cp } = getCheckpoint('test-int2', '_TAG_DATA_0');
       assert.equal(cp.lastSuccessRid, 101n, 'STARTUP_INTEGRITY: safe_cp_rid = firstMiss(102n) - 1n = 101n');
       assert.equal(steadyReadCalls[0], 102n, 'STEADY는 firstMissRid(102n)부터 시작');
     } finally {
@@ -345,17 +314,6 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   });
 
   test('STARTUP_INTEGRITY: 배치 내 모든 row 존재 → 다음 배치로 진행 후 소스 소진 시 STEADY 진입', async () => {
-    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-    await store.save('test-int-allexist', '_TAG_DATA_0', {
-      lastSuccessRid: 50n,
-      sourceServer: 'src',
-      sourceTable: 'TAG',
-    }, { rowsRead: 5, rowsWritten: 5, droppedNoMeta: 0, skippedExists: 0 });
-
-    const shutdownFlag = { value: false };
-    let integrityBatch = 0;
-    let steadyStartRid = null;
-
     const tableMod = require('../../src/db/table.js');
     const origFindFirstMissRow = tableMod.TagTable.prototype.findFirstMissRow;
     // 모든 row 존재 → firstMissIdx: null
@@ -363,11 +321,14 @@ describe('Worker — STARTUP_INTEGRITY', () => {
       return { firstMissIdx: null, err: null };
     };
 
-    const { restore } = setupWorkerPrototypeMocks({
+    let integrityBatch = 0;
+    let steadyStartRid = null;
+    const shutdownFlag = { value: false };
+
+    const { restore, seedCheckpoint } = setupWorkerPrototypeMocks({
       readFn: (startRid) => {
         integrityBatch++;
         if (integrityBatch === 1) {
-          // integrity 배치: 2개 row
           return {
             rows: [
               { rid: 51n, data: { NAME: 'sensor_a', TIME: 1000n, VALUE: 1.0 } },
@@ -377,15 +338,14 @@ describe('Worker — STARTUP_INTEGRITY', () => {
           };
         }
         if (integrityBatch === 2) {
-          // integrity 배치: 소스 소진 → rows=[]
           return { rows: [], err: null };
         }
-        // STEADY 진입 후
         steadyStartRid = startRid;
         shutdownFlag.value = true;
         return { rows: [], err: null };
       },
     });
+    seedCheckpoint('test-int-allexist', '_TAG_DATA_0', 50n);
 
     try {
       const worker = makeTagWorker('test-int-allexist', null, { integrity: { enabled: true } }, shutdownFlag);
@@ -399,13 +359,6 @@ describe('Worker — STARTUP_INTEGRITY', () => {
   });
 
   test('LOG 테이블 → checkpoint 있어도 STARTUP_INTEGRITY 미수행', async () => {
-    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-    await store.save('test-log-int', '_LOG_DATA_0', {
-      lastSuccessRid: 50n,
-      sourceServer: 'src',
-      sourceTable: 'LOG',
-    }, { rowsRead: 5, rowsWritten: 5, droppedNoMeta: 0, skippedExists: 0 });
-
     const shutdownFlag = makeShutdownFlag(30);
     const findFirstMissRowCalls = [];
 
@@ -416,9 +369,10 @@ describe('Worker — STARTUP_INTEGRITY', () => {
       return { firstMissIdx: null, err: null };
     };
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, seedCheckpoint } = setupWorkerPrototypeMocks({
       readFn: () => ({ rows: [], err: null }),
     });
+    seedCheckpoint('test-log-int', '_LOG_DATA_0', 50n);
 
     try {
       const worker = makeLogWorker('test-log-int', null, { integrity: { enabled: true } }, shutdownFlag);
@@ -428,7 +382,6 @@ describe('Worker — STARTUP_INTEGRITY', () => {
     } finally {
       tableMod.TagTable.prototype.findFirstMissRow = origFindFirstMissRow;
       restore();
-      await fs.rm(path.join(CHECKPOINT_DIRECTORY, 'test-log-int_LOG_DATA_0.json'), { force: true });
     }
   });
 });
@@ -625,7 +578,7 @@ describe('Worker — TAG 복제 기본 흐름', () => {
     let batchCall = 0;
     const appendedRows = [];
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, getCheckpoint } = setupWorkerPrototypeMocks({
       readFn: (startRid) => {
         batchCall++;
         if (batchCall === 1) {
@@ -647,9 +600,6 @@ describe('Worker — TAG 복제 기본 흐름', () => {
       },
     });
 
-    const cpFile = path.join(CHECKPOINT_DIRECTORY, 'fw-tag-1_TAG_DATA_0.json');
-    await fs.rm(cpFile, { force: true });
-
     try {
       const worker = makeTagWorker('fw-tag-1', null, {}, shutdownFlag);
       await worker.run(makeSignal());
@@ -657,12 +607,10 @@ describe('Worker — TAG 복제 기본 흐름', () => {
       assert.equal(appendedRows.length, 2);
       assert.equal(appendedRows[0].NAME, 'sensor_a');
 
-      const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-      const { cp } = await store.load('fw-tag-1', '_TAG_DATA_0');
+      const { cp } = getCheckpoint('fw-tag-1', '_TAG_DATA_0');
       assert.equal(cp.lastSuccessRid, 2n);
     } finally {
       restore();
-      await fs.rm(cpFile, { force: true });
     }
   });
 });
@@ -673,7 +621,7 @@ describe('Worker — LOG 복제 기본 흐름', () => {
     let batchCall = 0;
     const appendedRows = [];
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, getCheckpoint } = setupWorkerPrototypeMocks({
       readFn: () => {
         batchCall++;
         if (batchCall === 1) {
@@ -700,8 +648,7 @@ describe('Worker — LOG 복제 기본 흐름', () => {
       assert.equal(appendedRows.length, 1);
       assert.equal(appendedRows[0].NAME, 'machine_a');
 
-      const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-      const { cp } = await store.load('fw-log-1', '_LOG_DATA_0');
+      const { cp } = getCheckpoint('fw-log-1', '_LOG_DATA_0');
       assert.equal(cp.lastSuccessRid, 10n);
     } finally {
       restore();
@@ -711,23 +658,16 @@ describe('Worker — LOG 복제 기본 흐름', () => {
 
 describe('Worker — checkpoint resume', () => {
   test('checkpoint 저장 후 재시작 → startRid = lastSuccessRid + 1', async () => {
-    const store = new CheckpointStore(CHECKPOINT_DIRECTORY);
-
-    await store.save('fw-resume', '_TAG_DATA_0', {
-      lastSuccessRid: 999n,
-      sourceServer: 'src',
-      sourceTable: 'TAG',
-    }, { rowsRead: 10, rowsWritten: 10, droppedNoMeta: 0, skippedExists: 0 });
-
     const shutdownFlag = makeShutdownFlag(30);
     const readCalls = [];
 
-    const { restore } = setupWorkerPrototypeMocks({
+    const { restore, seedCheckpoint } = setupWorkerPrototypeMocks({
       readFn: (startRid) => {
         readCalls.push(startRid);
         return { rows: [], err: null };
       },
     });
+    seedCheckpoint('fw-resume', '_TAG_DATA_0', 999n);
 
     try {
       const worker = makeTagWorker('fw-resume', null, {}, shutdownFlag);

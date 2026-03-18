@@ -1,14 +1,5 @@
 {
   "version": 3,
-  "api": { "enabled": true, "port": 8080, "cors": { "origin": "*" } },
-  "logging": {
-    "level": "info",
-    "stdout": false,
-    "file": {
-      "enabled": true,
-      "directory": "./logs"
-    }
-  },
   "servers": [
     {
       "name": "src",
@@ -16,15 +7,23 @@
       "port": 5656,
       "user": "SYS",
       "password": "MANAGER"
-    },
-    {
-      "name": "dst",
-      "host": "192.168.1.183",
-      "port": 5656,
-      "user": "SYS",
-      "password": "MANAGER"
     }
   ],
+  "logging": {
+    "level": "debug",
+    "stdout": false,
+    "file": {
+      "enabled": true,
+      "directory": "./logs"
+    }
+  },
+  "api": {
+    "enabled": true,
+    "port": 8080,
+    "cors": {
+      "origin": "*"
+    }
+  },
   "replication": {
     "jobs": [
       {
@@ -33,19 +32,22 @@
         "source": {
           "server": "src",
           "table": "TAG",
-          "columns": ["name"]
+          "columns": null,
+          "tagIdentifier": {
+            "mode": "none",
+            "value": ""
+          }
         },
         "target": {
-          "server": "dst",
-          "table": "TAG2"
+          "server": "src",
+          "table": "TAG_COPY",
+          "autoCreate": true
         },
         "queryLimit": 1000,
+        "ridRangeSize": 50000,
         "pollIntervalMs": 1000,
         "startMode": "full",
-        "onSaveFailure": "continue",
-        "integrity": {
-          "enabled": true
-        }
+        "onSaveFailure": "continue"
       }
     ]
   }

@@ -1,17 +1,20 @@
 'use strict';
 
 const { getInstance: getLogger } = require('../lib/logger.js');
-const { toInt64 } = require('./client.js');
 
 /**
- * 컬럼 값을 append 가능한 형태로 변환 (순수 변환, 로그 없음)
+ * 컬럼 값을 append 가능한 형태로 변환
+ *
+ * - null/undefined → col.safeNull() (append 패딩용 null 대체값)
+ * - Inf/NaN float → col.safeNull() (encodeNativeColumnValue의 coerceFiniteNumber가 throw하므로 사전 차단)
+ * - 그 외 → raw 값 그대로 (라이브러리가 컬럼 타입에 맞게 인코딩)
+ *
  * @param {Column} col
  * @param {*} val
  * @returns {*}
  */
 function _toCell(col, val) {
   if (val == null) return col.safeNull();
-  if (col.dataType() === 'int64') return toInt64(val);
   if (typeof val === 'number' && !isFinite(val)) return col.safeNull();
   return val;
 }

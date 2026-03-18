@@ -2,7 +2,7 @@
 
 **프로젝트**: Machbase TAG / Log 테이블 복제 도구
 **런타임**: Node.js v22 (CommonJS)
-**최종 수정**: 2026-03-17 (target.autoCreate — 대상 테이블 자동 생성 기능 추가)
+**최종 수정**: 2026-03-18 (fixDoubleEndian 2번째 패턴 추가, _toCell int64 변환 제거, Config 빈 배열 허용)
 
 ---
 
@@ -98,13 +98,14 @@ repli-js/
 │   │   │   └── worker_fixtures.js    # Worker 테스트 공통 픽스처 (makeTagWorker 등)
 │   │   ├── checkpoint.test.js        # CheckpointStore 단위 테스트 (6개)
 │   │   ├── client.test.js            # fixDoubleEndian 단위 테스트 (4개)
-│   │   ├── config.test.js            # Config load/validate/CRUD 단위 테스트 (40개)
-│   │   ├── http_server.test.js       # HttpServer REST API 단위 테스트 (22개)
+│   │   ├── config.test.js            # Config load/validate/CRUD 단위 테스트 (47개)
+│   │   ├── http_server.test.js       # HttpServer REST API 단위 테스트 (19개)
+│   │   ├── http_server_servers.test.js # HttpServer /api/servers 엔드포인트 테스트 (23개)
 │   │   ├── integrity_checker.test.js # TagTable.findFirstMissRow 단위 테스트 (7개)
 │   │   ├── job-scheduler.test.js     # Job._discoverMapping + JobScheduler 단위 테스트 (19개)
-│   │   ├── replicator.test.js        # Replicator 단위 테스트 (5개)
+│   │   ├── replicator.test.js        # Replicator 단위 테스트 (1개)
 │   │   ├── retry.test.js             # RetryHandler 단위 테스트 (15개)
-│   │   └── worker-state.test.js      # Worker 상태 머신 + E2E mock 시나리오 (36개)
+│   │   └── worker-state.test.js      # Worker 상태 머신 + E2E mock 시나리오 (20개)
 │   └── integration/
 │       ├── tag_replication.test.js   # TAG 테이블 통합 테스트 (11개)
 │       ├── log_replication.test.js   # LOG 테이블 통합 테스트 (8개)
@@ -193,8 +194,8 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) → STEADY
 | 필드 | 타입 | 필수 | 설명 |
 |------|------|------|------|
 | version | int | ✅ | 3 고정 |
-| servers | ServerConfig[] | ✅ | 서버 접속 정보 배열 (name 필드로 참조) |
-| replication.jobs | JobConfig[] | ✅ | 복제 작업 목록 |
+| servers | ServerConfig[] | — | 서버 접속 정보 배열 (name 필드로 참조). 없으면 빈 배열. |
+| replication.jobs | JobConfig[] | — | 복제 작업 목록. 없으면 빈 배열. |
 | logging | LoggingConfig | — | 로깅 설정 |
 | api | ApiConfig | — | REST API 설정 |
 
@@ -482,8 +483,9 @@ _toCell(col, val) → appendable value
 - `MachbaseStream`: appendOpen 스트림 생명주기 래퍼. client 생명주기는 호출자(LogTable/TagTable)가 관리
 - `_toCell(col, val)`: 순수 변환 함수 (로그 없음)
   - null/undefined → `col.safeNull()`
-  - int64 컬럼 (`col.dataType() === 'int64'`) → `toInt64(val)` (BigInt 변환)
-  - non-finite float → `col.safeNull()`
+  - non-finite float (Inf/NaN) → `col.safeNull()` (라이브러리 `coerceFiniteNumber` 예외 사전 차단)
+  - 그 외 → raw 값 그대로 반환 (라이브러리가 컬럼 타입에 맞게 인코딩)
+  - **주의**: int64 컬럼 값을 `toInt64()`로 변환하지 않는다. 라이브러리 내부 `encodeNativeColumnValue`가 컬럼 타입 기반으로 처리하므로, BigInt 변환은 라이브러리에 위임한다.
 
 ---
 
@@ -1097,13 +1099,25 @@ case CMD_FLT64_TYPE:
 
 **우회 구현**
 
-BE로 저장된 값을 LE로 잘못 읽으면 반드시 **denormal**(비정규 부동소수점, `0 < |v| < 2.2250738585072014e-308`)이 된다. 반대로 실측 센서값이 우연히 denormal 범위에 들어오는 경우는 실무상 없으므로, `machbase/machbase.js`의 `fixDoubleEndian()` 함수에서 다음과 같이 사후 보정한다. 상세 분석은 [ENDIAN_BUG.md](./ENDIAN_BUG.md) 참고.
+BE로 저장된 값을 LE로 잘못 읽으면 다음 두 가지 패턴으로 나타난다:
+
+1. **denormal 패턴**: `0 < |v| < FLOAT_MIN_NORMAL(1.175e-38)` — 대부분의 BE DOUBLE 값이 이 범위에 해당
+2. **대형 정수 패턴**: `Number.isInteger(v) && |v| > 0xffffffff` — 일부 BE 값을 LE로 읽으면 매우 큰 정수처럼 보임
+
+   예: BE `1.732051` → LE `-2.077e+34`, BE `0.267` → LE `9.232e+254`
+
+   이 대형 정수값은 `@machbase/ts-client`의 `AppendStreamSessionImpl`(prepared statement 경로)에서 `inferParameterType()`에 의해 `int64`로 잘못 추론되어 `writeBigInt64LE` 범위 초과 오류로 이어진다.
+
+반대로 실측 센서값이 우연히 이 패턴에 들어오는 경우는 실무상 없으므로, `db/client.js`의 `fixDoubleEndian()` 함수에서 다음과 같이 사후 보정한다. 상세 분석은 [ENDIAN_BUG.md](./ENDIAN_BUG.md) 참고.
 
 ```js
 // db/client.js — fixDoubleEndian()
 if (typeof v !== 'number' || v === 0 || !isFinite(v)) continue;
 const abs = Math.abs(v);
-if (abs < FLOAT_MIN_NORMAL) {
+// BE→LE 오독 패턴 두 가지:
+//   1. denormal: abs < FLOAT_MIN_NORMAL
+//   2. 큰 정수: Number.isInteger(v) && abs > 0xffffffff
+if (abs < FLOAT_MIN_NORMAL || (Number.isInteger(v) && abs > 0xffffffff)) {
     _fixBuf.writeDoubleLE(v, 0);
     const asDoubleBE = _fixBuf.readDoubleBE(0);
     if (Math.abs(asDoubleBE) >= DOUBLE_MIN_NORMAL) {
@@ -1116,6 +1130,17 @@ if (abs < FLOAT_MIN_NORMAL) {
 ```
 
 `MachbaseClient.query()` 반환 직전에 모든 row에 대해 이 보정을 적용한다. 라이브러리를 `npm install`로 재설치해도 프로젝트 코드 내에 우회 로직이 있으므로 재발하지 않는다.
+
+**AppendStreamSession 경로별 동작 차이**
+
+`@machbase/ts-client`의 append 구현은 두 가지 경로가 있다:
+
+| 경로 | 클래스 | 타입 추론 |
+|------|--------|-----------|
+| tagMode=true (native) | `NativeAppendStreamSession` | `encodeNativeColumnValue()`: 컬럼 타입 기반 인코딩. `inferParameterType()` 미호출. |
+| tagMode=false (prepared stmt) | `AppendStreamSessionImpl` | `inferParameterType(value)`: **런타임 값**으로 타입 재추론. `number`가 `isInteger && abs > 0xffffffff`이면 `'int64'`로 추론 → `BigInt()` 변환 시 범위 초과. |
+
+`fixDoubleEndian()`로 query 결과에서 오독된 대형 정수를 원래 float 값으로 복원하면, `inferParameterType()`이 올바르게 `'float'` 타입으로 추론하므로 문제가 해결된다.
 
 ---
 

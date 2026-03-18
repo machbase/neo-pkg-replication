@@ -15,13 +15,14 @@ const { getInstance: getLogger } = require('../lib/logger.js');
  * @param {TableSchema} schema  - NAME 컬럼을 포함하는 스키마
  * @param {Array<{ canonical: string, time: bigint }>} rows
  * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
+ * @param {string} suffix - VOLATILE TABLE 이름 suffix (Worker별 고유값, 충돌 방지)
  * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
  */
-async function _findFirstMissRow(logicalTable, schema, rows, client) {
+async function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
   if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
 
-  const chk = '_repli_chk';
-  const lkp = '_repli_lkp';
+  const chk = `_repli_chk_${suffix}`;
+  const lkp = `_repli_lkp_${suffix}`;
   const nameCol = schema.columns.find(c => c.name === 'NAME');
   if (!nameCol) return { firstMissIdx: null, err: new Error(`findFirstMissRow: NAME column not found in schema for '${logicalTable}'`) };
   const nameDdlType = nameCol.sqlType();
@@ -32,9 +33,9 @@ async function _findFirstMissRow(logicalTable, schema, rows, client) {
 
     const stream = new MachbaseStream();
     const openErr = await stream.open(client, chk, [
-      { name: 'IDX',  type: 'int32'    },
-      { name: 'NAME', type: 'varchar'  },
-      { name: 'TIME', type: 'datetime' },
+      { name: 'IDX',  type: 'int32'   },
+      { name: 'NAME', type: 'varchar' },
+      { name: 'TIME', type: 'int64'   },
     ]);
     if (openErr) return { firstMissIdx: null, err: openErr };
     const appendErr = await stream.append(rows.map((r, i) => [i, String(r.canonical), BigInt(r.time)]));
@@ -48,12 +49,20 @@ async function _findFirstMissRow(logicalTable, schema, rows, client) {
       `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
     );
 
-    const result = await client.query(
-      `SELECT IDX FROM (` +
-        `SELECT c.IDX, t.NAME AS T_NAME ` +
-        `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
-      `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
-    );
+    let result;
+    try {
+      result = await client.query(
+        `SELECT IDX FROM (` +
+          `SELECT c.IDX, t.NAME AS T_NAME ` +
+          `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
+        `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
+      );
+    } finally {
+      // lkp는 쿼리 직후 즉시 DROP — 연결 종료 시까지 살려두면 비정상 종료 시 서버에 잔류할 수 있음
+      await client.execute(`DROP TABLE ${lkp}`).catch(e =>
+        getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` })
+      );
+    }
 
     if (!result || result.length === 0) return { firstMissIdx: null, err: null };
     return { firstMissIdx: result[0].IDX, err: null };
@@ -65,9 +74,7 @@ async function _findFirstMissRow(logicalTable, schema, rows, client) {
     await client.execute(`DROP TABLE ${chk}`).catch(e =>
       getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` })
     );
-    await client.execute(`DROP TABLE ${lkp}`).catch(e =>
-      getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` })
-    );
+    await client.execute(`DROP TABLE ${lkp}`).catch(() => {/* 이미 DROP됨 */});
   }
 }
 
@@ -211,16 +218,7 @@ class LogTable {
     if (!rows || rows.length === 0) return null;
     if (!this.stream) return new Error('LogTable.append called before open()');
     const matrix = rows.map(row =>
-      this.schema.columns.map(col => {
-        const val = row[col.name];
-        if (val != null) {
-          if (col.dataType() === 'int64' && typeof val === 'number' && !Number.isInteger(val))
-            getLogger().warn('table', { msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` });
-          else if (typeof val === 'number' && !isFinite(val))
-            getLogger().warn('table', { col: col.name, value: String(val), msg: `non-finite float value replaced with null` });
-        }
-        return _toCell(col, val);
-      })
+      this.schema.columns.map(col => _toCell(col, row[col.name]))
     );
     return this.stream.append(matrix);
   }
@@ -230,10 +228,11 @@ class LogTable {
    * schema에 NAME 컬럼이 있어야 한다.
    * @param {Array<{ canonical: string, time: bigint }>} rows
    * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
+   * @param {string} suffix - VOLATILE TABLE 이름 suffix (Worker별 고유값, 충돌 방지)
    * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
    */
-  async findFirstMissRow(rows, client) {
-    return _findFirstMissRow(this.logicalTable, this.schema, rows, client);
+  async findFirstMissRow(rows, client, suffix) {
+    return _findFirstMissRow(this.logicalTable, this.schema, rows, client, suffix);
   }
 }
 
@@ -430,16 +429,7 @@ class TagTable {
     if (!rows || rows.length === 0) return null;
     if (!this.stream) return new Error('TagTable.append called before open()');
     const matrix = rows.map(row =>
-      this.schema.columns.map(col => {
-        const val = row[col.name];
-        if (val != null) {
-          if (col.dataType() === 'int64' && typeof val === 'number' && !Number.isInteger(val))
-            getLogger().warn('table', { msg: `int64 column '${col.name}' received non-integer number ${val}, truncating` });
-          else if (typeof val === 'number' && !isFinite(val))
-            getLogger().warn('table', { col: col.name, value: String(val), msg: `non-finite float value replaced with null` });
-        }
-        return _toCell(col, val);
-      })
+      this.schema.columns.map(col => _toCell(col, row[col.name]))
     );
     return this.stream.append(matrix);
   }
@@ -449,10 +439,11 @@ class TagTable {
    * schema에 NAME 컬럼이 있어야 한다.
    * @param {Array<{ canonical: string, time: bigint }>} rows
    * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
+   * @param {string} suffix - VOLATILE TABLE 이름 suffix (Worker별 고유값, 충돌 방지)
    * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
    */
-  async findFirstMissRow(rows, client) {
-    return _findFirstMissRow(this.logicalTable, this.schema, rows, client);
+  async findFirstMissRow(rows, client, suffix) {
+    return _findFirstMissRow(this.logicalTable, this.schema, rows, client, suffix);
   }
 }
 

@@ -11,23 +11,8 @@ const { ColumnType } = require('../db/types.js');
 class Response {
   constructor(data = null, reason = null) {
     this.ok     = !reason;
-    this.data   = data;
     this.reason = reason;
-  }
-}
-
-class JobResponse {
-  constructor({ id, status, jobConfig }) {
-    this.id        = id;
-    this.status    = status;
-    this.jobConfig = jobConfig;
-  }
-}
-
-class JobStatusResponse {
-  constructor({ id, status }) {
-    this.id     = id;
-    this.status = status;
+    this.data   = data;
   }
 }
 
@@ -53,6 +38,12 @@ class HttpServer {
     const app = express();
     app.use(cors(corsOptions));
     app.use(express.json());
+    app.use((req, res, next) => {
+      res.on('finish', () => {
+        getLogger().info('api', { method: req.method, path: req.path, status: res.statusCode });
+      });
+      next();
+    });
 
     app.get('/api/servers',                            (req, res) => this._listServers(req, res));
     app.get('/api/servers/:name',                      (req, res) => this._getServer(req, res));
@@ -82,7 +73,10 @@ class HttpServer {
   }
 
   stop() {
-    if (this.server) this.server.close();
+    if (this.server) {
+      this.server.closeAllConnections();
+      this.server.close();
+    }
   }
 
   // ── Handlers ──────────────────────────────────────────────────────────────
@@ -211,7 +205,7 @@ class HttpServer {
   // GET /api/jobs → Response<JobResponse[]>
   _listJobs(_req, res) {
     const data = this.scheduler.listEntries().map(e =>
-      new JobResponse({ id: e.jobConfig.id, status: e.status, jobConfig: e.jobConfig })
+      ({ status: e.status, ...e.jobConfig })
     );
     res.json(new Response(data));
   }
@@ -225,11 +219,11 @@ class HttpServer {
       return res.status(404).json(new Response(null, `Job '${id}' not found`));
 
     res.json(new Response(
-      new JobResponse({ id: entry.jobConfig.id, status: entry.status, jobConfig: entry.jobConfig })
+      { status: entry.status, ...entry.jobConfig }
     ));
   }
 
-  // POST /api/jobs → Response<JobStatusResponse> (201)
+  // POST /api/jobs → Response<JobResponse> (201)
   async _createJob(req, res) {
     const body = req.body;
 
@@ -246,11 +240,11 @@ class HttpServer {
     await this.config.save();
     this.scheduler.registry.set(jobConfig.id, { jobConfig, shutdownFlag: { value: false }, promise: null, status: 'stopped' });
     res.status(201).json(new Response(
-      new JobStatusResponse({ id: jobConfig.id, status: 'stopped' })
+      { status: 'stopped', ...jobConfig }
     ));
   }
 
-  // PUT /api/jobs/:id → Response<JobStatusResponse>
+  // PUT /api/jobs/:id → Response<JobResponse>
   async _updateJob(req, res) {
     const { id } = req.params;
     const entry = this.scheduler.getEntry(id);
@@ -270,7 +264,7 @@ class HttpServer {
     await this.config.save();
     this.scheduler.update(jobConfig);
     res.json(new Response(
-      new JobStatusResponse({ id: jobConfig.id, status: entry.status })
+      { status: entry.status, ...jobConfig }
     ));
   }
 
@@ -290,7 +284,7 @@ class HttpServer {
     res.status(204).end();
   }
 
-  // POST /api/jobs/:id/start → Response<JobStatusResponse>
+  // POST /api/jobs/:id/start → Response<JobResponse>
   _startJob(req, res) {
     const { id } = req.params;
     const entry = this.scheduler.getEntry(id);
@@ -301,10 +295,10 @@ class HttpServer {
       return res.status(409).json(new Response(null, `Job '${id}' is already running`));
 
     this.scheduler.start(id);
-    res.json(new Response(new JobStatusResponse({ id, status: 'running' })));
+    res.json(new Response({ status: 'running', ...entry.jobConfig }));
   }
 
-  // POST /api/jobs/:id/stop → Response<JobStatusResponse>
+  // POST /api/jobs/:id/stop → Response<JobResponse>
   async _stopJob(req, res) {
     const { id } = req.params;
     const entry = this.scheduler.getEntry(id);
@@ -315,7 +309,7 @@ class HttpServer {
       return res.status(409).json(new Response(null, `Job '${id}' is not running`));
 
     await this.scheduler.stop(id);
-    res.json(new Response(new JobStatusResponse({ id, status: 'stopped' })));
+    res.json(new Response({ status: 'stopped', ...entry.jobConfig }));
   }
 }
 

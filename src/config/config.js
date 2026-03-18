@@ -33,20 +33,22 @@ class Config {
     if (raw.version !== 3) {
       throw new Error(`Unsupported config version: ${raw.version} (expected 3)`);
     }
-    if (!Array.isArray(raw.servers)) {
-      throw new Error('config.servers is required and must be an array');
+    const rawServers = raw.servers ?? [];
+    if (!Array.isArray(rawServers)) {
+      throw new Error('config.servers must be an array');
     }
-    if (!Array.isArray(raw.replication?.jobs)) {
-      throw new Error('config.replication.jobs is required and must be an array');
+    const rawJobs = raw.replication?.jobs ?? [];
+    if (!Array.isArray(rawJobs)) {
+      throw new Error('config.replication.jobs must be an array');
     }
 
-    const servers = raw.servers.map(srv => {
+    const servers = rawServers.map(srv => {
       const s = new ServerConfig(srv);
       s.valid();
       return s;
     });
 
-    const jobs = raw.replication.jobs.map(job => Config._buildJob(job, servers));
+    const jobs = rawJobs.map(job => Config._buildJob(job, servers));
 
     return new Config(filePath, {
       version: raw.version,
@@ -253,8 +255,8 @@ class SourceConfig {
   constructor({ server, table, columns, tagIdentifier }) {
     this.server        = server;
     this.table         = table;
-    this.columns       = columns;
     this.tagIdentifier = tagIdentifier;
+    this.columns       = columns;
   }
 
   valid(jobId, servers) {
@@ -366,18 +368,18 @@ class JobConfig {
                 queryLimit, ridRangeSize, pollIntervalMs,
                 startMode, ridAfter, onSaveFailure,
                 integrity, retry }) {
-    this.id                = id;
+    this.id             = id;
+    this.startMode      = startMode      ?? 'full';
+    this.ridAfter       = ridAfter;
+    this.source         = source;
+    this.target         = target;
+    this.pollIntervalMs = pollIntervalMs ?? 1000;
+    this.queryLimit     = queryLimit     ?? 5000;
+    this.ridRangeSize   = ridRangeSize   ?? 50000;
+    this.onSaveFailure  = onSaveFailure  ?? 'continue';
     this.shutdownTimeoutMs = shutdownTimeoutMs;
-    this.source            = source;
-    this.target            = target;
-    this.queryLimit        = queryLimit      ?? 5000;
-    this.ridRangeSize      = ridRangeSize    ?? 50000;
-    this.pollIntervalMs    = pollIntervalMs  ?? 1000;
-    this.startMode         = startMode       ?? 'full';
-    this.ridAfter          = ridAfter;
-    this.onSaveFailure     = onSaveFailure   ?? 'continue';
-    this.integrity         = integrity;
-    this.retry             = retry;
+    this.integrity      = integrity;
+    this.retry          = retry;
   }
 
   valid(servers) {
@@ -473,9 +475,9 @@ class LoggingConfig {
   }
 
   valid() {
-    const VALID_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+    const VALID_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error']);
     if (!VALID_LEVELS.has(this.level)) {
-      throw new Error(`logging.level must be one of: debug, info, warn, error (got: "${this.level}")`);
+      throw new Error(`logging.level must be one of: trace, debug, info, warn, error (got: "${this.level}")`);
     }
     if (typeof this.stdout !== 'boolean') {
       throw new Error(`logging.stdout must be a boolean (got: ${typeof this.stdout})`);

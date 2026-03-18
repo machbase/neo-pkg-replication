@@ -13,16 +13,16 @@
 ```json
 {
   "ok":     true | false,
-  "data":   <object | array | null>,
-  "reason": <string | null>
+  "reason": <string | null>,
+  "data":   <object | array | null>
 }
 ```
 
 | 필드 | 설명 |
 |------|------|
 | `ok` | `true` (성공) 또는 `false` (실패) |
-| `data` | 성공 시 응답 데이터. 실패 시 `null`. |
 | `reason` | 실패 시 오류 메시지. 성공 시 `null`. |
+| `data` | 성공 시 응답 데이터. 실패 시 `null`. |
 
 F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 필드에 오류 메시지가 포함된다.
 
@@ -102,11 +102,11 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
+  "reason": null,
   "data": [
     { "name": "src", "host": "127.0.0.1", "port": 5656, "user": "SYS" },
     { "name": "dst", "host": "127.0.0.2", "port": 5656, "user": "SYS" }
-  ],
-  "reason": null
+  ]
 }
 ```
 
@@ -120,14 +120,14 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
-  "data": { "name": "src", "host": "127.0.0.1", "port": 5656, "user": "SYS" },
-  "reason": null
+  "reason": null,
+  "data": { "name": "src", "host": "127.0.0.1", "port": 5656, "user": "SYS" }
 }
 ```
 
 **응답 404**
 ```json
-{ "ok": false, "data": null, "reason": "Server 'src' not found" }
+{ "ok": false, "reason": "Server 'src' not found", "data": null }
 ```
 
 ---
@@ -152,15 +152,15 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
-  "data": { "name": "src2", "host": "10.0.0.1", "port": 5656, "user": "SYS" },
-  "reason": null
+  "reason": null,
+  "data": { "name": "src2", "host": "10.0.0.1", "port": 5656, "user": "SYS" }
 }
 ```
 
 **응답 400** — 필드 누락 또는 검증 실패
 **응답 409** — name 중복
 ```json
-{ "ok": false, "data": null, "reason": "Server 'src2' already exists" }
+{ "ok": false, "reason": "Server 'src2' already exists", "data": null }
 ```
 
 ---
@@ -175,8 +175,8 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
-  "data": { "name": "src", "host": "192.168.1.1", "port": 5656, "user": "SYS" },
-  "reason": null
+  "reason": null,
+  "data": { "name": "src", "host": "192.168.1.1", "port": 5656, "user": "SYS" }
 }
 ```
 
@@ -194,7 +194,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 **응답 404** — 서버 없음
 **응답 409** — job이 해당 서버를 참조 중
 ```json
-{ "ok": false, "data": null, "reason": "Server 'src' is referenced by job 'job-1'" }
+{ "ok": false, "reason": "Server 'src' is referenced by job 'job-1'", "data": null }
 ```
 
 ---
@@ -207,11 +207,11 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
+  "reason": null,
   "data": [
     { "name": "TAG", "type": "TAG" },
     { "name": "LOG_DATA", "type": "LOG" }
-  ],
-  "reason": null
+  ]
 }
 ```
 
@@ -223,7 +223,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 **응답 404** — 서버 없음
 **응답 500** — DB 연결 실패
 ```json
-{ "ok": false, "data": null, "reason": "connection refused" }
+{ "ok": false, "reason": "connection refused", "data": null }
 ```
 
 ---
@@ -236,12 +236,12 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
+  "reason": null,
   "data": [
     { "name": "TIME",  "type": "int64",   "length": 0 },
     { "name": "VALUE", "type": "float64", "length": 0 },
     { "name": "TAG",   "type": "varchar", "length": 80 }
-  ],
-  "reason": null
+  ]
 }
 ```
 
@@ -262,12 +262,12 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 
 **응답 200 (연결 성공)**
 ```json
-{ "ok": true, "data": null, "reason": null }
+{ "ok": true, "reason": null, "data": null }
 ```
 
 **응답 200 (연결 실패)**
 ```json
-{ "ok": false, "data": null, "reason": "connection refused" }
+{ "ok": false, "reason": "connection refused", "data": null }
 ```
 
 **응답 404** — 서버 없음
@@ -282,14 +282,14 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
+  "reason": null,
   "data": [
     {
       "id": "job-1",
       "status": "stopped",
-      "jobConfig": { ... }
+      ...
     }
-  ],
-  "reason": null
+  ]
 }
 ```
 
@@ -297,7 +297,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 |------|------|------|
 | `data[].id` | string | job id |
 | `data[].status` | string | `running` \| `stopped` |
-| `data[].jobConfig` | JobConfig | job 설정 전체 |
+| `data[].*` | - | JobConfig 필드 전체 포함 |
 
 ---
 
@@ -309,18 +309,18 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
+  "reason": null,
   "data": {
     "id": "job-1",
     "status": "stopped",
-    "jobConfig": { ... }
-  },
-  "reason": null
+    ...
+  }
 }
 ```
 
 **응답 404**
 ```json
-{ "ok": false, "data": null, "reason": "Job 'job-1' not found" }
+{ "ok": false, "reason": "Job 'job-1' not found", "data": null }
 ```
 
 ---
@@ -355,19 +355,19 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
-  "data": { "id": "job-2", "status": "stopped" },
-  "reason": null
+  "reason": null,
+  "data": { "id": "job-2", "status": "stopped", "source": { ... }, "target": { ... }, ... }
 }
 ```
 
 **응답 400** — config 검증 실패
 ```json
-{ "ok": false, "data": null, "reason": "job.source.table is required ..." }
+{ "ok": false, "reason": "job.source.table is required ...", "data": null }
 ```
 
 **응답 409** — id 중복
 ```json
-{ "ok": false, "data": null, "reason": "Job 'job-2' already exists" }
+{ "ok": false, "reason": "Job 'job-2' already exists", "data": null }
 ```
 
 ---
@@ -382,15 +382,16 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ```json
 {
   "ok": true,
-  "data": { "id": "job-1", "status": "stopped" },
-  "reason": null
+  "reason": null,
+  "data": { "id": "job-1", "status": "stopped", ... }
 }
 ```
 
 **응답 404** — job 없음
 **응답 409** — job이 실행 중
+
 ```json
-{ "ok": false, "data": null, "reason": "Job 'job-1' is running" }
+{ "ok": false, "reason": "Job 'job-1' is running", "data": null }
 ```
 
 ---
@@ -414,15 +415,15 @@ job 시작.
 ```json
 {
   "ok": true,
-  "data": { "id": "job-1", "status": "running" },
-  "reason": null
+  "reason": null,
+  "data": { "id": "job-1", "status": "running", ... }
 }
 ```
 
 **응답 404** — job 없음
 **응답 409** — 이미 실행 중
 ```json
-{ "ok": false, "data": null, "reason": "Job 'job-1' is already running" }
+{ "ok": false, "reason": "Job 'job-1' is already running", "data": null }
 ```
 
 ---
@@ -435,13 +436,13 @@ job 중지. 실행 중인 worker가 현재 배치를 완료할 때까지 대기 
 ```json
 {
   "ok": true,
-  "data": { "id": "job-1", "status": "stopped" },
-  "reason": null
+  "reason": null,
+  "data": { "id": "job-1", "status": "stopped", ... }
 }
 ```
 
 **응답 404** — job 없음
 **응답 409** — 실행 중이 아님
 ```json
-{ "ok": false, "data": null, "reason": "Job 'job-1' is not running" }
+{ "ok": false, "reason": "Job 'job-1' is not running", "data": null }
 ```

@@ -47,15 +47,17 @@ test('version != 3 → 오류', async () => {
   await assert.rejects(() => Config.load(filePath), /version/i);
 });
 
-test('servers 없음 → 오류', async () => {
-  const { servers: _, ...noServers } = BASE_CONFIG;
-  const filePath = await writeConfig(noServers);
-  await assert.rejects(() => Config.load(filePath), /servers/i);
+test('servers 없음 → 빈 배열', async () => {
+  const { servers: _, replication: __, ...noServers } = BASE_CONFIG;
+  const filePath = await writeConfig({ ...noServers, replication: { jobs: [] } });
+  const cfg = await Config.load(filePath);
+  assert.deepEqual(cfg.servers, []);
 });
 
-test('replication.jobs 없음 → 오류', async () => {
+test('replication.jobs 없음 → 빈 배열', async () => {
   const filePath = await writeConfig({ ...BASE_CONFIG, replication: {} });
-  await assert.rejects(() => Config.load(filePath), /jobs/i);
+  const cfg = await Config.load(filePath);
+  assert.deepEqual(cfg.replication.jobs, []);
 });
 
 test('존재하지 않는 source server → 오류', async () => {
