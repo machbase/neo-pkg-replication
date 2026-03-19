@@ -2,13 +2,13 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { TagAliasCache, TagTable } = require('../../src/db/table.js');
+const { TagMetaCache, TagTable } = require('../../src/db/table.js');
 const { ColumnType, Column, TableSchema } = require('../../src/db/types.js');
 
-// ─── TagAliasCache._applyIdentifier ──────────────────────────────────────────
+// ─── TagMetaCache._applyIdentifier ──────────────────────────────────────────
 
-test('TagAliasCache.set: tag name에 null byte → throw', () => {
-  const cache = new TagAliasCache();
+test('TagMetaCache.set: tag name에 null byte → throw', () => {
+  const cache = new TagMetaCache();
   assert.throws(
     () => cache.set(1n, 'bad\x00key'),
     /null byte/

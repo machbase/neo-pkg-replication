@@ -161,6 +161,8 @@ class Config {
       integrity = new IntegrityConfig(rawIntegrity);
     }
 
+    const metaSync = job.metaSync;
+
     const rawTagId = job.source?.tagIdentifier;
     const tagIdentifier = rawTagId
       ? new TagIdentifierConfig(rawTagId)
@@ -200,6 +202,7 @@ class Config {
       ridAfter:           job.ridAfter,
       onSaveFailure:      job.onSaveFailure,
       integrity,
+      metaSync,
       retry,
     });
     jobConfig.valid(servers);
@@ -368,7 +371,7 @@ class JobConfig {
   constructor({ id, autoStart, shutdownTimeoutMs, source, target,
                 queryLimit, ridRangeSize, pollIntervalMs,
                 startMode, ridAfter, onSaveFailure,
-                integrity, retry }) {
+                integrity, metaSync, retry }) {
     this.id             = id;
     this.autoStart      = autoStart      ?? true;
     this.startMode      = startMode      ?? 'full';
@@ -381,6 +384,7 @@ class JobConfig {
     this.onSaveFailure  = onSaveFailure  ?? 'continue';
     this.shutdownTimeoutMs = shutdownTimeoutMs;
     this.integrity      = integrity;
+    this.metaSync       = metaSync;
     this.retry          = retry;
   }
 
@@ -447,6 +451,10 @@ class JobConfig {
         throw new Error(`integrity must be an object in job '${this.id}'`);
       }
       this.integrity.valid(this.id);
+    }
+
+    if (this.metaSync !== undefined && typeof this.metaSync !== 'boolean') {
+      throw new Error(`metaSync must be a boolean, got: ${typeof this.metaSync} in job '${this.id}'`);
     }
   }
 }

@@ -215,9 +215,9 @@ class Worker {
 
     // TAG alias cache 로드
     if (tableType === 'TAG') {
-      const loadErr = await srcTable.loadTagAliasCache();
+      const loadErr = await srcTable.loadTagMetaCache();
       if (loadErr) {
-        getLogger().warn('worker', { ...logCtx, msg: `loadTagAliasCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
+        getLogger().warn('worker', { ...logCtx, msg: `loadTagMetaCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
     }
 
@@ -261,7 +261,7 @@ class Worker {
           await srcTable.close();
           await srcTable.open();
           if (tableType === 'TAG') {
-            await srcTable.loadTagAliasCache();
+            await srcTable.loadTagMetaCache();
           }
           stmtCount = 0;
           getLogger().debug('worker', { ...logCtx, msg: 'sourceConn refreshed (statement ID threshold)' });

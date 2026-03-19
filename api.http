@@ -82,6 +82,7 @@ Content-Type: application/json
 
 {
   "id": "{{jobId}}",
+  "autoStart": true,
   "source": {
     "server": "{{serverName}}",
     "table": "{{tableName}}"
@@ -94,7 +95,8 @@ Content-Type: application/json
   "startMode": "full",
   "pollIntervalMs": 1000,
   "queryLimit": 1000,
-  "onSaveFailure": "continue"
+  "onSaveFailure": "continue",
+  "metaSync": false
 }
 
 ###

@@ -88,6 +88,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 | `ridAfter` | string \| null | startMode=ridAfter 시 기준 RID |
 | `onSaveFailure` | string | `continue` \| `abort` |
 | `integrity` | object \| null | `{ enabled: boolean }` |
+| `metaSync` | boolean \| null | TAG meta 동기화 활성화 여부. 기본 `null` (활성화). `false` 로 비활성화. |
 | `retry` | object \| null | `{ strategy, maxAttempts, baseDelayMs, maxDelayMs, multiplier }` |
 
 ---
@@ -307,6 +308,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
       "pollIntervalMs": 1000,
       "onSaveFailure": "continue",
       "integrity": { "enabled": true },
+      "metaSync": null,
       "retry": {
         "strategy": "exponential",
         "maxAttempts": 5,
@@ -359,6 +361,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": { "enabled": true },
+    "metaSync": null,
     "retry": {
       "strategy": "exponential",
       "maxAttempts": 5,
@@ -431,6 +434,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": null,
+    "metaSync": null,
     "retry": null
   }
 }
@@ -482,6 +486,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": { "enabled": true },
+    "metaSync": null,
     "retry": null
   }
 }
@@ -539,6 +544,7 @@ job 시작.
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": { "enabled": true },
+    "metaSync": null,
     "retry": null
   }
 }
@@ -584,6 +590,7 @@ job 중지. 실행 중인 worker가 현재 배치를 완료할 때까지 대기 
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": { "enabled": true },
+    "metaSync": null,
     "retry": null
   }
 }

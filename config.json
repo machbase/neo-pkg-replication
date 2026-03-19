@@ -43,11 +43,13 @@
           "table": "TAG_COPY",
           "autoCreate": true
         },
+        "autoStart": true,
         "pollIntervalMs": 1000,
         "queryLimit": 1000,
         "ridRangeSize": 50000,
         "onSaveFailure": "continue",
-        "shutdownTimeoutMs": 30000
+        "shutdownTimeoutMs": 30000,
+        "metaSync": false
       }
     ]
   }

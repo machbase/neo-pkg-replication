@@ -2,7 +2,7 @@
 
 const { MachbaseClient } = require('./db/client.js');
 const { FLAG_METADATA } = require('./db/types.js');
-const { TagAliasCache, TagTable, LogTable } = require('./db/table.js');
+const { TagMetaCache, TagTable, LogTable } = require('./db/table.js');
 const { Worker } = require('./worker/worker.js');
 const { getInstance: getLogger } = require('./lib/logger.js');
 
@@ -276,7 +276,7 @@ class Job {
       const dstRow = dstById.get(BigInt(srcRow._ID));
       if (!dstRow) continue; // 신규 태그 — append 시 dst DB 자동 생성
 
-      const canonicalName = TagAliasCache._applyIdentifier(srcRow.name, tagIdentifier);
+      const canonicalName = TagMetaCache._applyIdentifier(srcRow.name, tagIdentifier);
       const sets = [];
       const nameChanged = dstRow.name !== canonicalName;
       if (nameChanged) sets.push({ name: 'NAME', value: canonicalName });
@@ -341,7 +341,7 @@ class Job {
       const dstConfig = this.servers.find(s => s.name === target.server);
 
       // ── TAG 테이블인 경우 meta sync ──
-      if (tableType === 'TAG') {
+      if (tableType === 'TAG' && this.jobConfig.metaSync !== false) {
         const targetTable = target.table || source.table;
         const synced = await this._syncTagMeta(targetTable, srcSchema, jobCtx);
         if (!synced) {

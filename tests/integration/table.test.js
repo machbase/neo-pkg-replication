@@ -368,7 +368,7 @@ test('TagTable-04: metadata 컬럼 포함 append — location 값 저장 확인'
   }
 });
 
-test('TagDataTable-05: loadTagAliasCache() — _TAG_META 로드 후 내부 캐시 구성', async () => {
+test('TagDataTable-05: loadTagMetaCache() — _TAG_META 로드 후 내부 캐시 구성', async () => {
   const TABLE = T('TAG_05');
   const conn = await makeConn();
   try {
@@ -388,12 +388,12 @@ test('TagDataTable-05: loadTagAliasCache() — _TAG_META 로드 후 내부 캐�
     ]);
     await tagTable.close();
 
-    // TagDataTable.loadTagAliasCache()
+    // TagDataTable.loadTagMetaCache()
     const dataTable = new TagDataTable(dataTables[0].data_table, DB_CONFIG);
     dataTable.setSchema(schema);
     try {
       await dataTable.open();
-      const err = await dataTable.loadTagAliasCache();
+      const err = await dataTable.loadTagMetaCache();
       assert.equal(err, null);
       assert.ok(dataTable.aliasCache !== null, 'aliasCache 구성됨');
       assert.ok(dataTable.aliasCache.size >= 2, `캐시에 2개 이상 (실제: ${dataTable.aliasCache.size})`);
@@ -406,7 +406,7 @@ test('TagDataTable-05: loadTagAliasCache() — _TAG_META 로드 후 내부 캐�
   }
 });
 
-test('TagDataTable-06: read() — loadTagAliasCache 후 NAME이 canonical name으로 반환', async () => {
+test('TagDataTable-06: read() — loadTagMetaCache 후 NAME이 canonical name으로 반환', async () => {
   const TABLE = T('TAG_06');
   const conn = await makeConn();
   try {
@@ -423,14 +423,14 @@ test('TagDataTable-06: read() — loadTagAliasCache 후 NAME이 canonical name�
     await tagTable.append([{ NAME: 'sensor_x', TIME: nowNs(0), VALUE: 5.5 }]);
     await tagTable.close();
 
-    // 전체 파티션에서 loadTagAliasCache 후 read()
+    // 전체 파티션에서 loadTagMetaCache 후 read()
     let found = false;
     for (const part of dataTables) {
       const dataTable = new TagDataTable(part.data_table, DB_CONFIG);
       dataTable.setSchema(schema);
       try {
         await dataTable.open();
-        await dataTable.loadTagAliasCache();
+        await dataTable.loadTagMetaCache();
         const { rows, err } = await dataTable.read(0n);
         assert.equal(err, null);
         for (const row of rows) {

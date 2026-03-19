@@ -246,10 +246,10 @@ class LogTable {
  * TAG alias 캐시
  *
  * tag_id(_ID) → name 매핑을 보관하는 순수 캐시.
- * DB 조회는 TagTable.loadTagAliasCache()가 담당하고,
- * TagDataTable.setTagAliasCache()로 주입하여 read() 시 사용한다.
+ * DB 조회는 TagTable.loadTagMetaCache()가 담당하고,
+ * TagDataTable.setTagMetaCache()로 주입하여 read() 시 사용한다.
  */
-class TagAliasCache {
+class TagMetaCache {
   constructor() {
     /** @type {Map<bigint, string>} */
     this._map = new Map();
@@ -261,12 +261,13 @@ class TagAliasCache {
    * 항목 추가
    * @param {number|bigint} tagId
    * @param {string} name
+   * @param {object} [meta={}] - metadata 컬럼 값 ({ colName: value, ... })
    */
-  set(tagId, name) {
+  set(tagId, name, meta = {}) {
     if (name.includes('\x00')) {
       throw new Error(`tag name contains null byte: ${JSON.stringify(name)}`);
     }
-    this._map.set(BigInt(tagId), name);
+    this._map.set(BigInt(tagId), { name, meta });
   }
 
   /**
@@ -275,20 +276,20 @@ class TagAliasCache {
    * @returns {string|undefined}
    */
   get(tagId) {
-    return this._map.get(BigInt(tagId));
+    return this._map.get(BigInt(tagId))?.name;
   }
 
   /**
-   * tag_id → canonical name 변환 (캐시에서만 조회)
+   * tag_id → canonical name + meta 변환 (캐시에서만 조회)
    * @param {number|bigint} tagId
    * @param {{ mode: 'prefix'|'suffix'|'none', value?: string }|null} tagIdentifier
-   * @returns {{ canonical: string|null, status: 'ok'|'drop_not_found' }}
+   * @returns {{ canonical: string|null, meta: object, status: 'ok'|'drop_not_found' }}
    */
   resolve(tagId, tagIdentifier) {
-    const tagName = this._map.get(BigInt(tagId));
-    if (tagName === undefined) return { canonical: null, status: 'drop_not_found' };
-    const canonical = TagAliasCache._applyIdentifier(tagName, tagIdentifier);
-    return { canonical, status: 'ok' };
+    const entry = this._map.get(BigInt(tagId));
+    if (entry === undefined) return { canonical: null, meta: {}, status: 'drop_not_found' };
+    const canonical = TagMetaCache._applyIdentifier(entry.name, tagIdentifier);
+    return { canonical, meta: entry.meta, status: 'ok' };
   }
 
   /**
@@ -476,7 +477,7 @@ class TagDataTable {
     this.logicalTable = dataTable.replace(/^_/, '').replace(/_DATA_\d+$/, '');
     /** @type {TableSchema|null} */
     this.schema = null;
-    /** @type {TagAliasCache|null} */
+    /** @type {TagMetaCache|null} */
     this.aliasCache = null;
   }
 
@@ -489,19 +490,24 @@ class TagDataTable {
   }
 
   /**
-   * _TAG_META 전체 로드 후 내부 aliasCache 구성
+   * _TAG_META 전체 로드 후 내부 aliasCache 구성 (metadata 컬럼 값 포함)
    * @returns {Error|null}
    */
-  async loadTagAliasCache() {
+  async loadTagMetaCache() {
     try {
-      const rows = await this.client.selectTagNames(this.logicalTable);
-      this.aliasCache = new TagAliasCache();
+      const metaColNames = this.schema
+        ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
+        : [];
+      const rows = await this.client.selectTagMeta(this.logicalTable, metaColNames);
+      this.aliasCache = new TagMetaCache();
       for (const row of (rows || [])) {
-        this.aliasCache.set(row._ID, row.name);
+        const meta = {};
+        for (const col of metaColNames) meta[col] = row[col];
+        this.aliasCache.set(row._ID, row.name, meta);
       }
       return null;
     } catch (err) {
-      getLogger().error('table', { msg: `loadTagAliasCache failed: ${err.message}` });
+      getLogger().error('table', { msg: `loadTagMetaCache failed: ${err.message}` });
       return err;
     }
   }
@@ -583,7 +589,7 @@ class TagDataTable {
         }
         if (this.aliasCache) {
           const tagId = data.NAME;
-          let { canonical, status } = this.aliasCache.resolve(tagId, tagIdentifier);
+          let { canonical, meta, status } = this.aliasCache.resolve(tagId, tagIdentifier);
           if (status === 'drop_not_found' && this.logicalTable) {
             let name;
             try {
@@ -594,10 +600,11 @@ class TagDataTable {
             }
             if (name == null) continue;
             this.aliasCache.set(tagId, name);
-            ({ canonical, status } = this.aliasCache.resolve(tagId, tagIdentifier));
+            ({ canonical, meta, status } = this.aliasCache.resolve(tagId, tagIdentifier));
           }
           if (status === 'drop_not_found') continue;
           data.NAME = canonical;
+          Object.assign(data, meta);
         }
         result.push({ rid: BigInt(row._RID), data });
       }
@@ -609,4 +616,4 @@ class TagDataTable {
   }
 }
 
-module.exports = { TagAliasCache, LogTable, TagTable, TagDataTable };
+module.exports = { TagMetaCache, LogTable, TagTable, TagDataTable };
