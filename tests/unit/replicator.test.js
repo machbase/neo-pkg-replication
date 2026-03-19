@@ -11,7 +11,7 @@ describe('Replicator — run()', () => {
       servers: [],
       replication: {
         jobs: [
-          { id: 'job-1', shutdownTimeoutMs: 30000 },
+          { id: 'job-1', autoStart: false, shutdownTimeoutMs: 30000 },
         ],
       },
     };
@@ -55,9 +55,9 @@ describe('Replicator — run()', () => {
       servers: [],
       replication: {
         jobs: [
-          { id: 'job-a', shutdownTimeoutMs: 10000 },
-          { id: 'job-b', shutdownTimeoutMs: 60000 },
-          { id: 'job-c', shutdownTimeoutMs: 5000 },
+          { id: 'job-a', autoStart: false, shutdownTimeoutMs: 10000 },
+          { id: 'job-b', autoStart: false, shutdownTimeoutMs: 60000 },
+          { id: 'job-c', autoStart: false, shutdownTimeoutMs: 5000 },
         ],
       },
     };
@@ -90,5 +90,35 @@ describe('Replicator — run()', () => {
     await runPromise;
 
     assert.equal(replicator.httpServer, null, 'api.enabled=false → httpServer=null');
+  });
+
+  test('autoStart=true → 시작 시 scheduler.start() 호출됨', async () => {
+    const config = {
+      servers: [],
+      replication: {
+        jobs: [
+          { id: 'job-auto', autoStart: true, shutdownTimeoutMs: 30000 },
+          { id: 'job-manual', autoStart: false, shutdownTimeoutMs: 30000 },
+        ],
+      },
+    };
+
+    const replicator = new Replicator(config);
+    const started = [];
+    replicator.scheduler.start = function(id) {
+      started.push(id);
+      // 실제 job 실행 없이 status만 running으로 흉내 (SIGTERM 후 stopAll이 빠르게 완료되도록)
+      const entry = this.registry.get(id);
+      if (entry) {
+        entry.status = 'running';
+        entry.promise = Promise.resolve();
+      }
+    };
+
+    const runPromise = replicator.run();
+    setImmediate(() => process.emit('SIGTERM'));
+    await runPromise;
+
+    assert.deepEqual(started, ['job-auto'], 'autoStart=true인 job만 start 호출');
   });
 });

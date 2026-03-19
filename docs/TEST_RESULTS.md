@@ -1,7 +1,7 @@
 # 테스트 결과 보고서
 
 **프로젝트**: repli-js
-**수행일**: 2026-03-18
+**수행일**: 2026-03-19
 **환경**: Node.js v22, CommonJS
 **통합 테스트 DB**: 127.0.0.1:5656 (Machbase, SYS/MANAGER)
 
@@ -11,17 +11,17 @@
 
 | 구분 | 파일 수 | 테스트 수 | pass | fail | 실행 시간 |
 |------|---------|----------|------|------|-----------|
-| 단위 테스트 | 10개 | 161개 | **161** | 0 | ~0.6초 |
+| 단위 테스트 | 10개 | 165개 | **165** | 0 | ~0.6초 |
 | 통합 테스트 (TAG) | 1개 | 11개 | **11** | 0 | ~51초 |
 | 통합 테스트 (LOG) | 1개 | 8개 | **8** | 0 | ~7초 |
 | 통합 테스트 (table) | 1개 | 17개 | **17** | 0 | — |
-| **합계** | **13개** | **197개** | **197** | **0** | — |
+| **합계** | **13개** | **201개** | **201** | **0** | — |
 
 > 통합 테스트는 127.0.0.1:5656 DB 접근 가능 시 실행.
 
 ---
 
-## 단위 테스트 (161개 pass)
+## 단위 테스트 (165개 pass)
 
 ```
 node --test tests/unit/*.test.js
@@ -47,7 +47,7 @@ node --test tests/unit/*.test.js
 | 3 | 0, Infinity, NaN은 변환하지 않음 |
 | 4 | number 아닌 값은 변환하지 않음 |
 
-### config.test.js — Config (47개)
+### config.test.js — Config (51개)
 
 | # | 테스트 항목 |
 |---|------------|
@@ -91,6 +91,10 @@ node --test tests/unit/*.test.js
 | 38 | target.autoCreate: false + table: "" → config 오류 |
 | 39 | target.autoCreate: true + table: "TAG_COPY" → valid 통과 |
 | 40 | target.autoCreate 미지정 + table: "" → config 오류 (autoCreate 기본 false) |
+| 41 | autoStart 미지정 → 기본값 true |
+| 42 | autoStart: false → false로 로드 |
+| 43 | autoStart: true → true로 로드 |
+| 44 | autoStart: 비boolean → config 오류 |
 
 ### http_server.test.js — HttpServer Jobs REST API (19개)
 
@@ -178,11 +182,16 @@ node --test tests/unit/*.test.js
 | JobScheduler | 16 | start → status=running, stop → status=stopped |
 | JobScheduler | 17 | stopAll → 모든 running job 중지 |
 
-### replicator.test.js — Replicator (1개)
+### replicator.test.js — Replicator (6개)
 
 | # | 테스트 항목 |
 |---|------------|
-| 1 | SIGTERM 수신 → run() 정상 종료 |
+| 1 | SIGTERM 수신 → shutdownFlag 설정 후 run() 완료 |
+| 2 | job 없음 → SIGTERM 후 즉시 완료 |
+| 3 | SIGINT 수신 → run() 정상 종료 |
+| 4 | shutdownTimeoutMs: 여러 job 중 최댓값 사용 |
+| 5 | config.api.enabled=false → httpServer가 생성되지 않음 |
+| 6 | autoStart=true → 시작 시 scheduler.start() 호출됨 |
 
 ### retry.test.js — RetryHandler (15개)
 
@@ -309,7 +318,7 @@ node --test tests/integration/table.test.js
 ## 테스트 실행 명령
 
 ```bash
-# 단위 테스트 전체 (161개)
+# 단위 테스트 전체 (165개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
@@ -339,12 +348,12 @@ tests/
 │   │   └── worker_fixtures.js       # Worker 테스트 공통 픽스처
 │   ├── checkpoint.test.js           # CheckpointStore (6개)
 │   ├── client.test.js               # fixDoubleEndian (4개)
-│   ├── config.test.js               # Config load/validate/CRUD (47개)
+│   ├── config.test.js               # Config load/validate/CRUD (51개)
 │   ├── http_server.test.js          # HttpServer Jobs REST API (19개)
 │   ├── http_server_servers.test.js  # HttpServer Servers REST API (23개)
 │   ├── integrity_checker.test.js    # TagTable.findFirstMissRow (7개)
 │   ├── job-scheduler.test.js        # Job + JobScheduler (19개)
-│   ├── replicator.test.js           # Replicator (1개)
+│   ├── replicator.test.js           # Replicator (6개)
 │   ├── retry.test.js                # RetryHandler (15개)
 │   └── worker-state.test.js         # Worker 상태 머신 + E2E (20개)
 └── integration/

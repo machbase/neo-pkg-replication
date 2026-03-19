@@ -189,6 +189,7 @@ class Config {
 
     const jobConfig = new JobConfig({
       id:                 job.id,
+      autoStart:          job.autoStart,
       shutdownTimeoutMs:  job.shutdownTimeoutMs ?? 30000,
       source,
       target,
@@ -364,11 +365,12 @@ const VALID_START_MODES = new Set(['full', 'now', 'ridAfter']);
 const VALID_ON_SAVE_FAILURE = new Set(['continue', 'abort']);
 
 class JobConfig {
-  constructor({ id, shutdownTimeoutMs, source, target,
+  constructor({ id, autoStart, shutdownTimeoutMs, source, target,
                 queryLimit, ridRangeSize, pollIntervalMs,
                 startMode, ridAfter, onSaveFailure,
                 integrity, retry }) {
     this.id             = id;
+    this.autoStart      = autoStart      ?? true;
     this.startMode      = startMode      ?? 'full';
     this.ridAfter       = ridAfter;
     this.source         = source;
@@ -384,6 +386,10 @@ class JobConfig {
 
   valid(servers) {
     if (!this.id) throw new Error(`job.id is required`);
+
+    if (typeof this.autoStart !== 'boolean') {
+      throw new Error(`autoStart must be a boolean in job '${this.id}'`);
+    }
 
     if (this.shutdownTimeoutMs !== undefined) {
       if (!Number.isInteger(this.shutdownTimeoutMs) || this.shutdownTimeoutMs < 1) {

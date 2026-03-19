@@ -255,11 +255,14 @@ class Worker {
     let stmtCount = 0;
 
     while (!shutdownFlag.value) {
-      // Statement ID 한도 체크
+      // Statement ID 한도 체크 — close() 후 open()으로 새 연결 생성
       if (stmtCount >= STMT_REFRESH_THRESHOLD) {
         try {
           await srcTable.close();
           await srcTable.open();
+          if (tableType === 'TAG') {
+            await srcTable.loadTagAliasCache();
+          }
           stmtCount = 0;
           getLogger().debug('worker', { ...logCtx, msg: 'sourceConn refreshed (statement ID threshold)' });
         } catch (refreshErr) {
@@ -310,6 +313,7 @@ class Worker {
 
       startRid = maxRidInBatch + 1n;
     }
+    return;
   }
 
   /**

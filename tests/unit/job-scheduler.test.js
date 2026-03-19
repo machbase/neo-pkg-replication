@@ -264,17 +264,24 @@ describe('Job — AbortController 전파', () => {
   function setupWorkerMocks({ onWorkerRun } = {}) {
     const workerMod = require('../../src/worker/worker.js');
     const tableMod = require('../../src/db/table.js');
+    const clientMod = require('../../src/db/client.js');
 
     const origWorkerRun = workerMod.Worker.prototype.run;
     const origTagDataOpen = tableMod.TagDataTable.prototype.open;
     const origTagDataClose = tableMod.TagDataTable.prototype.close;
     const origTagOpen = tableMod.TagTable.prototype.open;
     const origTagClose = tableMod.TagTable.prototype.close;
+    const origConnect = clientMod.MachbaseClient.prototype.connect;
+    const origClose = clientMod.MachbaseClient.prototype.close;
+    const origSelectTagMeta = clientMod.MachbaseClient.prototype.selectTagMeta;
 
     tableMod.TagDataTable.prototype.open = async function() {};
     tableMod.TagDataTable.prototype.close = async function() { return null; };
     tableMod.TagTable.prototype.open = async function() { return null; };
     tableMod.TagTable.prototype.close = async function() { return null; };
+    clientMod.MachbaseClient.prototype.connect = async function() {};
+    clientMod.MachbaseClient.prototype.close = async function() {};
+    clientMod.MachbaseClient.prototype.selectTagMeta = async function() { return []; };
 
     if (onWorkerRun) workerMod.Worker.prototype.run = onWorkerRun;
 
@@ -289,6 +296,9 @@ describe('Job — AbortController 전파', () => {
       tableMod.TagDataTable.prototype.close = origTagDataClose;
       tableMod.TagTable.prototype.open = origTagOpen;
       tableMod.TagTable.prototype.close = origTagClose;
+      clientMod.MachbaseClient.prototype.connect = origConnect;
+      clientMod.MachbaseClient.prototype.close = origClose;
+      clientMod.MachbaseClient.prototype.selectTagMeta = origSelectTagMeta;
       if (origJobRunnerCache) {
         require.cache[jobRunnerKey] = origJobRunnerCache;
       } else {
@@ -431,6 +441,7 @@ describe('Job — run() 재시작 동작', () => {
         srcSchema: mockSchema,
         dstSchema: mockSchema,
       });
+      job._syncTagMeta = async () => true;
 
       await job.run();
 

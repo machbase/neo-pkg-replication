@@ -287,7 +287,33 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
     {
       "id": "job-1",
       "status": "stopped",
-      ...
+      "autoStart": true,
+      "shutdownTimeoutMs": 30000,
+      "source": {
+        "server": "src",
+        "table": "TAG",
+        "columns": null,
+        "tagIdentifier": { "mode": "none", "value": "" }
+      },
+      "target": {
+        "server": "dst",
+        "table": "TAG2",
+        "autoCreate": false
+      },
+      "startMode": "full",
+      "ridAfter": null,
+      "queryLimit": 5000,
+      "ridRangeSize": 50000,
+      "pollIntervalMs": 1000,
+      "onSaveFailure": "continue",
+      "integrity": { "enabled": true },
+      "retry": {
+        "strategy": "exponential",
+        "maxAttempts": 5,
+        "baseDelayMs": 100,
+        "maxDelayMs": 30000,
+        "multiplier": 2
+      }
     }
   ]
 }
@@ -313,7 +339,33 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
   "data": {
     "id": "job-1",
     "status": "stopped",
-    ...
+    "autoStart": true,
+    "shutdownTimeoutMs": 30000,
+    "source": {
+      "server": "src",
+      "table": "TAG",
+      "columns": null,
+      "tagIdentifier": { "mode": "none", "value": "" }
+    },
+    "target": {
+      "server": "dst",
+      "table": "TAG2",
+      "autoCreate": false
+    },
+    "startMode": "full",
+    "ridAfter": null,
+    "queryLimit": 5000,
+    "ridRangeSize": 50000,
+    "pollIntervalMs": 1000,
+    "onSaveFailure": "continue",
+    "integrity": { "enabled": true },
+    "retry": {
+      "strategy": "exponential",
+      "maxAttempts": 5,
+      "baseDelayMs": 100,
+      "maxDelayMs": 30000,
+      "multiplier": 2
+    }
   }
 }
 ```
@@ -356,7 +408,31 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 {
   "ok": true,
   "reason": null,
-  "data": { "id": "job-2", "status": "stopped", "source": { ... }, "target": { ... }, ... }
+  "data": {
+    "id": "job-2",
+    "status": "stopped",
+    "autoStart": true,
+    "shutdownTimeoutMs": 30000,
+    "source": {
+      "server": "src",
+      "table": "TAG",
+      "columns": null,
+      "tagIdentifier": { "mode": "none", "value": "" }
+    },
+    "target": {
+      "server": "dst",
+      "table": "TAG2",
+      "autoCreate": false
+    },
+    "startMode": "full",
+    "ridAfter": null,
+    "queryLimit": 5000,
+    "ridRangeSize": 50000,
+    "pollIntervalMs": 1000,
+    "onSaveFailure": "continue",
+    "integrity": null,
+    "retry": null
+  }
 }
 ```
 
@@ -383,7 +459,31 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 {
   "ok": true,
   "reason": null,
-  "data": { "id": "job-1", "status": "stopped", ... }
+  "data": {
+    "id": "job-1",
+    "status": "stopped",
+    "autoStart": true,
+    "shutdownTimeoutMs": 30000,
+    "source": {
+      "server": "src",
+      "table": "TAG",
+      "columns": null,
+      "tagIdentifier": { "mode": "none", "value": "" }
+    },
+    "target": {
+      "server": "dst",
+      "table": "TAG2",
+      "autoCreate": false
+    },
+    "startMode": "full",
+    "ridAfter": null,
+    "queryLimit": 5000,
+    "ridRangeSize": 50000,
+    "pollIntervalMs": 1000,
+    "onSaveFailure": "continue",
+    "integrity": { "enabled": true },
+    "retry": null
+  }
 }
 ```
 
@@ -416,7 +516,31 @@ job 시작.
 {
   "ok": true,
   "reason": null,
-  "data": { "id": "job-1", "status": "running", ... }
+  "data": {
+    "id": "job-1",
+    "status": "running",
+    "autoStart": true,
+    "shutdownTimeoutMs": 30000,
+    "source": {
+      "server": "src",
+      "table": "TAG",
+      "columns": null,
+      "tagIdentifier": { "mode": "none", "value": "" }
+    },
+    "target": {
+      "server": "dst",
+      "table": "TAG2",
+      "autoCreate": false
+    },
+    "startMode": "full",
+    "ridAfter": null,
+    "queryLimit": 5000,
+    "ridRangeSize": 50000,
+    "pollIntervalMs": 1000,
+    "onSaveFailure": "continue",
+    "integrity": { "enabled": true },
+    "retry": null
+  }
 }
 ```
 
@@ -437,7 +561,31 @@ job 중지. 실행 중인 worker가 현재 배치를 완료할 때까지 대기 
 {
   "ok": true,
   "reason": null,
-  "data": { "id": "job-1", "status": "stopped", ... }
+  "data": {
+    "id": "job-1",
+    "status": "stopped",
+    "autoStart": true,
+    "shutdownTimeoutMs": 30000,
+    "source": {
+      "server": "src",
+      "table": "TAG",
+      "columns": null,
+      "tagIdentifier": { "mode": "none", "value": "" }
+    },
+    "target": {
+      "server": "dst",
+      "table": "TAG2",
+      "autoCreate": false
+    },
+    "startMode": "full",
+    "ridAfter": null,
+    "queryLimit": 5000,
+    "ridRangeSize": 50000,
+    "pollIntervalMs": 1000,
+    "onSaveFailure": "continue",
+    "integrity": { "enabled": true },
+    "retry": null
+  }
 }
 ```
 

@@ -28,26 +28,26 @@
     "jobs": [
       {
         "id": "job-1",
-        "shutdownTimeoutMs": 30000,
+        "startMode": "full",
         "source": {
           "server": "src",
           "table": "TAG",
-          "columns": null,
           "tagIdentifier": {
             "mode": "none",
             "value": ""
-          }
+          },
+          "columns": null
         },
         "target": {
           "server": "src",
           "table": "TAG_COPY",
           "autoCreate": true
         },
+        "pollIntervalMs": 1000,
         "queryLimit": 1000,
         "ridRangeSize": 50000,
-        "pollIntervalMs": 1000,
-        "startMode": "full",
-        "onSaveFailure": "continue"
+        "onSaveFailure": "continue",
+        "shutdownTimeoutMs": 30000
       }
     ]
   }

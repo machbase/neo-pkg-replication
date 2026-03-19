@@ -91,7 +91,8 @@ class LogTable {
    */
   constructor(logicalTable, config) {
     this.logicalTable = logicalTable;
-    this.client = new MachbaseClient(config);
+    this.config = config;
+    this.client = null;
     /** @type {TableSchema|null} */
     this.schema = null;
     /** @type {MachbaseStream|null} */
@@ -130,6 +131,7 @@ class LogTable {
    * @returns {Promise<Error|null>}
    */
   async open(useStream = false) {
+    this.client = new MachbaseClient(this.config);
     await this.client.connect();
     if (useStream) {
       this.stream = new MachbaseStream();
@@ -152,7 +154,10 @@ class LogTable {
       firstErr = await this.stream.close();
       this.stream = null;
     }
-    await this.client.close().catch(err => { if (!firstErr) firstErr = err; });
+    if (this.client) {
+      await this.client.close().catch(err => { if (!firstErr) firstErr = err; });
+      this.client = null;
+    }
     return firstErr;
   }
 
@@ -313,7 +318,8 @@ class TagTable {
    */
   constructor(config, logicalTable) {
     this.logicalTable = logicalTable;
-    this.client = new MachbaseClient(config);
+    this.config = config;
+    this.client = null;
     /** @type {TableSchema|null} */
     this.schema = null;
     /** @type {MachbaseStream|null} */
@@ -370,6 +376,7 @@ class TagTable {
    * @returns {Promise<Error|null>}
    */
   async open(useStream = false) {
+    this.client = new MachbaseClient(this.config);
     await this.client.connect();
     if (useStream) {
       this.stream = new MachbaseStream();
@@ -392,7 +399,10 @@ class TagTable {
       firstErr = await this.stream.close();
       this.stream = null;
     }
-    await this.client.close().catch(err => { if (!firstErr) firstErr = err; });
+    if (this.client) {
+      await this.client.close().catch(err => { if (!firstErr) firstErr = err; });
+      this.client = null;
+    }
     return firstErr;
   }
 
@@ -460,7 +470,8 @@ class TagDataTable {
    */
   constructor(dataTable, config) {
     this.dataTable = dataTable;
-    this.client = new MachbaseClient(config);
+    this.config = config;
+    this.client = null;
     /** @type {string} TAG 논리 테이블명 — '_TAG_DATA_0' → 'TAG' */
     this.logicalTable = dataTable.replace(/^_/, '').replace(/_DATA_\d+$/, '');
     /** @type {TableSchema|null} */
@@ -496,9 +507,11 @@ class TagDataTable {
   }
 
   /**
-   * DB 연결
+   * DB 연결 — 매 open() 호출마다 새 MachbaseClient 인스턴스를 생성한다.
+   * (@machbase/ts-client는 end() 후 재연결 불가이므로 open()에서 생성)
    */
   async open() {
+    this.client = new MachbaseClient(this.config);
     await this.client.connect();
   }
 
@@ -507,7 +520,10 @@ class TagDataTable {
    * @returns {Error|null}
    */
   async close() {
-    await this.client.close().catch(() => {});
+    if (this.client) {
+      await this.client.close().catch(() => {});
+      this.client = null;
+    }
     return null;
   }
 

@@ -2,7 +2,7 @@
 
 **프로젝트**: Machbase TAG / Log 테이블 복제 도구
 **런타임**: Node.js v22 (CommonJS)
-**최종 수정**: 2026-03-18 (fixDoubleEndian 2번째 패턴 추가, _toCell int64 변환 제거, Config 빈 배열 허용)
+**최종 수정**: 2026-03-19 (autoStart 기능 추가, _syncTagMeta TAG meta 동기화, replicator.test.js 확장, config.test.js autoStart 검증 추가)
 
 ---
 
@@ -98,12 +98,12 @@ repli-js/
 │   │   │   └── worker_fixtures.js    # Worker 테스트 공통 픽스처 (makeTagWorker 등)
 │   │   ├── checkpoint.test.js        # CheckpointStore 단위 테스트 (6개)
 │   │   ├── client.test.js            # fixDoubleEndian 단위 테스트 (4개)
-│   │   ├── config.test.js            # Config load/validate/CRUD 단위 테스트 (47개)
+│   │   ├── config.test.js            # Config load/validate/CRUD 단위 테스트 (51개, autoStart 4개 포함)
 │   │   ├── http_server.test.js       # HttpServer REST API 단위 테스트 (19개)
 │   │   ├── http_server_servers.test.js # HttpServer /api/servers 엔드포인트 테스트 (23개)
 │   │   ├── integrity_checker.test.js # TagTable.findFirstMissRow 단위 테스트 (7개)
 │   │   ├── job-scheduler.test.js     # Job._discoverMapping + JobScheduler 단위 테스트 (19개)
-│   │   ├── replicator.test.js        # Replicator 단위 테스트 (1개)
+│   │   ├── replicator.test.js        # Replicator 단위 테스트 (6개: SIGTERM/SIGINT/autoStart/api/shutdownTimeout/empty)
 │   │   ├── retry.test.js             # RetryHandler 단위 테스트 (15개)
 │   │   └── worker-state.test.js      # Worker 상태 머신 + E2E mock 시나리오 (20개)
 │   └── integration/
@@ -171,13 +171,13 @@ mapping (소스 table → 대상 table)
 
 **Replicator 레벨**
 ```
-start → [Job × N 병렬] → SIGTERM/SIGINT → graceful shutdown → exit
+start → 각 job register → (autoStart=true인 job → scheduler.start()) → SIGTERM/SIGINT → graceful shutdown → exit
 ```
 
 **Job 레벨 (job당 1개, 독립 루프)**
 ```
 while(!shutdown):
-  DISCOVER → Workers 병렬 실행 → (에러 → AbortController 전체 취소) → 재시작
+  DISCOVER → _syncTagMeta(TAG only) → Workers 병렬 실행 → (에러 → AbortController 전체 취소) → 재시작
 ```
 
 **Worker 레벨 (data_table 1개당)**
@@ -210,6 +210,7 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) → STEADY
 | 필드 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | id | string | — | 고유 식별자 |
+| autoStart | boolean | true | Replicator 시작 시 자동 실행 여부. false 시 API로 수동 시작 필요 |
 | shutdownTimeoutMs | int | 30000 | Worker 종료 대기 타임아웃 (ms) |
 | source | SourceConfig | ✅ | 소스 설정 |
 | target | TargetConfig | ✅ | 대상 설정 |
@@ -318,6 +319,8 @@ client.selectColumnsByTableId(tableId) → [{ NAME, TYPE, ID }]
 client.selectMaxRid(tableName) → BigInt
 client.selectTagNames(logicalTable) → [{ _ID, name }]
 client.selectTagNameByTagId(logicalTable, tagId) → string|null
+client.selectTagMeta(logicalTable, metaColNames?) → [{ _ID, name, ...metaCols }]
+client.updateTagMeta(logicalTable, oldName, sets) → Promise<void>  // UPDATE {table} METADATA SET ... WHERE NAME=...
 
 // DDL (autoCreate 기능)
 client.createTagTable(tableName, srcSchema)   → Promise<void>
@@ -460,7 +463,8 @@ await logTable.findFirstMissRow(rows, client) → { firstMissIdx: number|null, e
   3. append 스트림으로 `_repli_chk`에 `[idx, canonical, time]` INSERT
   4. `INSERT INTO _repli_lkp SELECT t.NAME, t.TIME FROM {logicalTable} t, _repli_chk c WHERE t.NAME=c.NAME AND t.TIME=c.TIME`
   5. `SELECT IDX FROM (SELECT c.IDX, t.NAME AS T_NAME FROM _repli_chk c LEFT OUTER JOIN _repli_lkp t ON ...) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
-  6. finally: `DROP TABLE _repli_chk`, `DROP TABLE _repli_lkp`
+  6. SELECT 직후 즉시 `DROP TABLE _repli_lkp` (수명 단축 — 비정상 종료 시 서버 잔류 방지)
+  7. finally: `DROP TABLE _repli_chk`, `DROP TABLE _repli_lkp`(이미 DROP됐으면 무시)
 - `nameDdlType`: `nameCol.sqlType()` — schema의 NAME 컬럼에서 추출 (예: `'VARCHAR(80)'`)
 - Machbase 제약: TAG 테이블은 JOIN 드라이빙 불가 → VOLATILE TABLE 경유 필수; `WHERE joined_col IS NULL`은 서브쿼리 바깥에 위치 필수
 
@@ -631,15 +635,19 @@ while NOT shutdown_requested:
 
 ```
 1. Config.load()
-2. Replicator.run() → JobScheduler 초기화 (job 자동 시작 없음, API로 개별 시작)
+2. Replicator.run() → JobScheduler 초기화 → 각 job register → autoStart=true인 job은 scheduler.start() 자동 호출, false인 job은 API로 수동 시작
 3. HttpServer 시작 (api.enabled=true 시)
 4. 각 Job.run() 루프:
    a. _discoverMapping() — MachbaseClient(단기) 생성 후 close
       - 테이블 TYPE 조회
       - TAG이면 데이터 테이블 목록 조회 + src-only 컬럼 검증
       - 오류 시 해당 mapping 스킵 (job은 계속)
-   b. data_table마다 Worker 인스턴스 생성
-   c. AbortController로 Worker × N 병렬 실행
+   b. TAG 테이블인 경우: _syncTagMeta() — src/dst TAG meta 동기화 (name 변경, metadata column value 변경)
+      - 단기 커넥션(srcClient, dstClient) 생성 후 close
+      - _ID 기준 매칭, 변경 항목 있으면 UPDATE TAG METADATA
+      - 실패 시 5초 후 루프 재시작
+   c. data_table마다 Worker 인스턴스 생성
+   d. AbortController로 Worker × N 병렬 실행
 5. SIGTERM / SIGINT → shutdownFlag.value = true → graceful shutdown
 ```
 
@@ -1061,6 +1069,8 @@ sequenceDiagram
 | B-05 | AbortSignal → shutdownFlag 연동 | Worker.run()은 `signal.aborted || shutdownFlag.value` proxy `effectiveShutdownFlag`를 _runStateMachine에 전달하여 abort 시 STEADY 루프 즉시 탈출 |
 | B-06 | target.autoCreate DDL 생성 방식 | `Column.sqlType()`으로 컬럼 타입 결정. TAG: `FLAG_PRIMARY`→PRIMARY KEY, `FLAG_BASETIME`→BASETIME, `FLAG_SUMMARIZED`→SUMMARIZED, `FLAG_METADATA`→METADATA 절. PRIMARY KEY / BASETIME 없으면 throw. LOG: 컬럼 순서 그대로 CREATE TABLE. |
 | B-07 | autoCreate 시 별도 연결 사용 | TAG 테이블 생성은 dst의 기존 `TagTable.client`와 별도로 신규 `MachbaseClient` 생성 후 즉시 close. 연결 재사용 금지 원칙(B-01) 유지. |
+| B-08 | TAG meta sync 실행 시점 | `_discoverMapping()` 성공 후, Workers 시작 전 1회 실행. 매칭 기준: `_ID`(tagId). src `_ID=N` → dst `_ID=N` 비교. name 불일치 또는 metadata column value 불일치 시 `UPDATE TAG METADATA`. 신규 태그(dst에 없음): 데이터 append 시 dst DB 자동 생성 — sync 단계 스킵. 실패 시 에러 로그 → null 반환 → 5초 후 루프 재시작. |
+| B-09 | job autoStart 기본값 | `JobConfig.autoStart` 기본값은 `true`. Replicator.run() 시 각 job을 register한 뒤, `autoStart=true`인 job만 즉시 `scheduler.start()` 호출. `autoStart=false`인 job은 등록은 되지만 시작하지 않으며, REST API(`POST /api/jobs/:id/start`)를 통해 수동 시작해야 한다. `shutdownTimeoutMs`는 모든 등록된 job 중 최댓값을 shutdown timer에 적용한다. |
 | — | STARTUP_INTEGRITY retry 시 배치 재처리 범위 | 배치 내 이미 처리한 row는 건너뜀, 실패 row부터 재처리 |
 | — | Statement ID 고갈 대응 (STEADY) | stmtCount 추적, 900 도달 시 `srcTable.close(); srcTable.open()` 호출 |
 

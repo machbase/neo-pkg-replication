@@ -46,10 +46,13 @@ class Replicator {
 
     getLogger().banner(`repli starting — ${config.replication.jobs.length} job(s) configured`);
 
-    // config에서 로드된 job들을 scheduler에 등록 (stopped 상태)
+    // config에서 로드된 job들을 scheduler에 등록, autoStart=true인 job은 즉시 시작
     for (const jobConfig of config.replication.jobs) {
       if (!this.scheduler.registry.has(jobConfig.id)) {
         this.scheduler.register(jobConfig);
+      }
+      if (jobConfig.autoStart) {
+        this.scheduler.start(jobConfig.id);
       }
     }
 
@@ -60,7 +63,7 @@ class Replicator {
       this.httpServer.start(config.api.port, config.api.cors);
     }
 
-    // job은 자동 시작하지 않음 — API를 통해 개별 시작
+    // autoStart=false인 job은 API를 통해 개별 시작
     await new Promise(resolve => {
       const check = () => { if (shutdownFlag.value) resolve(); else setTimeout(check, 500); };
       check();

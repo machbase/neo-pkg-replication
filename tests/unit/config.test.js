@@ -460,3 +460,34 @@ test('save: 파일에 쓰고 다시 로드 가능', async () => {
   assert.equal(reloaded.replication.jobs.length, 2);
   assert.equal(reloaded.replication.jobs[1].id, 'job-saved');
 });
+
+// === autoStart 테스트 ===
+
+test('autoStart 미지정 → 기본값 true', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+  assert.equal(config.replication.jobs[0].autoStart, true);
+});
+
+test('autoStart: false → false로 로드', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].autoStart = false;
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  assert.equal(result.replication.jobs[0].autoStart, false);
+});
+
+test('autoStart: true → true로 로드', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].autoStart = true;
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  assert.equal(result.replication.jobs[0].autoStart, true);
+});
+
+test('autoStart: 비boolean → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].autoStart = 'yes';
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /autoStart/i);
+});

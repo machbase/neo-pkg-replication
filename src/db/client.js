@@ -185,6 +185,34 @@ class MachbaseClient {
   }
 
   /**
+   * TAG META 테이블 전체 조회 (_ID, name + metadata columns)
+   * @param {string} logicalTable - 논리 테이블명
+   * @param {string[]} metaColNames - metadata column 이름 목록
+   * @returns {Promise<Array<{ _ID: bigint, name: string, [col]: any }>>}
+   */
+  async selectTagMeta(logicalTable, metaColNames = []) {
+    const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
+    return this.query(`SELECT _ID, name${extraCols} FROM _${logicalTable}_META`);
+  }
+
+  /**
+   * TAG META 업데이트 (name 변경 및/또는 metadata column value 변경)
+   * UPDATE {logicalTable} METADATA SET ... WHERE NAME='oldName'
+   * @param {string} logicalTable - 논리 테이블명 (e.g. 'TAG')
+   * @param {string} oldName - WHERE NAME=... 기준 (현재 dst name)
+   * @param {Array<{ name: string, value: any }>} sets - SET 절 항목 (NAME 포함 가능)
+   */
+  async updateTagMeta(logicalTable, oldName, sets) {
+    const esc = v => v == null ? 'NULL'
+      : typeof v === 'string' ? `'${v.replace(/'/g, "''")}'`
+      : String(v);
+    const setClauses = sets.map(({ name, value }) => `${name} = ${esc(value)}`).join(', ');
+    await this.execute(
+      `UPDATE ${logicalTable} METADATA SET ${setClauses} WHERE NAME = ${esc(oldName)}`
+    );
+  }
+
+  /**
    * TAG META 테이블에서 tagId → name 단건 조회
    * @param {string} logicalTable - 논리 테이블명
    * @param {number|bigint} tagId - _ID 값

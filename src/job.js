@@ -2,7 +2,7 @@
 
 const { MachbaseClient } = require('./db/client.js');
 const { FLAG_METADATA } = require('./db/types.js');
-const { TagTable, LogTable } = require('./db/table.js');
+const { TagAliasCache, TagTable, LogTable } = require('./db/table.js');
 const { Worker } = require('./worker/worker.js');
 const { getInstance: getLogger } = require('./lib/logger.js');
 
@@ -128,7 +128,7 @@ class Job {
         case 'TAG': {
           const table = new TagTable(srcConfig, source.table);
           try {
-            await table.client.connect();
+            await table.open();
             const src = await table.getDataTables();
             if (src.length === 0) {
               getLogger().error('job', { ...logCtx, msg: `no data partitions found, skipping job` });
@@ -137,7 +137,7 @@ class Job {
             dataTables = src.map(t => t.data_table);
             srcSchema = await table.getSchema();
           } finally {
-            await table.client.close().catch(() => {});
+            await table.close().catch(() => {});
           }
 
           if (!_validateSourceColumns(source, srcSchema, logCtx)) return null;
@@ -152,7 +152,7 @@ class Job {
 
           const dst = new TagTable(dstConfig, targetTable);
           try {
-            await dst.client.connect();
+            await dst.open();
             let dstTables = await dst.getDataTables();
             if (dstTables.length === 0) {
               if (!this.jobConfig.target.autoCreate) {
@@ -175,7 +175,7 @@ class Job {
             }
             dstSchema = await dst.getSchema();
           } finally {
-            await dst.client.close().catch(() => {});
+            await dst.close().catch(() => {});
           }
           break;
         }
@@ -184,17 +184,17 @@ class Job {
 
           const src = new LogTable(source.table, srcConfig);
           try {
-            await src.client.connect();
+            await src.open();
             srcSchema = await src.getSchema();
           } finally {
-            await src.client.close().catch(() => {});
+            await src.close().catch(() => {});
           }
 
           if (!_validateSourceColumns(source, srcSchema, logCtx)) return null;
 
           const dst = new LogTable(targetTable, dstConfig);
           try {
-            await dst.client.connect();
+            await dst.open();
             const dstType = await dst.client.selectTableType(targetTable);
             if (dstType.type === 'UNSUPPORTED') {
               if (!this.jobConfig.target.autoCreate) {
@@ -206,7 +206,7 @@ class Job {
             }
             dstSchema = await dst.getSchema();
           } finally {
-            await dst.client.close().catch(() => {});
+            await dst.close().catch(() => {});
           }
           break;
         }
@@ -230,6 +230,86 @@ class Job {
     }
 
     return { tableType, dataTables, srcSchema, dstSchema };
+  }
+
+  /**
+   * src/dst TAG META 동기화 (name 변경 + metadata column value 변경)
+   * workers 시작 전 1회 실행.
+   * @param {string} targetTable - dst 논리 테이블명
+   * @param {import('./db/types').TableSchema} srcSchema
+   * @param {object} logCtx
+   * @returns {Promise<true|null>} 성공 시 true, 실패 시 null
+   */
+  async _syncTagMeta(targetTable, srcSchema, logCtx) {
+    const { source, target } = this.jobConfig;
+    const srcConfig = this.servers.find(s => s.name === source.server);
+    const dstConfig = this.servers.find(s => s.name === target.server);
+    const tagIdentifier = source.tagIdentifier;
+
+    const metaColNames = srcSchema.columns
+      .filter(c => c.flag & FLAG_METADATA)
+      .map(c => c.name);
+
+    let srcMeta, dstMeta;
+    const srcClient = new MachbaseClient(srcConfig);
+    const dstClient = new MachbaseClient(dstConfig);
+    try {
+      await srcClient.connect();
+      await dstClient.connect();
+      srcMeta = await srcClient.selectTagMeta(source.table, metaColNames);
+      dstMeta = await dstClient.selectTagMeta(targetTable, metaColNames);
+    } catch (err) {
+      getLogger().error('job', { ...logCtx, msg: `tag meta sync fetch failed: ${err.message}` });
+      return null;
+    } finally {
+      await srcClient.close().catch(() => {});
+      await dstClient.close().catch(() => {});
+    }
+
+    // dst: _ID → row 맵 (tagId 기준 매칭)
+    const dstById = new Map(dstMeta.map(r => [BigInt(r._ID), r]));
+
+    let nameUpdated = 0;
+    let metaUpdated = 0;
+
+    for (const srcRow of srcMeta) {
+      const dstRow = dstById.get(BigInt(srcRow._ID));
+      if (!dstRow) continue; // 신규 태그 — append 시 dst DB 자동 생성
+
+      const canonicalName = TagAliasCache._applyIdentifier(srcRow.name, tagIdentifier);
+      const sets = [];
+      const nameChanged = dstRow.name !== canonicalName;
+      if (nameChanged) sets.push({ name: 'NAME', value: canonicalName });
+
+      const colDiff = metaColNames.filter(col => srcRow[col] !== dstRow[col]);
+      for (const col of colDiff) sets.push({ name: col, value: srcRow[col] });
+
+      if (sets.length === 0) continue;
+
+      if (nameChanged) nameUpdated++;
+      if (colDiff.length > 0) metaUpdated++;
+
+      getLogger().info('job', {
+        ...logCtx,
+        msg: `tag meta sync: tag='${dstRow.name}'${nameChanged ? ` → '${canonicalName}'` : ''}, cols=[${colDiff.join(',')}]`,
+      });
+
+      const updateClient = new MachbaseClient(dstConfig);
+      try {
+        await updateClient.connect();
+        await updateClient.updateTagMeta(targetTable, dstRow.name, sets);
+      } catch (err) {
+        getLogger().error('job', { ...logCtx, msg: `tag meta sync update failed: tag='${dstRow.name}', ${err.message}` });
+        return null;
+      } finally {
+        await updateClient.close().catch(() => {});
+      }
+    }
+
+    if (nameUpdated > 0 || metaUpdated > 0) {
+      getLogger().info('job', { ...logCtx, msg: `tag meta sync done: name_updated=${nameUpdated}, meta_updated=${metaUpdated}` });
+    }
+    return true;
   }
 
   /**
@@ -260,6 +340,18 @@ class Job {
       const srcConfig = this.servers.find(s => s.name === source.server);
       const dstConfig = this.servers.find(s => s.name === target.server);
 
+      // ── TAG 테이블인 경우 meta sync ──
+      if (tableType === 'TAG') {
+        const targetTable = target.table || source.table;
+        const synced = await this._syncTagMeta(targetTable, srcSchema, jobCtx);
+        if (!synced) {
+          if (shutdownFlag.value) break;
+          getLogger().warn('job', { ...jobCtx, msg: 'tag meta sync failed, retrying in 5s' });
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          continue;
+        }
+      }
+
       getLogger().info('job', {
         ...jobCtx,
         table_type: tableType,
@@ -286,7 +378,13 @@ class Job {
 
       try {
         await Promise.all(workers.map(w =>
-          w.run(signal).catch(err => {
+          w.run(signal).then(() => {
+            // shutdown/abort 없이 worker가 종료된 경우 → 비정상 종료로 간주, abort
+            if (!shutdownFlag.value && !signal.aborted) {
+              getLogger().warn('job', { ...jobCtx, partition: w.dataTable, msg: 'worker exited unexpectedly, aborting job' });
+              ac.abort();
+            }
+          }).catch(err => {
             getLogger().error('job', { ...jobCtx, partition: w.dataTable, msg: `worker error: ${err.message}` });
             ac.abort();
             throw err;
