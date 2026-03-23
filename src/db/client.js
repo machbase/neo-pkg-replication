@@ -1,42 +1,71 @@
 'use strict';
 
-const { createConnection, QueryError } = require('@machbase/ts-client');
+const { Client } = require('machcli');
 const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 
 
+class QueryError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'QueryError';
+  }
+}
+
 class MachbaseClient {
   constructor(config) {
-    this.conn = createConnection(config);
+    this._config = config;
+    this._db = null;
+    this._conn = null;
   }
 
-  async connect() {
-    await this.conn.connect();
+  connect() {
+    this._db   = new Client(this._config);
+    this._conn = this._db.connect();
   }
 
-  async close() {
-    await this.conn.end();
+  close() {
+    try { this._conn && this._conn.close(); } catch (_) {}
+    try { this._db   && this._db.close();   } catch (_) {}
+    this._conn = null;
+    this._db   = null;
   }
 
-  async query(sql, values) {
-    const [rows] = await this.conn.query(sql, values);
-    return rows || [];
+  query(sql, values) {
+    try {
+      const rows = values && values.length > 0
+        ? this._conn.query(sql, ...values)
+        : this._conn.query(sql);
+
+      const result = [];
+      for (const row of rows) {
+        result.push(row);
+      }
+      rows.close();
+      return result;
+    } catch (err) {
+      throw new QueryError(err.message);
+    }
   }
 
-  async appendOpen(table, columns, options) {
-    return this.conn.appendOpen(table, columns, options);
+  appendOpen(table, columns) {
+    return this._conn.append(table);
   }
 
-  async execute(sql) {
-    return this.conn.execute(sql);
+  execute(sql, ...values) {
+    try {
+      return values.length > 0 ? this._conn.exec(sql, ...values) : this._conn.exec(sql);
+    } catch (err) {
+      throw new QueryError(err.message);
+    }
   }
 
   /**
    * 테이블 타입 조회
    * @param {string} tableName
-   * @returns {Promise<{ type: 'TAG'|'LOG'|'UNSUPPORTED' }>}
+   * @returns {{ type: 'TAG'|'LOG'|'UNSUPPORTED' }}
    */
-  async selectTableType(tableName) {
-    const rows = await this.query(
+  selectTableType(tableName) {
+    const rows = this.query(
       'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ?',
       [tableName]
     );
@@ -51,9 +80,9 @@ class MachbaseClient {
   /**
    * TAG 데이터 파티션 목록 조회
    * @param {string} tableName - 논리 테이블명
-   * @returns {Promise<Array<{ data_table: string }>>}
+   * @returns {Array<{ data_table: string }>}
    */
-  async selectTagDataTables(tableName) {
+  selectTagDataTables(tableName) {
     const pattern = `_${tableName}_DATA_%`;
     const sql = `
       SELECT m.NAME AS data_table
@@ -65,10 +94,10 @@ class MachbaseClient {
   }
 
   /**
-   * 사용자 테이블 목록 조회 (TAG/LOG 타입만, 내부 테이블 제외)
-   * @returns {Promise<Array<{ NAME: string, TYPE: number }>>}
+   * 사용자 테이블 목록 조회 (TAG/LOG 타입만)
+   * @returns {Array<{ NAME: string, TYPE: number }>}
    */
-  async selectAllTables() {
+  selectAllTables() {
     const sql = `
       SELECT NAME, TYPE
       FROM M$SYS_TABLES
@@ -79,12 +108,10 @@ class MachbaseClient {
 
   /**
    * 테이블명 기준으로 M$SYS_COLUMNS 조회
-   * TAG META 컬럼 조회 및 LOG 컬럼 조회에 사용
-   * c.FLAG === 67108864
    * @param {string} tableName
-   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>>}
+   * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
    */
-  async selectColumnsByTableName(tableName) {
+  selectColumnsByTableName(tableName) {
     const sql = `
       SELECT c.NAME, c.TYPE, c.ID, c.LENGTH, c.FLAG
       FROM M$SYS_COLUMNS c, M$SYS_TABLES t
@@ -95,14 +122,13 @@ class MachbaseClient {
     return this.query(sql, [tableName]);
   }
 
-
   /**
    * 테이블의 최대 RID 조회
    * @param {string} tableName
-   * @returns {Promise<bigint>} 빈 테이블이면 0n
+   * @returns {bigint} 빈 테이블이면 0n
    */
-  async selectMaxRid(tableName) {
-    const rows = await this.query(`SELECT MAX(_RID) as max_rid FROM ${tableName}`);
+  selectMaxRid(tableName) {
+    const rows = this.query(`SELECT MAX(_RID) as max_rid FROM ${tableName}`);
     const raw = rows?.[0]?.max_rid;
     return raw == null ? 0n : BigInt(raw);
   }
@@ -110,9 +136,9 @@ class MachbaseClient {
   /**
    * TAG META 테이블 전체 조회
    * @param {string} logicalTable - 논리 테이블명
-   * @returns {Promise<Array<{ _ID: bigint, name: string }>>}
+   * @returns {Array<{ _ID: bigint, name: string }>}
    */
-  async selectTagNames(logicalTable) {
+  selectTagNames(logicalTable) {
     return this.query(`SELECT _ID, name FROM _${logicalTable}_META`);
   }
 
@@ -120,41 +146,39 @@ class MachbaseClient {
    * TAG META 테이블 조회 (_ID, name + metadata columns)
    * @param {string} logicalTable - 논리 테이블명
    * @param {string[]} metaColNames - metadata column 이름 목록
-   * @param {{ in?: string[], like?: string }|null} [nameFilter=null] - NAME 컬럼 필터
-   * @returns {Promise<Array<{ _ID: bigint, name: string, [col]: any }>>}
+   * @returns {Array<{ _ID: bigint, name: string, [col]: any }>}
    */
-  async selectTagMeta(logicalTable, metaColNames = []) {
+  selectTagMeta(logicalTable, metaColNames = []) {
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
     return this.query(`SELECT _ID, name${extraCols} FROM _${logicalTable}_META`);
   }
 
   /**
-   * TAG META 업데이트 (name 변경 및/또는 metadata column value 변경)
-   * UPDATE {logicalTable} METADATA SET ... WHERE NAME='oldName'
-   * @param {string} logicalTable - 논리 테이블명 (e.g. 'TAG')
-   * @param {string} oldName - WHERE NAME=... 기준 (현재 dst name)
-   * @param {Array<{ name: string, value: any }>} sets - SET 절 항목 (NAME 포함 가능)
+   * TAG META 업데이트
+   * @param {string} logicalTable
+   * @param {string} oldName
+   * @param {Array<{ name: string, value: any }>} sets
    */
-  async updateTagMeta(logicalTable, oldName, sets) {
+  updateTagMeta(logicalTable, oldName, sets) {
     const esc = v => v == null ? 'NULL'
       : typeof v === 'string' ? `'${v.replace(/'/g, "''")}'`
       : String(v);
     const setClauses = sets.map(({ name, value }) => `${name} = ${esc(value)}`).join(', ');
-    await this.execute(
+    this.execute(
       `UPDATE ${logicalTable} METADATA SET ${setClauses} WHERE NAME = ${esc(oldName)}`
     );
   }
 
   /**
-   * TAG META 테이블에서 tagId 기준 단건 조회 (_ID, name, metadata 컬럼 포함)
-   * @param {string} logicalTable - 논리 테이블명
-   * @param {number|bigint} tagId - _ID 값
-   * @param {string[]} [metaColNames=[]] - metadata column 이름 목록
-   * @returns {Promise<{ _ID: bigint, name: string, [col]: any }|null>} 없으면 null
+   * TAG META 테이블에서 tagId 기준 단건 조회
+   * @param {string} logicalTable
+   * @param {number|bigint} tagId
+   * @param {string[]} metaColNames
+   * @returns {{ _ID: bigint, name: string, [col]: any }|null}
    */
-  async selectTagMetaById(logicalTable, tagId, metaColNames = []) {
+  selectTagMetaById(logicalTable, tagId, metaColNames = []) {
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    const rows = await this.query(
+    const rows = this.query(
       `SELECT _ID, name${extraCols} FROM _${logicalTable}_META WHERE _ID = ?`,
       [tagId]
     );
@@ -166,7 +190,7 @@ class MachbaseClient {
    * @param {string} tableName
    * @param {import('./types').TableSchema} srcSchema
    */
-  async createTagTable(tableName, srcSchema) {
+  createTagTable(tableName, srcSchema) {
     const dataCols = srcSchema.columns.filter(c => !(c.flag & FLAG_METADATA));
     const metaCols = srcSchema.columns.filter(c =>   c.flag & FLAG_METADATA);
 
@@ -177,8 +201,8 @@ class MachbaseClient {
 
     const colDefs = dataCols.map(c => {
       let def = `${c.name} ${c.sqlType()}`;
-      if      (c.flag & FLAG_PRIMARY)   def += ' PRIMARY KEY';
-      else if (c.flag & FLAG_BASETIME)  def += ' BASETIME';
+      if      (c.flag & FLAG_PRIMARY)    def += ' PRIMARY KEY';
+      else if (c.flag & FLAG_BASETIME)   def += ' BASETIME';
       else if (c.flag & FLAG_SUMMARIZED) def += ' SUMMARIZED';
       return def;
     });
@@ -188,7 +212,7 @@ class MachbaseClient {
       const metaDefs = metaCols.map(c => `${c.name} ${c.sqlType()}`).join(', ');
       sql += ` METADATA (${metaDefs})`;
     }
-    await this.execute(sql);
+    this.execute(sql);
   }
 
   /**
@@ -196,9 +220,9 @@ class MachbaseClient {
    * @param {string} tableName
    * @param {import('./types').TableSchema} srcSchema
    */
-  async createLogTable(tableName, srcSchema) {
+  createLogTable(tableName, srcSchema) {
     const colDefs = srcSchema.columns.map(c => `${c.name} ${c.sqlType()}`);
-    await this.execute(`CREATE TABLE ${tableName} (${colDefs.join(', ')})`);
+    this.execute(`CREATE TABLE ${tableName} (${colDefs.join(', ')})`);
   }
 }
 
@@ -213,4 +237,4 @@ function toInt64(val) {
   return BigInt(val);
 }
 
-module.exports = { createConnection, QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema };
+module.exports = { QueryError, MachbaseClient, toInt64, ColumnType, Column, TableSchema };

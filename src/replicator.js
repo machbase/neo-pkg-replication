@@ -1,5 +1,6 @@
 'use strict';
 
+const process = require('process');
 const { JobScheduler } = require('./job.js');
 const { getInstance: getLogger } = require('./lib/logger.js');
 
@@ -44,7 +45,7 @@ class Replicator {
     process.once('SIGTERM', () => startShutdown('SIGTERM'));
     process.once('SIGINT', () => startShutdown('SIGINT'));
 
-    getLogger().banner(`repli starting — ${config.replication.jobs.length} job(s) configured`);
+    getLogger().banner(`repli starting - ${config.replication.jobs.length} job(s) configured`);
 
     // config에서 로드된 job들을 scheduler에 등록, autoStart=true인 job은 즉시 시작
     for (const jobConfig of config.replication.jobs) {

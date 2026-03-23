@@ -8,7 +8,6 @@ const { getInstance: getLogger } = require('../lib/logger.js');
 // ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
 
 
-
 /**
  * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환.
  * LogTable.findFirstMissRow 와 TagTable.findFirstMissRow 에서 공유하는 공통 구현.
@@ -18,9 +17,9 @@ const { getInstance: getLogger } = require('../lib/logger.js');
  * @param {Array<{ canonical: string, time: bigint }>} rows
  * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
  * @param {string} suffix - VOLATILE TABLE 이름 suffix (Worker별 고유값, 충돌 방지)
- * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
+ * @returns {{ firstMissIdx: number|null, err: Error|null }}
  */
-async function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
+function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
   if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
 
   const chk = `_repli_chk_${suffix}`;
@@ -30,22 +29,16 @@ async function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
   const nameDdlType = nameCol.sqlType();
 
   try {
-    await client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
-    await client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
+    client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
+    client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
 
-    const stream = new MachbaseStream();
-    const openErr = await stream.open(client, chk, [
-      { name: 'IDX',  type: 'int32'   },
-      { name: 'NAME', type: 'varchar' },
-      { name: 'TIME', type: 'int64'   },
-    ]);
-    if (openErr) return { firstMissIdx: null, err: openErr };
-    const appendErr = await stream.append(rows.map((r, i) => [i, String(r.canonical), BigInt(r.time)]));
-    const closeErr  = await stream.close();
-    if (appendErr) return { firstMissIdx: null, err: appendErr };
-    if (closeErr)  return { firstMissIdx: null, err: closeErr };
+    // VOLATILE TABLE은 append 불가 → INSERT 문으로 데이터 삽입 (TIME 객체 그대로 바인딩)
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      client.execute(`INSERT INTO ${chk} (IDX, NAME, TIME) VALUES (?, ?, ?)`, i, r.canonical, r.time);
+    }
 
-    await client.execute(
+    client.execute(
       `INSERT INTO ${lkp} ` +
       `SELECT t.NAME, t.TIME FROM ${logicalTable} t, ${chk} c ` +
       `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
@@ -53,17 +46,18 @@ async function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
 
     let result;
     try {
-      result = await client.query(
+      result = client.query(
         `SELECT IDX FROM (` +
           `SELECT c.IDX, t.NAME AS T_NAME ` +
           `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
         `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
       );
     } finally {
-      // lkp는 쿼리 직후 즉시 DROP — 연결 종료 시까지 살려두면 비정상 종료 시 서버에 잔류할 수 있음
-      await client.execute(`DROP TABLE ${lkp}`).catch(e =>
-        getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` })
-      );
+      try {
+        client.execute(`DROP TABLE ${lkp}`);
+      } catch (e) {
+        getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` });
+      }
     }
 
     if (!result || result.length === 0) return { firstMissIdx: null, err: null };
@@ -73,10 +67,10 @@ async function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
     getLogger().error('table', { table: logicalTable, msg: err.message });
     return { firstMissIdx: null, err };
   } finally {
-    await client.execute(`DROP TABLE ${chk}`).catch(e =>
-      getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` })
-    );
-    await client.execute(`DROP TABLE ${lkp}`).catch(() => {/* 이미 DROP됨 */});
+    try { client.execute(`DROP TABLE ${chk}`); } catch (e) {
+      getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` });
+    }
+    try { client.execute(`DROP TABLE ${lkp}`); } catch (_) {/* 이미 DROP됨 */}
   }
 }
 
@@ -150,18 +144,18 @@ class LogTable {
 
   /**
    * 테이블 컬럼 목록 조회
-   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>>}
+   * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
    */
-  async getColumns() {
+  getColumns() {
     return this.client.selectColumnsByTableName(this.logicalTable);
   }
 
   /**
    * 스키마 조회 후 반환
-   * @returns {Promise<TableSchema>}
+   * @returns {TableSchema}
    */
-  async getSchema() {
-    const rows = await this.getColumns();
+  getSchema() {
+    const rows = this.getColumns();
     const columns = rows.map(r => new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data', r.LENGTH ?? 0));
     return new TableSchema('LOG', this.logicalTable, columns);
   }
@@ -176,19 +170,18 @@ class LogTable {
 
   /**
    * DB 연결
-   * @returns {Promise<void>}
    */
-  async open() {
+  open() {
     this.client = new MachbaseClient(this.config);
-    await this.client.connect();
+    this.client.connect();
   }
 
   /**
    * append 스트림 열기 (schema 없으면 자동 조회)
-   * @returns {Promise<Error|null>}
+   * @returns {Error|null}
    */
-  async openStream() {
-    if (!this.schema) this.schema = await this.getSchema();
+  openStream() {
+    if (!this.schema) this.schema = this.getSchema();
     this.stream = new MachbaseStream();
     return this.stream.open(
       this.client,
@@ -199,16 +192,16 @@ class LogTable {
 
   /**
    * append 스트림 + DB 연결 닫기
-   * @returns {Promise<Error|null>}
+   * @returns {Error|null}
    */
-  async close() {
+  close() {
     let firstErr = null;
     if (this.stream) {
-      firstErr = await this.stream.close();
+      firstErr = this.stream.close();
       this.stream = null;
     }
     if (this.client) {
-      await this.client.close().catch(err => { if (!firstErr) firstErr = err; });
+      try { this.client.close(); } catch (err) { if (!firstErr) firstErr = err; }
       this.client = null;
     }
     return firstErr;
@@ -216,9 +209,9 @@ class LogTable {
 
   /**
    * 테이블의 최대 RID 조회
-   * @returns {Promise<bigint>}
+   * @returns {bigint}
    */
-  async getMaxRid() {
+  getMaxRid() {
     return this.client.selectMaxRid(this.logicalTable);
   }
 
@@ -228,9 +221,10 @@ class LogTable {
    * @param {bigint} startRid
    * @param {number} [limit=1000]
    * @param {number} [rangeSize=50000]
-   * @returns {Promise<{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }>}
+   * @param {Array|null} [filter=null]
+   * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
    */
-  async read(startRid, limit = 1000, rangeSize = 50000, filter = null) {
+  read(startRid, limit = 1000, rangeSize = 50000, filter = null) {
     const colNames = this.schema.columns.map(c => c.name);
 
     const endRid = startRid + BigInt(rangeSize);
@@ -239,11 +233,11 @@ class LogTable {
     const { clause: whereExtra, params: whereParams } = _buildWhereClause(filter, colNames, this.schema);
     const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.logicalTable} WHERE _RID >= ${startRid}${whereExtra} LIMIT ${limit}`;
     try {
-      const rows = await this.client.query(sql, whereParams.length > 0 ? whereParams : undefined);
+      const rows = this.client.query(sql, whereParams.length > 0 ? whereParams : undefined);
       const result = [];
       for (const row of (rows || [])) {
         if (row._RID == null) {
-          getLogger().warn('table', { msg: `row with null _RID skipped in ${tableName}` });
+          getLogger().warn('table', { msg: `row with null _RID skipped in ${this.logicalTable}` });
           continue;
         }
         const data = {};
@@ -254,7 +248,7 @@ class LogTable {
       }
       return { rows: result, err: null };
     } catch (err) {
-      getLogger().error('table', { table: tableName, msg: err.message });
+      getLogger().error('table', { table: this.logicalTable, msg: err.message });
       return { rows: [], err };
     }
   }
@@ -262,11 +256,11 @@ class LogTable {
   /**
    * 배치 데이터 append
    * @param {Array<object>} rows - 컬럼명 기준 객체 배열
-   * @returns {Promise<Error|null>}
+   * @returns {Error|null}
    */
-  async append(rows) {
+  append(rows) {
     if (!this.stream) {
-      const err = await this.openStream();
+      const err = this.openStream();
       if (err) return err;
     }
 
@@ -280,13 +274,12 @@ class LogTable {
 
   /**
    * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
-   * schema에 NAME 컬럼이 있어야 한다.
    * @param {Array<{ canonical: string, time: bigint }>} rows
-   * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
-   * @param {string} suffix - VOLATILE TABLE 이름 suffix (Worker별 고유값, 충돌 방지)
-   * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
+   * @param {MachbaseClient} client
+   * @param {string} suffix
+   * @returns {{ firstMissIdx: number|null, err: Error|null }}
    */
-  async findFirstMissRow(rows, client, suffix) {
+  findFirstMissRow(rows, client, suffix) {
     return _findFirstMissRow(this.logicalTable, this.schema, rows, client, suffix);
   }
 }
@@ -294,10 +287,6 @@ class LogTable {
 
 /**
  * TAG alias 캐시
- *
- * tag_id(_ID) → name 매핑을 보관하는 순수 캐시.
- * DB 조회는 TagDataTable.cacheTagMetaAll()이 담당하고,
- * TagDataTable.setTagMetaCache()로 주입하여 read() 시 사용한다.
  */
 class TagMetaCache {
   constructor() {
@@ -307,12 +296,6 @@ class TagMetaCache {
 
   get size() { return this._map.size; }
 
-  /**
-   * 항목 추가
-   * @param {number|bigint} tagId
-   * @param {string} name
-   * @param {object} [meta={}] - metadata 컬럼 값 ({ colName: value, ... })
-   */
   set(tagId, name, meta = {}) {
     if (name.includes('\x00')) {
       throw new Error(`tag name contains null byte: ${JSON.stringify(name)}`);
@@ -320,21 +303,10 @@ class TagMetaCache {
     this._map.set(BigInt(tagId), { name, meta });
   }
 
-  /**
-   * tag_id → name 조회
-   * @param {number|bigint} tagId
-   * @returns {string|undefined}
-   */
   get(tagId) {
     return this._map.get(BigInt(tagId))?.name;
   }
 
-  /**
-   * tag_id → canonical name + meta 변환 (캐시에서만 조회)
-   * @param {number|bigint} tagId
-   * @param {{ prefix?: string, suffix?: string }|null} nameRule - NAME 컬럼 규칙
-   * @returns {{ canonical: string|null, meta: object, status: 'ok'|'drop_not_found' }}
-   */
   resolve(tagId, nameRule) {
     const entry = this._map.get(BigInt(tagId));
     if (entry === undefined) return { canonical: null, meta: {}, status: 'drop_not_found' };
@@ -342,12 +314,6 @@ class TagMetaCache {
     return { canonical, meta: entry.meta, status: 'ok' };
   }
 
-  /**
-   * nameRule 설정에 따라 tagName을 변환 (prefix/suffix 적용)
-   * @param {string} tagName
-   * @param {{ prefix?: string, suffix?: string }|null} nameRule
-   * @returns {string}
-   */
   static _applyNameRule(tagName, nameRule) {
     if (!nameRule) return tagName;
     let name = tagName;
@@ -359,9 +325,6 @@ class TagMetaCache {
 
 /**
  * TAG 테이블 복제 클래스
- *
- * 논리 테이블 수준의 스키마 조회와 append 스트림을 담당한다.
- * 파티션 읽기는 TagDataTable이 담당한다.
  */
 class TagTable {
   /**
@@ -380,19 +343,18 @@ class TagTable {
 
   /**
    * 컬럼 목록 조회
-   * @returns {Promise<Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>>}
+   * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
    */
-  async getColumns() {
+  getColumns() {
     return this.client.selectColumnsByTableName(this.logicalTable);
   }
 
   /**
    * TAG 스키마 조회 후 반환
-   * META 테이블에서 컬럼 목록을 조회하여 TableSchema 생성
-   * @returns {Promise<TableSchema>}
+   * @returns {TableSchema}
    */
-  async getSchema() {
-    const rows = await this.getColumns();
+  getSchema() {
+    const rows = this.getColumns();
     const cols = [];
     for (const r of rows) {
       if (r.NAME.startsWith('_')) continue;
@@ -408,9 +370,9 @@ class TagTable {
 
   /**
    * TAG 데이터 파티션 목록 조회
-   * @returns {Promise<Array<{ data_table: string }>>}
+   * @returns {Array<{ data_table: string }>}
    */
-  async getDataTables() {
+  getDataTables() {
     return this.client.selectTagDataTables(this.logicalTable);
   }
 
@@ -424,19 +386,18 @@ class TagTable {
 
   /**
    * DB 연결
-   * @returns {Promise<void>}
    */
-  async open() {
+  open() {
     this.client = new MachbaseClient(this.config);
-    await this.client.connect();
+    this.client.connect();
   }
 
   /**
    * append 스트림 열기 (schema 없으면 자동 조회)
-   * @returns {Promise<Error|null>}
+   * @returns {Error|null}
    */
-  async openStream() {
-    if (!this.schema) this.schema = await this.getSchema();
+  openStream() {
+    if (!this.schema) this.schema = this.getSchema();
     this.stream = new MachbaseStream();
     return this.stream.open(
       this.client,
@@ -447,16 +408,16 @@ class TagTable {
 
   /**
    * append 스트림 + DB 연결 닫기
-   * @returns {Promise<Error|null>}
+   * @returns {Error|null}
    */
-  async close() {
+  close() {
     let firstErr = null;
     if (this.stream) {
-      firstErr = await this.stream.close();
+      firstErr = this.stream.close();
       this.stream = null;
     }
     if (this.client) {
-      await this.client.close().catch(err => { if (!firstErr) firstErr = err; });
+      try { this.client.close(); } catch (err) { if (!firstErr) firstErr = err; }
       this.client = null;
     }
     return firstErr;
@@ -464,14 +425,14 @@ class TagTable {
 
   /**
    * 논리 테이블 전체 조회
-   * @returns {Promise<Array<object>>}
+   * @returns {Array<object>}
    */
-  async read() {
+  read() {
     const colNames = this.schema.columns.map(c => c.name);
     const colList = colNames.join(', ');
     const sql = `SELECT ${colList} FROM ${this.logicalTable}`;
     try {
-      const rows = await this.client.query(sql);
+      const rows = this.client.query(sql);
       return (rows || []).map(row => {
         const data = {};
         for (const col of colNames) {
@@ -488,14 +449,14 @@ class TagTable {
   /**
    * 배치 데이터 append
    * @param {Array<object>} rows - 컬럼명 기준 객체 배열
-   * @returns {Promise<Error|null>}
+   * @returns {Error|null}
    */
-  async append(rows) {
+  append(rows) {
     if (!this.stream) {
-      const err = await this.openStream();
+      const err = this.openStream();
       if (err) return err;
     }
-    
+
     if (!rows || rows.length === 0) return null;
 
     const matrix = rows.map(row =>
@@ -507,22 +468,52 @@ class TagTable {
 
   /**
    * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
-   * schema에 NAME 컬럼이 있어야 한다.
    * @param {Array<{ canonical: string, time: bigint }>} rows
-   * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
-   * @param {string} suffix - VOLATILE TABLE 이름 suffix (Worker별 고유값, 충돌 방지)
-   * @returns {Promise<{ firstMissIdx: number|null, err: Error|null }>}
+   * @param {MachbaseClient} client
+   * @param {string} suffix
+   * @returns {{ firstMissIdx: number|null, err: Error|null }}
    */
-  async findFirstMissRow(rows, client, suffix) {
+  findFirstMissRow(rows, client, suffix) {
     return _findFirstMissRow(this.logicalTable, this.schema, rows, client, suffix);
+  }
+
+  /**
+   * TAG META 전체 로드 (nameFilter 조건 적용)
+   * @param {{ in?: string[], like?: string }|null} [nameFilter=null]
+   * @returns {TagMetaCache}
+   */
+  loadTagMetaCache(nameFilter = null) {
+    const metaColNames = this.schema
+      ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
+      : [];
+    const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
+
+    let whereClauses = [];
+    let params = [];
+    if (nameFilter?.in && nameFilter.in.length > 0) {
+      whereClauses.push(`name IN (${nameFilter.in.map(() => '?').join(', ')})`);
+      params.push(...nameFilter.in);
+    }
+    if (nameFilter?.like) {
+      whereClauses.push(`name LIKE ?`);
+      params.push(nameFilter.like);
+    }
+    const where = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
+    const sql = `SELECT _ID, name${extraCols} FROM _${this.logicalTable}_META${where}`;
+
+    const rows = this.client.query(sql, params.length > 0 ? params : undefined);
+    const cache = new TagMetaCache();
+    for (const row of (rows || [])) {
+      const meta = {};
+      for (const col of metaColNames) meta[col] = row[col];
+      cache.set(row._ID, row.name, meta);
+    }
+    return cache;
   }
 }
 
 /**
  * TAG 데이터 파티션 클래스
- *
- * 단일 파티션(_TAG_DATA_N)의 읽기를 담당한다.
- * Worker별로 독립 인스턴스를 생성해 병렬 실행한다.
  */
 class TagDataTable {
   /**
@@ -550,21 +541,20 @@ class TagDataTable {
   }
 
   /**
-   * DB 연결 — 매 open() 호출마다 새 MachbaseClient 인스턴스를 생성한다.
-   * (@machbase/ts-client는 end() 후 재연결 불가이므로 open()에서 생성)
+   * DB 연결
    */
-  async open() {
+  open() {
     this.client = new MachbaseClient(this.config);
-    await this.client.connect();
+    this.client.connect();
   }
 
   /**
    * DB 연결 닫기
    * @returns {Error|null}
    */
-  async close() {
+  close() {
     if (this.client) {
-      await this.client.close().catch(() => {});
+      try { this.client.close(); } catch (_) {}
       this.client = null;
     }
     return null;
@@ -572,23 +562,22 @@ class TagDataTable {
 
   /**
    * 파티션의 최대 RID 조회
-   * @returns {Promise<BigInt>}
+   * @returns {bigint}
    */
-  async getMaxRid() {
+  getMaxRid() {
     return this.client.selectMaxRid(this.dataTable);
   }
 
   /**
    * _TAG_META 전체 로드 후 내부 aliasCache 구성 (metadata 컬럼 값 포함)
-   *
    * @returns {Error|null}
    */
-  async cacheTagMetaAll() {
+  cacheTagMetaAll() {
     try {
       const metaColNames = this.schema
         ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
         : [];
-      const rows = await this.client.selectTagMeta(this.logicalTable, metaColNames);
+      const rows = this.client.selectTagMeta(this.logicalTable, metaColNames);
       this.aliasCache = new TagMetaCache();
       for (const row of (rows || [])) {
         const meta = {};
@@ -604,16 +593,14 @@ class TagDataTable {
 
   /**
    * 캐시 miss 시 DB에서 tag_id → name을 단건 조회하여 캐시에 등록.
-   * 태그 존재 시 true, 없으면 false 반환. 오류 시 throw.
-   *
    * @param {*} tagId
-   * @returns {Promise<boolean>}
+   * @returns {boolean}
    */
-  async cacheTagMetaByTagID(tagId) {
+  cacheTagMetaByTagID(tagId) {
     const metaColNames = this.schema
       ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
       : [];
-    const row = await this.client.selectTagMetaById(this.logicalTable, metaColNames, tagId);
+    const row = this.client.selectTagMetaById(this.logicalTable, tagId, metaColNames);
     if (row == null) return false;
     const meta = {};
     for (const col of metaColNames) meta[col] = row[col];
@@ -624,18 +611,15 @@ class TagDataTable {
   /**
    * RID 기반 배치 읽기
    *
-   * aliasCache가 설정된 경우 tagId를 canonical name으로 resolve하여 data.NAME에 채운다.
-   * resolve 결과가 'drop_not_found'인 행은 결과에서 제외된다.
-   *
    * @param {bigint} startRid
    * @param {number} [limit=1000]
    * @param {number} [rangeSize=50000]
-   * @param {{ prefix?: string, suffix?: string }|null} [nameRule=null] - transform의 NAME 규칙
-   * @param {string[]|null} [sourceColumns=null] - 읽을 컬럼명 목록 (null이면 전체)
-   * @param {Array|null} [filter=null] - ColumnFilterConfig[] — 숫자형 컬럼 WHERE절 필터
-   * @returns {Promise<{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }>}
+   * @param {{ prefix?: string, suffix?: string }|null} [nameRule=null]
+   * @param {string[]|null} [sourceColumns=null]
+   * @param {Array|null} [filter=null]
+   * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
    */
-  async read(startRid, limit = 1000, rangeSize = 50000, nameRule = null, sourceColumns = null, filter = null) {
+  read(startRid, limit = 1000, rangeSize = 50000, nameRule = null, sourceColumns = null, filter = null) {
     const cols = this.schema.columns.filter(c => !(c.flag & FLAG_METADATA));
     const filtered = sourceColumns
       ? cols.filter(c => sourceColumns.includes(c.name))
@@ -648,11 +632,11 @@ class TagDataTable {
     const { clause: whereExtra, params: whereParams } = _buildWhereClause(filter, colNames, this.schema);
     const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE _RID >= ${startRid}${whereExtra} LIMIT ${limit}`;
     try {
-      const rows = await this.client.query(sql, whereParams.length > 0 ? whereParams : undefined);
+      const rows = this.client.query(sql, whereParams.length > 0 ? whereParams : undefined);
       const result = [];
       for (const row of (rows || [])) {
         if (row._RID == null) {
-          getLogger().warn('table', { msg: `row with null _RID skipped in ${tableName}` });
+          getLogger().warn('table', { msg: `row with null _RID skipped in ${this.dataTable}` });
           continue;
         }
         const data = {};
@@ -664,11 +648,10 @@ class TagDataTable {
           const tagId = data.NAME;
           let { canonical, meta, status } = this.aliasCache.resolve(tagId, nameRule);
           if (status === 'drop_not_found') {
-            const found = await this.cacheTagNameByTagID(tagId);
+            const found = this.cacheTagMetaByTagID(tagId);
             if (!found) continue;
             ({ canonical, meta } = this.aliasCache.resolve(tagId, nameRule));
           }
-          // nameFilter 조건 검사 — 조건 밖의 태그는 skip
           const nameFilterEntry = filter?.find(f => f.column === 'NAME') ?? null;
           if (nameFilterEntry) {
             if (nameFilterEntry.in && !nameFilterEntry.in.includes(canonical)) continue;
@@ -684,7 +667,7 @@ class TagDataTable {
 
       return { rows: result, err: null };
     } catch (err) {
-      getLogger().error('table', { table: tableName, msg: err.message });
+      getLogger().error('table', { table: this.dataTable, msg: err.message });
       return { rows: [], err };
     }
   }

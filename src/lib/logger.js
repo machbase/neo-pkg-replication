@@ -42,7 +42,7 @@ class Logger {
   /** 시작 구분선 배너 출력 */
   banner(msg) {
     const ts = new Date().toISOString();
-    const line = `${'─'.repeat(72)}`;
+    const line = '-'.repeat(72);
     const text = [
       line,
       `  ${ts}  ${msg}`,
@@ -50,11 +50,11 @@ class Logger {
     ].join('\n');
 
     if (this._stdout) {
-      process.stdout.write(text + '\n');
+      console.println(text);
     }
     if (this._fileEnabled) {
       this._ensureStream();
-      if (this._stream) this._stream.write(text + '\n');
+      if (this._stream) this._stream.write(text + '\n', 'utf8');
     }
   }
 
@@ -75,16 +75,16 @@ class Logger {
 
     if (this._stdout) {
       if (level === 'error' || level === 'warn') {
-        process.stderr.write(line + '\n');
+        console.error(line);
       } else {
-        process.stdout.write(line + '\n');
+        console.println(line);
       }
     }
 
     if (this._fileEnabled) {
       this._ensureStream();
       if (this._stream) {
-        this._stream.write(line + '\n');
+        this._stream.write(line + '\n', 'utf8');
       }
     }
   }
@@ -121,15 +121,10 @@ class Logger {
     try {
       fs.mkdirSync(this._fileDir, { recursive: true });
       const filePath = path.join(this._fileDir, `repli-${today}.log`);
-      this._stream = fs.createWriteStream(filePath, { flags: 'a' });
-      this._stream.on('error', err => {
-        // 파일 쓰기 오류는 stderr에만 출력 (무한 루프 방지)
-        process.stderr.write(`[Logger] file stream error: ${err.message}\n`);
-        this._stream = null;
-      });
+      this._stream = fs.createWriteStream(filePath, { flags: 'a', encoding: 'utf8' });
       this._currentDate = today;
     } catch (err) {
-      process.stderr.write(`[Logger] failed to open log file: ${err.message}\n`);
+      console.error(`[Logger] failed to open log file: ${err.message}`);
     }
   }
 }

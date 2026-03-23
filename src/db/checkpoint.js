@@ -2,17 +2,22 @@
 
 const { getInstance: getLogger } = require('../lib/logger.js');
 
-const fs = require('fs/promises');
+const fs = require('fs');
 const path = require('path');
 
 // ─── 내부 파일 I/O 헬퍼 ──────────────────────────────────────────────────────
 
 const BIGINT_KEYS = new Set(['lastSuccessRid']);
 
+// goja(jsh)에서 typeof bigint === 'bigint'가 동작하지 않으므로 별도 판별
+function _isBigInt(v) {
+  return typeof v === 'bigint' || (v !== null && typeof v === 'object' && v.constructor && v.constructor.name === 'BigInt');
+}
+
 function _stringify(data) {
   return JSON.stringify(
     data,
-    (key, value) => (typeof value === 'bigint' ? value.toString() : value),
+    (key, value) => (_isBigInt(value) ? value.toString() : value),
     2
   );
 }
@@ -29,14 +34,14 @@ function _parse(content) {
 /**
  * JSON atomic write (tmp → rename)
  */
-async function _writeFile(filePath, data) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${process.hrtime.bigint()}.tmp`;
-  await fs.writeFile(tmpPath, _stringify(data), 'utf-8');
+function _writeFile(filePath, data) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, _stringify(data), 'utf-8');
   try {
-    await fs.rename(tmpPath, filePath);
+    fs.renameSync(tmpPath, filePath);
   } catch (err) {
-    await fs.unlink(tmpPath).catch(() => {});
+    try { fs.unlinkSync(tmpPath); } catch (_) {}
     throw err;
   }
 }
@@ -59,12 +64,12 @@ class CheckpointStore {
    * @param {string} dataTable
    * @returns {Promise<{ cp: object|null, exists: boolean, err: Error|null }>}
    */
-  async load(jobId, dataTable) {
+  load(jobId, dataTable) {
     const filePath = this._filePath(jobId, dataTable);
 
     let data;
     try {
-      data = _parse(await fs.readFile(filePath, 'utf-8'));
+      data = _parse(fs.readFileSync(filePath, 'utf-8'));
     } catch (err) {
       if (err.code === 'ENOENT') {
         return { cp: null, exists: false, err: null };
@@ -110,8 +115,8 @@ class CheckpointStore {
    * @param {{ onSaveFailure?: 'continue'|'abort' }} [opts]
    * @returns {Error|null}
    */
-  async save(jobId, dataTable, cp, stats, opts) {
-    if (typeof cp.lastSuccessRid !== 'bigint') {
+  save(jobId, dataTable, cp, stats, opts) {
+    if (!_isBigInt(cp.lastSuccessRid)) {
       throw new TypeError(`lastSuccessRid must be BigInt, got ${typeof cp.lastSuccessRid}`);
     }
 
@@ -130,7 +135,7 @@ class CheckpointStore {
     };
 
     try {
-      await _writeFile(this._filePath(jobId, dataTable), data);
+      _writeFile(this._filePath(jobId, dataTable), data);
       getLogger().info('checkpoint_saved', {
         jobId,
         dataTable,

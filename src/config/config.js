@@ -3,10 +3,10 @@
 const path = require('path');
 const { getInstance: getLogger } = require('../lib/logger.js');
 
-const fs = require('fs/promises');
+const fs = require('fs');
 
-const DEFAULT_CONFIG_PATH = path.join(__dirname, '../../config.json');
-const CHECKPOINT_DIRECTORY = path.join(__dirname, '../../data');
+const DEFAULT_CONFIG_PATH = path.join(process.cwd(), 'config.json');
+const CHECKPOINT_DIRECTORY = path.join(process.cwd(), 'data');
 
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -21,8 +21,8 @@ class Config {
     this.api         = api;
   }
 
-  static async load(filePath = DEFAULT_CONFIG_PATH) {
-    const content = await fs.readFile(filePath, 'utf-8');
+  static load(filePath = DEFAULT_CONFIG_PATH) {
+    const content = fs.readFileSync(filePath, 'utf-8');
     let raw;
     try {
       raw = JSON.parse(content);
@@ -59,7 +59,7 @@ class Config {
     });
   }
 
-  async save() {
+  save() {
     const data = {
       version: this.version,
       servers: this.servers,
@@ -67,9 +67,9 @@ class Config {
       api: this.api,
       replication: this.replication,
     };
-    const tmp = `${this.filePath}.${process.hrtime.bigint()}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf-8');
-    await fs.rename(tmp, this.filePath);
+    const tmp = `${this.filePath}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmp, this.filePath);
   }
 
   addJob(rawJob) {

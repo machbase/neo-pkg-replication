@@ -9,9 +9,7 @@ const { CHECKPOINT_DIRECTORY } = require('../config/config.js');
 
 // ─── 상수 ────────────────────────────────────────────────────────────────────
 
-// Statement ID 고갈 방지 임계값: ts-client는 쿼리마다 statement ID를 소비하고
-// 서버 한도는 1024. read는 배치당 2개 쿼리(MAX + SELECT)를 사용하므로
-// 이 임계값에 도달하면 연결을 재생성한다.
+// machcli는 statement ID 소진 문제가 없으나 안전을 위해 일정 주기마다 연결 갱신
 const STMT_REFRESH_THRESHOLD = 900;
 
 // STARTUP_INTEGRITY 배치 크기 상한: VOLATILE TABLE에 한 번에 INSERT할 행 수 제한
@@ -31,7 +29,6 @@ function maxRid(rows) {
 /**
  * transform[] 적용: (value + add) * multiply, prefix/suffix
  * number 타입 컬럼에만 add/multiply 적용, BigInt/null/string은 skip
- * transform이 null/빈 배열이면 rows를 그대로 반환
  */
 function _applyTransform(rows, transform) {
   if (!transform || transform.length === 0) return rows;
@@ -42,29 +39,13 @@ function _applyTransform(rows, transform) {
       if (typeof val === 'number') {
         out[t.column] = (val + t.add) * t.multiply;
       }
-      // BigInt(datetime/long), null은 skip — prefix/suffix는 TAG NAME에만 해당하며
-      // table.js의 _applyNameRule에서 이미 처리됨
     }
     return out;
   });
 }
 
 /**
- * 공통 retry 루프: fn()을 retry 설정에 따라 반복 호출
- *
- * fn은 다음 중 하나를 반환해야 함:
- *   { done: true,  value }  → 성공, value를 반환
- *   { done: false, retryable: boolean, msg?: string } → 재시도 또는 즉시 중단
- *
- * @param {object} opts
- * @param {Function} opts.fn         - async 함수 () => { done, value, retryable, msg }
- * @param {RetryHandler} opts.retry
- * @param {{ value: boolean }} opts.shutdownFlag
- * @param {object} opts.logCtx
- * @param {string} opts.exhaustedMsg - 재시도 소진 시 에러 메시지
- * @param {string} [opts.retryMsg]   - 재시도 warn 메시지 프리픽스
- * @param {string} [opts.phase]      - logCtx 보완용 phase 필드
- * @returns {{ ok: true, value }|{ ok: false }}
+ * 공통 retry 루프
  */
 async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retryMsg, phase }) {
   const ctx = phase ? { ...logCtx, phase } : logCtx;
@@ -83,7 +64,7 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
       const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
       if (signal === 'shutdown') return { ok: false };
     }
-    const result = await fn();
+    const result = fn();
     if (result.done) return { ok: true, value: result.value };
     if (!result.retryable) {
       getLogger().error('worker', { ...ctx, msg: result.msg });
@@ -95,12 +76,12 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
 
 /**
  * dstTable.append 을 retry 포함하여 호출
- * @returns {boolean} true on success, false on exhausted/shutdown
+ * @returns {Promise<boolean>} true on success, false on exhausted/shutdown
  */
 async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
   const result = await _withRetry({
-    fn: async () => {
-      const err = await dstTable.append(outRows);
+    fn: () => {
+      const err = dstTable.append(outRows);
       if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable append error: ${err.message}` };
       return { done: true, value: true };
     },
@@ -120,8 +101,6 @@ async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
  *
  * 상태 전이:
  *   RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
- *
- * STARTUP_INTEGRITY 진입 조건: TAG 테이블 + 체크포인트 존재 + integrity.enabled !== false
  */
 class Worker {
   constructor(jobConfig, tableType, dataTable,
@@ -149,7 +128,6 @@ class Worker {
 
     if (signal.aborted) return;
 
-    // AbortSignal을 shutdownFlag처럼 동작하도록 proxy 생성
     const effectiveShutdownFlag = {
       get value() { return signal.aborted || shutdownFlag.value; },
     };
@@ -168,9 +146,8 @@ class Worker {
     }
 
     try {
-      await srcTable.open();
-
-      await dstTable.open();
+      srcTable.open();
+      dstTable.open();
 
       await this._runStateMachine({
         srcTable,
@@ -178,12 +155,16 @@ class Worker {
         shutdownFlag: effectiveShutdownFlag,
       });
     } finally {
-      await dstTable.close().catch(err =>
-        getLogger().error('worker', { ...logCtx, msg: `dstTable.close failed: ${err.message}` })
-      );
-      await srcTable.close().catch(err =>
-        getLogger().error('worker', { ...logCtx, msg: `srcTable.close failed: ${err.message}` })
-      );
+      try {
+        dstTable.close();
+      } catch (err) {
+        getLogger().error('worker', { ...logCtx, msg: `dstTable.close failed: ${err.message}` });
+      }
+      try {
+        srcTable.close();
+      } catch (err) {
+        getLogger().error('worker', { ...logCtx, msg: `srcTable.close failed: ${err.message}` });
+      }
     }
   }
 
@@ -192,10 +173,10 @@ class Worker {
    */
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
     const { jobConfig, tableType, dataTable } = this;
-    const batchSize     = jobConfig.queryLimit;
-    const ridRangeSize  = jobConfig.ridRangeSize;
+    const batchSize      = jobConfig.queryLimit;
+    const ridRangeSize   = jobConfig.ridRangeSize;
     const pollIntervalMs = jobConfig.pollIntervalMs;
-    const sourceColumns = jobConfig.source.columns;
+    const sourceColumns  = jobConfig.source.columns;
     const filter    = jobConfig.source.filter    ?? null;
     const transform = jobConfig.source.transform ?? null;
     const nameRule  = transform?.find(t => t.column === 'NAME') ?? null;
@@ -207,7 +188,7 @@ class Worker {
     // RESOLVE_START — 시작 RID 결정
     // ═══════════════════════════════════════════════════════════
 
-    const { cp, exists: cpExists } = await checkpointStore.load(jobConfig.id, dataTable);
+    const { cp, exists: cpExists } = checkpointStore.load(jobConfig.id, dataTable);
     let startRid;
 
     if (cpExists && cp) {
@@ -217,7 +198,7 @@ class Worker {
       const startMode = jobConfig.startMode;
       if (startMode === 'now') {
         try {
-          startRid = (await srcTable.getMaxRid()) + 1n;
+          startRid = srcTable.getMaxRid() + 1n;
         } catch (err) {
           getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (startMode=now): ${err.message}` });
           return;
@@ -232,15 +213,14 @@ class Worker {
 
     // TAG alias cache 로드
     if (tableType === 'TAG') {
-      const loadErr = await srcTable.cacheTagMetaAll();
+      const loadErr = srcTable.cacheTagMetaAll();
       if (loadErr) {
         getLogger().warn('worker', { ...logCtx, msg: `loadTagMetaCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
     }
 
     // ═══════════════════════════════════════════════════════════
-    // STARTUP_INTEGRITY — 재시작 직후 대상 DB 정합성 확인
-    // 진입 조건: TAG 테이블 + 이전 체크포인트 존재 + integrity.enabled
+    // STARTUP_INTEGRITY
     // ═══════════════════════════════════════════════════════════
 
     const doIntegrity = tableType === 'TAG'
@@ -262,7 +242,7 @@ class Worker {
         logCtx,
         checkpointStore,
       });
-      if (result === null) return; // shutdown or error
+      if (result === null) return;
       startRid = result.startRid;
     }
 
@@ -273,13 +253,12 @@ class Worker {
     let stmtCount = 0;
 
     while (!shutdownFlag.value) {
-      // Statement ID 한도 체크 — close() 후 open()으로 새 연결 생성
       if (stmtCount >= STMT_REFRESH_THRESHOLD) {
         try {
-          await srcTable.close();
-          await srcTable.open();
+          srcTable.close();
+          srcTable.open();
           if (tableType === 'TAG') {
-            await srcTable.cacheTagMetaAll();
+            srcTable.cacheTagMetaAll();
           }
           stmtCount = 0;
           getLogger().debug('worker', { ...logCtx, msg: 'sourceConn refreshed (statement ID threshold)' });
@@ -289,12 +268,11 @@ class Worker {
         }
       }
 
-      // 소스 배치 읽기
       let readResult;
       if (tableType === 'TAG') {
-        readResult = await srcTable.read(startRid, batchSize, ridRangeSize, nameRule, sourceColumns, filter);
+        readResult = srcTable.read(startRid, batchSize, ridRangeSize, nameRule, sourceColumns, filter);
       } else {
-        readResult = await srcTable.read(startRid, batchSize, ridRangeSize, filter);
+        readResult = srcTable.read(startRid, batchSize, ridRangeSize, filter);
       }
       const { rows, err: readErr } = readResult;
       if (readErr) {
@@ -302,11 +280,9 @@ class Worker {
         return;
       }
 
-      // read는 MAX(_RID) + SELECT = 2개 쿼리 소비
       stmtCount += 2;
 
       if (rows.length === 0) {
-        // 새 데이터 없음 → poll 대기
         const signal = await retry.sleepOrShutdown(pollIntervalMs, shutdownFlag);
         if (signal === 'shutdown') return;
         continue;
@@ -317,13 +293,13 @@ class Worker {
         rows.map(row => row.data),
         transform
       );
-      const droppedNoMeta = 0; // drop_not_found 행은 srcTable.read()가 이미 제외
+      const droppedNoMeta = 0;
 
       if (shutdownFlag.value) return;
 
       if (outRows.length > 0) {
         const ok = await _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx);
-        if (!ok) return; // exhausted or shutdown
+        if (!ok) return;
       }
 
       const batchStats = {
@@ -332,7 +308,7 @@ class Worker {
         droppedNoMeta,
         skippedExists: 0,
       };
-      await checkpointStore.save(jobConfig.id, dataTable, {
+      checkpointStore.save(jobConfig.id, dataTable, {
         lastSuccessRid: maxRidInBatch,
         sourceServer:   jobConfig.source.server,
         sourceTable:    jobConfig.source.table,
@@ -340,13 +316,11 @@ class Worker {
 
       startRid = maxRidInBatch + 1n;
     }
-    return;
   }
 
   /**
    * STARTUP_INTEGRITY 단계 실행
-   *
-   * @returns {{ startRid: BigInt }|null}  null = shutdown or error (caller must return)
+   * @returns {Promise<{ startRid: BigInt }|null>}
    */
   async _runStartupIntegrity({
     startRid,
@@ -369,41 +343,32 @@ class Worker {
     const integrityBatchSize = Math.min(batchSize, INTEGRITY_BATCH_LIMIT);
 
     while (!shutdownFlag.value) {
-      // @machbase/ts-client는 쿼리마다 statement ID를 소비하고 서버는 1024개 한도를 가짐.
-      // MachbaseFacadeConnection.end() 후 재연결 불가 — 배치마다 신규 접속을 생성한다.
       const intConn = new MachbaseClient(dstConfig);
-      // 'continue' | 'break' | 'return'
       let outcome = 'continue';
 
       try {
-        await intConn.connect();
+        intConn.connect();
 
-        // 소스 배치 읽기 (drop_not_found 행은 srcTable.read()가 이미 제외)
-        // STARTUP_INTEGRITY는 TAG 전용이므로 항상 TagDataTable.read() 시그니처 사용
-        const { rows, err: readErr } = await srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, nameRule, sourceColumns, filter);
+        const { rows, err: readErr } = srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, nameRule, sourceColumns, filter);
         if (readErr) {
           getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readErr.message}` });
           outcome = 'return'; break;
         }
 
         if (rows.length === 0) {
-          // 소스의 모든 데이터가 대상에 존재함 → STEADY 진입
           startRid = integrityRid;
           getLogger().debug('worker', { ...logCtx, toRid: String(integrityRid), msg: 'integrity check: all rows confirmed' });
           outcome = 'break'; break;
         }
 
         const maxRidInBatch = maxRid(rows);
-
-        // 1단계: 배치 내 모든 row의 resolved 목록 구성 (read()가 이미 drop 제외)
         const resolved = rows.map(row => ({ rid: row.rid, canonical: row.data.NAME, time: row.data.TIME }));
 
         if (shutdownFlag.value) { outcome = 'return'; break; }
 
-        // 2단계: VOLATILE TABLE + JOIN으로 첫 번째 miss row 탐색
         const { firstMissIdx, err: batchErr } = resolved.length === 0
           ? { firstMissIdx: null, err: null }
-          : await dstTable.findFirstMissRow(resolved, intConn, dataTable);
+          : dstTable.findFirstMissRow(resolved, intConn, dataTable);
 
         if (batchErr) {
           getLogger().error('worker', { ...logCtx, msg: `findFirstMissRow failed: ${batchErr.message}` });
@@ -430,7 +395,7 @@ class Worker {
 
         if (firstMissRid !== null) {
           const safeCpRid = firstMissRid > 0n ? firstMissRid - 1n : 0n;
-          await checkpointStore.save(jobConfig.id, dataTable, {
+          checkpointStore.save(jobConfig.id, dataTable, {
             lastSuccessRid: safeCpRid,
             sourceServer:   jobConfig.source.server,
             sourceTable:    jobConfig.source.table,
@@ -440,8 +405,7 @@ class Worker {
           outcome = 'break'; break;
         }
 
-        // 배치 내 모든 row가 존재 → 다음 배치로 진행
-        await checkpointStore.save(jobConfig.id, dataTable, {
+        checkpointStore.save(jobConfig.id, dataTable, {
           lastSuccessRid: maxRidInBatch,
           sourceServer:   jobConfig.source.server,
           sourceTable:    jobConfig.source.table,
@@ -449,12 +413,11 @@ class Worker {
         integrityRid = maxRidInBatch + 1n;
         getLogger().debug('worker', { ...logCtx, nextRid: String(integrityRid), msg: 'integrity check: batch confirmed' });
       } finally {
-        await intConn.close().catch(() => {});
+        try { intConn.close(); } catch (_) {}
       }
 
       if (outcome === 'return') return null;
       if (outcome === 'break')  break;
-      // outcome === 'continue' → 루프 계속
     }
 
     if (shutdownFlag.value) return null;

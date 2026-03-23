@@ -4,23 +4,14 @@ Machbase TAG / LOG 테이블 간 데이터 복제(replication) 도구.
 
 소스 DB에서 `_RID` 기반으로 데이터를 읽어 대상 DB에 Append Stream으로 기록한다. 체크포인트 파일로 재시작 지점을 관리하여 **at-least-once** 복제를 보장한다.
 
-- **런타임**: Node.js v22 (CommonJS)
-- **핵심 의존성**: `@machbase/ts-client@0.9.3` (CMI 프로토콜 기반 Machbase 네이티브 클라이언트)
+- **런타임**: machbase-neo jsh (goja 기반 JavaScript 런타임)
+- **핵심 의존성**: `machcli` (내장 CMI 프로토콜 기반 Machbase 네이티브 클라이언트), `http` (내장 HTTP 서버)
 
 ---
 
 ## 요구사항
 
-- Node.js v22 이상
-- Machbase Neo (소스 / 대상)
-
----
-
-## 설치
-
-```bash
-npm install
-```
+- machbase-neo (jsh 런타임 포함, 소스 / 대상 DB 포함)
 
 ---
 
@@ -28,10 +19,10 @@ npm install
 
 ```bash
 # 기본 (./config.json 사용)
-node app.js
+machbase-neo jsh app.js
 
 # 설정 파일 경로 직접 지정
-node app.js /path/to/config.json
+machbase-neo jsh app.js /path/to/config.json
 ```
 
 종료는 `SIGTERM` 또는 `SIGINT`(Ctrl+C)로 graceful shutdown된다. 현재 처리 중인 배치를 완료한 뒤 체크포인트를 저장하고 종료한다.
@@ -72,7 +63,7 @@ DB 접속 정보 배열. `name` 필드로 job에서 서버를 참조한다.
 | level | `"info"` | 로그 레벨: `trace`, `debug`, `info`, `warn`, `error` |
 | stdout | `true` | 표준 출력 여부 |
 | file.enabled | `false` | 파일 출력 여부 |
-| file.directory | `"./logs"` | 로그 파일 디렉토리 |
+| file.directory | `"./logs"` | 로그 파일 디렉토리 (jsh 환경에서는 절대경로 권장, 예: `/work/logs`) |
 
 ### api
 
@@ -214,8 +205,10 @@ _TAG_DATA_3  ──┘
 
 ## 테스트
 
+단위 테스트 및 통합 테스트는 Node.js v22 환경에서 실행한다.
+
 ```bash
-# 단위 테스트 (165개, DB 연결 불필요)
+# 단위 테스트 (DB 연결 불필요)
 node --test tests/unit/*.test.js
 
 # 통합 테스트 (실 DB 연결 필요 — 127.0.0.1:5656)

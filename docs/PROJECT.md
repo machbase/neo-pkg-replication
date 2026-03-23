@@ -1,8 +1,8 @@
 # repli-js 프로젝트 문서
 
 **프로젝트**: Machbase TAG / Log 테이블 복제 도구
-**런타임**: Node.js v22 (CommonJS)
-**최종 수정**: 2026-03-23 (columnRules 분리 → filter(WHERE절 필터), transform(post-read 값 변환). TAG NAME filter는 META 조회 시 WHERE절로 처리)
+**런타임**: machbase-neo jsh (goja 기반 JavaScript 런타임)
+**최종 수정**: 2026-03-23 (Node.js v22 → machbase-neo jsh 런타임 마이그레이션 완료. columnRules 분리 → filter(WHERE절 필터), transform(post-read 값 변환). TAG NAME filter는 META 조회 시 WHERE절로 처리)
 
 ---
 
@@ -19,8 +19,7 @@
 9. [테이블 타입별 동작 비교](#9-테이블-타입별-동작-비교)
 10. [UML 다이어그램](#10-uml-다이어그램)
 11. [확정 설계 결정 사항](#11-확정-설계-결정-사항)
-12. [@machbase/ts-client 알려진 버그](#12-machbasets-client-알려진-버그)
-13. [미결 사항 및 향후 과제](#13-미결-사항-및-향후-과제)
+12. [미결 사항 및 향후 과제](#12-미결-사항-및-향후-과제)
 
 ---
 
@@ -46,7 +45,7 @@
 
 ### 1.4 핵심 의존성
 
-- `@machbase/ts-client@0.9.3` — CMI 프로토콜 기반 Machbase 네이티브 클라이언트
+- `machcli` — jsh 내장 동기 DB 클라이언트 (machbase-neo jsh 전용)
 
 ### 1.5 용어 정의
 
@@ -81,8 +80,8 @@ repli-js/
 │   ├── config/
 │   │   └── config.js           # Config + 도메인 클래스 전체 (ServerConfig, JobConfig 등)
 │   ├── db/
-│   │   ├── client.js           # MachbaseClient, toInt64
-│   │   ├── stream.js           # MachbaseStream, _toCell (append 스트림 래퍼)
+│   │   ├── client.js           # MachbaseClient, toInt64 (machcli 래퍼)
+│   │   ├── stream.js           # MachbaseAppender, _toCell (append 래퍼)
 │   │   ├── table.js            # TagMetaCache, LogTable, TagTable, TagDataTable
 │   │   ├── checkpoint.js       # CheckpointStore (atomic write, BigInt 지원 내장)
 │   │   └── types.js            # ColumnType, Column, TableSchema (순수 도메인 모델)
@@ -127,8 +126,8 @@ repli-js/
 │           └─ JobScheduler                                    │
 │               └─ Job (job당 1개, 독립 루프)                   │
 │                   ├─ _discoverMapping() — MachbaseClient(단기)│
-│                   ├─ AbortController                          │
-│                   └─ Worker × N  (Promise.all, 병렬)         │
+│                   ├─ AbortController (자체 구현)              │
+│                   └─ Worker × N  (동기 병렬, 스레드)         │
 │                       ├─ TagDataTable/LogTable — 소스 DB 읽기 │
 │                       ├─ TagTable/LogTable — 대상 DB 쓰기    │
 │                       └─ Worker.run() — 상태 머신            │
@@ -137,7 +136,7 @@ repli-js/
 
 ### 2.3 Connection 관리 원칙 (설계 결정 B-01)
 
-> **설계 번복 사유**: 통합 테스트 중 `@machbase/ts-client`가 단일 connection에서 동시 query 또는 append 호출 시 `"Unexpected protocol N, expected M"` 오류 발생 확인.
+> **설계 번복 사유**: 통합 테스트 중 단일 connection에서 동시 query 또는 append 호출 시 충돌 오류 발생 확인.
 
 **확정 구조**: data_table(Worker)당 srcConn + dstConn 각 1개 생성
 
@@ -145,15 +144,15 @@ repli-js/
 mapping (소스 table → 대상 table)
   [DISCOVER]  sourceConn: 1개  ── 타입/파티션 조회 후 close
 
-  [Worker_0]  srcTable(srcConn_0) + dstTable(dstConn_0)  (appendOpen 포함)
-  [Worker_1]  srcTable(srcConn_1) + dstTable(dstConn_1)  (appendOpen 포함)
+  [Worker_0]  srcTable(srcConn_0) + dstTable(dstConn_0)  (append 포함)
+  [Worker_1]  srcTable(srcConn_1) + dstTable(dstConn_1)  (append 포함)
   ...
-  [Worker_N]  srcTable(srcConn_N) + dstTable(dstConn_N)  (appendOpen 포함)
+  [Worker_N]  srcTable(srcConn_N) + dstTable(dstConn_N)  (append 포함)
 ```
 
 - srcTable(TagDataTable/LogTable)이 srcConn을 소유, dstTable(TagTable/LogTable)이 dstConn을 소유 (close 책임도 각자)
 - STARTUP_INTEGRITY에서 intConn(integrity 전용)은 배치마다 신규 생성 후 close
-  - `@machbase/ts-client` 연결은 `end()` 후 재연결 불가 → 재사용 금지
+  - machcli 연결은 close 후 재연결 불가 → 재사용 금지
   - statement ID 서버 한도(1024개/connection) 초과 방지
 
 ### 2.4 Machbase TAG 테이블 내부 구조
@@ -297,11 +296,11 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) → STEADY
 ### M1. Config (`src/config/config.js`)
 
 ```js
-// 로드
-const config = await Config.load(filePath?)   // 기본: ./config.json
+// 로드 (동기)
+const config = Config.load(filePath?)   // 기본: /work/config.json
 
-// 저장 (atomic write)
-await config.save()
+// 저장 (atomic write, 동기)
+config.save()
 
 // Job CRUD
 config.addJob(rawJob)           → JobConfig
@@ -341,6 +340,7 @@ config.removeJob(id)
 ### M2. MachbaseClient 카탈로그 메서드 (`src/db/client.js`)
 
 ```js
+// 모든 메서드는 동기 (sync) — machcli 기반
 client.selectTableType(tableName) → { type: "TAG"|"LOG"|"UNSUPPORTED" }
 client.selectTagDataTables(logicalTable) → [{ data_table, table_id }]
 client.selectColumnsByTableName(tableName) → [{ NAME, TYPE, ID }]
@@ -349,17 +349,17 @@ client.selectMaxRid(tableName) → BigInt
 client.selectTagNames(logicalTable) → [{ _ID, name }]
 client.selectTagNameByTagId(logicalTable, tagId) → string|null
 client.selectTagMeta(logicalTable, metaColNames?, nameFilter?) → [{ _ID, name, ...metaCols }]  // nameFilter: { in?, like? }
-client.updateTagMeta(logicalTable, oldName, sets) → Promise<void>  // UPDATE {table} METADATA SET ... WHERE NAME=...
+client.updateTagMeta(logicalTable, oldName, sets)   // UPDATE {table} METADATA SET ... WHERE NAME=...
 
 // DDL (autoCreate 기능)
-client.createTagTable(tableName, srcSchema)   → Promise<void>
-client.createLogTable(tableName, srcSchema)   → Promise<void>
+client.createTagTable(tableName, srcSchema)
+client.createLogTable(tableName, srcSchema)
 ```
 
 **구현 항목**
 - `selectTableType`: `M$SYS_TABLES.TYPE` — 6=TAG, 0=LOG, 그 외=UNSUPPORTED. 조회 실패 시 throw.
 - `selectTagDataTables`: `V$STORAGE_TAG_TABLES + M$SYS_TABLES` 조인으로 파티션 목록 조회.
-  - `table_id`는 `@machbase/ts-client`가 반환하는 ulong(BigInt) 그대로 유지.
+  - `table_id`는 machcli가 반환하는 ulong(BigInt) 그대로 유지.
 - `selectColumnsByTableName`: META·LOG 컬럼 조회 (`M$SYS_COLUMNS + M$SYS_TABLES` JOIN)
 - `selectColumnsByTableId`: DATA 파티션 컬럼 조회 (`M$SYS_COLUMNS`, table_id 기준, BigInt 파라미터 허용)
 - `createTagTable(tableName, srcSchema)`: src `TableSchema` 기반으로 TAG 테이블 DDL 생성 후 실행
@@ -380,7 +380,7 @@ CheckpointStore.save(jobId, dataTable, cp, stats) → err
 ```
 
 **구현 항목**
-- atomic write 내장 (tmp 파일 → rename). `file.js` 별도 모듈 없이 헬퍼 함수(`_stringify`, `_parse`, `_writeFile`)로 내장.
+- atomic write 내장 (tmp 파일 → rename). fs 동기 API 사용. 헬퍼 함수(`_stringify`, `_parse`, `_writeFile`)로 내장.
 - 파일 없음 → `{ exists: false, err: null }`
 - JSON 파싱 실패 → `{ exists: false, err: ... }` + stage="checkpoint_io" 로그
 - `source.dataTable` ≠ 파일명 내 dataTable → 손상 처리, 무효화
@@ -401,30 +401,32 @@ cache.resolve(tagId, nameRule) → { canonical, meta: object, status: 'ok'|'drop
 cache.size
 TagMetaCache._applyNameRule(tagName, nameRule)  // static, prefix/suffix 적용
 
+// 모든 메서드는 동기 (sync) — machcli 기반
+
 // ── LogTable ──
 logTable = new LogTable(logicalTable, config)
-await logTable.open(useStream?)   // DB 연결 + 선택적 append 스트림 열기
-await logTable.close()
-await logTable.getSchema() → TableSchema
-await logTable.read(startRid, limit?, rangeSize?, filter?) → { rows, err }
-await logTable.append(rows) → Error|null
-await logTable.getMaxRid() → BigInt
+logTable.open(useStream?)       // DB 연결 + 선택적 append 열기
+logTable.close()
+logTable.getSchema() → TableSchema
+logTable.read(startRid, limit?, rangeSize?, filter?) → { rows, err }
+logTable.append(rows) → Error|null
+logTable.getMaxRid() → BigInt
 
 // ── TagTable ──
 tagTable = new TagTable(logicalTable, config)
-await tagTable.open(useStream?)
-await tagTable.close()
-await tagTable.getSchema(dataTableId) → TableSchema   // META + DATA 파티션 조합
-await tagTable.getDataTables() → [{ data_table, table_id }]
-await tagTable.append(rows) → Error|null
+tagTable.open(useStream?)
+tagTable.close()
+tagTable.getSchema(dataTableId) → TableSchema   // META + DATA 파티션 조합
+tagTable.getDataTables() → [{ data_table, table_id }]
+tagTable.append(rows) → Error|null
 
 // ── TagDataTable ──
 dataTable = new TagDataTable(dataTable, config)
-await dataTable.open()
-await dataTable.close()
-await dataTable.loadTagMetaCache(nameFilter?) → null   // 내부 aliasCache 구성. nameFilter: { in?, like? }
-await dataTable.read(startRid, limit?, rangeSize?, nameRule?, sourceColumns?, filter?) → { rows, err }
-await dataTable.getMaxRid() → BigInt
+dataTable.open()
+dataTable.close()
+dataTable.loadTagMetaCache(nameFilter?)         // 내부 aliasCache 구성. nameFilter: { in?, like? }
+dataTable.read(startRid, limit?, rangeSize?, nameRule?, sourceColumns?, filter?) → { rows, err }
+dataTable.getMaxRid() → BigInt
 ```
 
 **구현 항목**
@@ -432,12 +434,13 @@ await dataTable.getMaxRid() → BigInt
 - `TagMetaCache.resolve(tagId, nameRule)`: 캐시에서만 조회. miss → `drop_not_found`. 반환 시 `meta` 포함
 - `TagMetaCache._applyNameRule(tagName, nameRule)`: nameRule(transform의 NAME 항목)의 prefix/suffix를 tagName에 적용
 - `_buildWhereClause(filter, columnNamesUpper, schema)`: filter[] 기반으로 min/max/in/like WHERE 조건 생성 (내부 헬퍼). NAME 컬럼은 TAG 파티션 쿼리에서 자동 제외.
-- `LogTable`/`TagTable`: `MachbaseClient` 내부 생성, `open(useStream=false)` 시 연결 (스트림 선택적)
+- `LogTable`/`TagTable`: `MachbaseClient` 내부 생성(machcli 래퍼), `open(useStream=false)` 시 연결 (append 선택적)
 - `TagTable.getSchema(dataTableId)`: META 컬럼 + DATA 파티션 컬럼 조합
 - `TagDataTable.loadTagMetaCache(nameFilter?)`: `selectTagMeta(logicalTable, metaColNames, nameFilter)`로 META 조회. nameFilter 있으면 WHERE `name IN (...)` / `name LIKE ?` 적용 → 해당 태그만 캐시에 로드. metadata 컬럼 값 포함.
 - `TagDataTable.read`: nameRule로 canonical name resolve (prefix/suffix 적용), filter의 min/max/in/like로 WHERE 필터, drop_not_found 행 제외
 - `LogTable.read`: filter의 min/max/in/like로 WHERE 필터 추가
 - 행 구조: `{ rid: BigInt, data: { NAME, TIME, VALUE, ... } }` (UPPERCASE key)
+- **machcli TIME 타입 주의**: TAG 파티션 read 시 `NAME`은 number(tag ID), `TIME`은 Go `time.Time` 객체. TIME 값은 `?` 파라미터 바인딩으로만 전달 가능 (BigInt 리터럴 SQL 삽입 불가).
 
 **SQL (TAG 읽기, filter 적용 예시)**
 ```sql
@@ -467,7 +470,7 @@ FLAG_METADATA   = 0x4000000  // TAG META 추가 속성 컬럼
 new Column(name, columnType, id, flag, length = 0)
 // flag: M$SYS_COLUMNS.FLAG 원본값 — FLAG_* 상수로 비트 검사
 // length: M$SYS_COLUMNS.LENGTH (VARCHAR 가변 길이용)
-col.dataType()   // appendOpen 프로토콜 타입 문자열 (col.columnType.type과 동일)
+col.dataType()   // append 타입 문자열 (col.columnType.type과 동일)
 col.safeNull()   // append 패딩용 null 대체값 (col.columnType.safeNull과 동일)
 col.sqlType()    // CREATE TABLE DDL 타입 (예: 'VARCHAR(80)', 'DOUBLE')
 
@@ -481,48 +484,50 @@ schema.columns          // Column[] 전체 배열 (dataColumns + metadataColumns
 ### M6. TagTable / LogTable — findFirstMissRow() (`src/db/table.js`)
 
 ```js
-await tagTable.findFirstMissRow(rows, client) → { firstMissIdx: number|null, err }
-await logTable.findFirstMissRow(rows, client) → { firstMissIdx: number|null, err }
+// 동기 (sync)
+tagTable.findFirstMissRow(rows, client) → { firstMissIdx: number|null, err }
+logTable.findFirstMissRow(rows, client) → { firstMissIdx: number|null, err }
 ```
 
 **구현 항목**
 - VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
 - STARTUP_INTEGRITY에서만 사용 (STEADY 중 미사용)
-- `rows`: `[{ canonical: string, time: bigint }]` — read() 후 resolved된 배열
+- `rows`: `[{ canonical: string, time: bigint|Go_time.Time }]` — read() 후 resolved된 배열
 - `client`: 배치마다 신규 생성되는 독립 연결 (`intConn`)
 - 내부 동작:
   1. `CREATE VOLATILE TABLE _repli_chk (IDX INT, NAME {nameDdlType}, TIME DATETIME)`
   2. `CREATE VOLATILE TABLE _repli_lkp (NAME {nameDdlType}, TIME DATETIME)`
-  3. append 스트림으로 `_repli_chk`에 `[idx, canonical, time]` INSERT
+  3. VOLATILE TABLE은 append 불가 → `exec('INSERT INTO _repli_chk VALUES(?,?,?)', idx, canonical, time)` 로 파라미터 바인딩 INSERT
   4. `INSERT INTO _repli_lkp SELECT t.NAME, t.TIME FROM {logicalTable} t, _repli_chk c WHERE t.NAME=c.NAME AND t.TIME=c.TIME`
   5. `SELECT IDX FROM (SELECT c.IDX, t.NAME AS T_NAME FROM _repli_chk c LEFT OUTER JOIN _repli_lkp t ON ...) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
   6. SELECT 직후 즉시 `DROP TABLE _repli_lkp` (수명 단축 — 비정상 종료 시 서버 잔류 방지)
   7. finally: `DROP TABLE _repli_chk`, `DROP TABLE _repli_lkp`(이미 DROP됐으면 무시)
 - `nameDdlType`: `nameCol.sqlType()` — schema의 NAME 컬럼에서 추출 (예: `'VARCHAR(80)'`)
 - Machbase 제약: TAG 테이블은 JOIN 드라이빙 불가 → VOLATILE TABLE 경유 필수; `WHERE joined_col IS NULL`은 서브쿼리 바깥에 위치 필수
+- **TIME 파라미터 바인딩**: machcli에서 VOLATILE TABLE INSERT 시 TIME 값은 반드시 `?` 바인딩으로 전달 (BigInt 리터럴 SQL 삽입 시 정밀도 손실 또는 타입 오류 발생)
 
 ---
 
-### M7. MachbaseStream / _toCell (`src/db/stream.js`)
+### M7. MachbaseAppender / _toCell (`src/db/stream.js`)
 
 ```js
-// ── MachbaseStream ──
-stream = new MachbaseStream()
-await stream.open(client, table, columns) → Error|null
-await stream.append(matrix) → Error|null
-await stream.close() → Error|null
+// ── MachbaseAppender (구 MachbaseStream) ──
+appender = new MachbaseAppender()
+appender.open(client, table, columns) → Error|null    // 동기
+appender.append(matrix) → Error|null                   // 동기
+appender.close() → Error|null                          // 동기
 
 // ── _toCell ──
 _toCell(col, val) → appendable value
 ```
 
 **구현 항목**
-- `MachbaseStream`: appendOpen 스트림 생명주기 래퍼. client 생명주기는 호출자(LogTable/TagTable)가 관리
+- `MachbaseAppender`: machcli `conn.append(table)` 기반 append 생명주기 래퍼. client 생명주기는 호출자(LogTable/TagTable)가 관리
 - `_toCell(col, val)`: 순수 변환 함수 (로그 없음)
   - null/undefined → `col.safeNull()`
-  - non-finite float (Inf/NaN) → `col.safeNull()` (라이브러리 `coerceFiniteNumber` 예외 사전 차단)
-  - 그 외 → raw 값 그대로 반환 (라이브러리가 컬럼 타입에 맞게 인코딩)
-  - **주의**: int64 컬럼 값을 `toInt64()`로 변환하지 않는다. 라이브러리 내부 `encodeNativeColumnValue`가 컬럼 타입 기반으로 처리하므로, BigInt 변환은 라이브러리에 위임한다.
+  - non-finite float (Inf/NaN) → `col.safeNull()`
+  - 그 외 → raw 값 그대로 반환 (machcli가 컬럼 타입에 맞게 인코딩)
+  - **주의**: int64 컬럼 값을 별도 변환하지 않는다. machcli 내부가 컬럼 타입 기반으로 처리하므로 BigInt 변환은 machcli에 위임한다.
 
 ---
 
@@ -531,7 +536,7 @@ _toCell(col, val) → appendable value
 ```js
 RetryHandler.shouldRetry(err) → bool
 RetryHandler.nextDelay(attempt) → ms
-RetryHandler.sleepOrShutdown(ms, shutdownFlag) → Promise<"timeout"|"shutdown">
+RetryHandler.sleepOrShutdown(ms, shutdownFlag) → "timeout"|"shutdown"  // 동기 (jsh sleep 루프 기반)
 ```
 
 **구현 항목**
@@ -541,7 +546,7 @@ RetryHandler.sleepOrShutdown(ms, shutdownFlag) → Promise<"timeout"|"shutdown">
 - jitter=true → `delay * Math.random()`
 - maxAttempts: null=무한, 초과 시 mapping 스킵
 - 재시도 불가 오류(설정 오류, TAG 컬럼 규칙 위반, TYPE 불일치) → 즉시 스킵
-- `sleepOrShutdown`: `Promise.race([setTimeout(ms), shutdownSignal])` 구현
+- `sleepOrShutdown`: jsh 동기 sleep 루프로 구현 (async/await 미사용)
 
 ---
 
@@ -549,7 +554,7 @@ RetryHandler.sleepOrShutdown(ms, shutdownFlag) → Promise<"timeout"|"shutdown">
 
 ```js
 new Worker(jobConfig, tableType, dataTable, srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag)
-await worker.run(signal)   // signal: AbortSignal (Job의 AbortController에서 전달)
+worker.run(signal)   // signal: AbortSignal (Job의 AbortController에서 전달), 동기
 ```
 
 **상태 전이**
@@ -565,7 +570,7 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+cp존재+integrity.enabled) → STEADY
 
 **STARTUP_INTEGRITY_PHASE**
 - 진입 조건: `tableType === 'TAG'` && `cpExists` && `exec.integrity?.enabled !== false`
-- 배치마다 신규 `intConn = new MachbaseClient(dstConfig)` 생성 후 finally에서 close
+- 배치마다 신규 `intConn = new MachbaseClient(dstConfig)` 생성 후 finally에서 close (machcli 동기 연결)
 - `dstTable.findFirstMissRow(resolved, intConn)` — VOLATILE TABLE + JOIN으로 첫 번째 miss idx 반환
 - 첫 번째 miss row 발견 → `safeCpRid = firstMissRid - 1n`, cp 저장, `startRid = firstMissRid`, STEADY 진입
 - 배치 전체 skip/drop → `cp.lastSuccessRid = maxRidInBatch`, `integrityRid = maxRidInBatch + 1n`, 다음 배치
@@ -607,6 +612,14 @@ while NOT shutdown_requested:
 
 클래스 구조: `Replicator.run()` → `JobScheduler.start(id)` → `Job.run()` → `Worker.run(signal)`
 
+> **jsh 환경 주의사항**
+> - `process`: `require('process')` 로 명시적 import 필요
+> - `__dirname`: 사용 불가 → `process.cwd()` 사용 (cwd = `/work`)
+> - `AbortController`: jsh 내장 미지원 → `job.js`에 직접 구현
+> - `typeof bigint` 동작 차이 → `_isBigInt()` 헬퍼 함수로 BigInt 타입 검사
+> - 로그 파일 쓰기: `write(str, 'utf8')` 인코딩 명시, 유니코드 특수문자 사용 금지
+> - 파일 경로: `/work/logs/`, `/work/data/` 등 절대경로 사용
+
 **`Job.run()` 구현 항목**
 1. `while (!shutdown)` 루프:
    - `_discoverMapping()` — 각 mapping에 대해 sourceConn(단기) 생성 후 close:
@@ -620,7 +633,7 @@ while NOT shutdown_requested:
        - dst 테이블 없음 + `autoCreate: true` → `createLogTable(targetTable, srcSchema)` 후 계속
      - src-only 컬럼 검출: 대상에 없는 소스 컬럼 → 해당 mapping 스킵
    - discover 성공한 mapping 당 `Worker` 인스턴스 생성
-   - `AbortController`로 전체 Worker 묶어 `Promise.all` 병렬 실행
+   - `AbortController`(자체 구현)로 전체 Worker 묶어 병렬 실행
    - 에러 발생 시 `ac.abort()` → 전체 취소 → 루프 재시작
 
 **`Worker.run(signal)` 구현 항목**
@@ -632,21 +645,25 @@ while NOT shutdown_requested:
 **Graceful Shutdown**
 - SIGTERM / SIGINT → `shutdownFlag.value = true` + 타이머 시작
 - `shutdownTimeoutMs` 초과 → `level="warn"` 로그 + `process.exit(1)`
-- 정상 종료 시 `clearTimeout(timeoutHandle)` 호출 (Node.js 이벤트 루프 블록 방지)
+- 정상 종료 시 타임아웃 핸들 해제
 
 ---
 
-### @machbase/ts-client API 참조
+### machcli API 참조 (동기)
 
-`createConnection(config)` → `Connection` 객체 반환.
+`new Client(config)` → `Client` 인스턴스. `client.connect()` → `Connection`.
 
 | 메서드 | 시그니처 | 설명 |
 |--------|----------|------|
-| `connect()` | `() → Promise<void>` | DB 연결 |
-| `end()` | `() → Promise<void>` | 연결 종료 |
-| `query()` | `(sql, values?) → Promise<[rows, fields]>` | SQL 쿼리 실행 |
-| `execute()` | `(sql, values?) → Promise<[result, fields]>` | SQL 실행 |
-| `appendOpen()` | `(table, columns, options?) → Promise<AppendStreamSession>` | Append 스트림 오픈 |
+| `connect()` | `() → Connection` | DB 연결 (동기) |
+| `conn.close()` | `() → void` | 연결 종료 (동기) |
+| `conn.query(sql, ...params)` | `(sql, ...params) → Rows` | SQL 쿼리 실행 (동기). `for...of` 순회 후 `rows.close()` 필요. |
+| `conn.exec(sql, ...params)` | `(sql, ...params) → Result` | DDL/DML 실행 (동기) |
+| `conn.append(table)` | `(table) → Appender` | Append 오픈 (동기). `appender.append(v1, v2, ...)`, flush/close 필요. |
+
+> **VOLATILE TABLE append 불가**: machcli에서 VOLATILE TABLE은 append 스트림 대상이 아님 → `exec('INSERT INTO ... VALUES (?,?,?)', v1, v2, v3)` 방식으로 INSERT.
+
+> **TIME 타입**: machcli가 반환하는 TIME 값은 Go `time.Time` 객체. BigInt 변환 불가. unixNano()는 정밀도 손실. TIME은 반드시 `?` 파라미터 바인딩으로 전달.
 
 **컬럼 타입 매핑**
 
@@ -673,7 +690,7 @@ while NOT shutdown_requested:
 2. Replicator.run() → JobScheduler 초기화 → 각 job register → autoStart=true인 job은 scheduler.start() 자동 호출, false인 job은 API로 수동 시작
 3. HttpServer 시작 (api.enabled=true 시)
 4. 각 Job.run() 루프:
-   a. _discoverMapping() — MachbaseClient(단기) 생성 후 close
+   a. _discoverMapping() — MachbaseClient(단기, machcli 래퍼) 생성 후 close
       - 테이블 TYPE 조회
       - TAG이면 데이터 테이블 목록 조회 + src-only 컬럼 검증
       - 오류 시 해당 mapping 스킵 (job은 계속)
@@ -705,7 +722,7 @@ while NOT shutdown_requested:
 
 ```
 while NOT shutdown_requested:
-  intConn = new MachbaseClient(dstConfig)  // 배치마다 신규 생성
+  intConn = new MachbaseClient(dstConfig)  // 배치마다 신규 생성 (machcli 동기 연결)
 
   rows = srcTable.read(integrityRid, batchSize)
   if empty: SAVE_CHECKPOINT(integrityRid); enter STEADY
@@ -930,9 +947,9 @@ graph TD
     W --> TBL["M4 src/db/table.js\nLogTable/TagTable\nTagDataTable/TagMetaCache"]
     W --> RH["M8 RetryHandler\nsrc/lib/retry.js"]
 
-    TBL --> ST["M7 MachbaseStream\nsrc/db/stream.js"]
-    TBL --> src_conn["source_conn\nMachbaseClient"]
-    ST --> tgt_conn["target_conn\nMachbaseClient"]
+    TBL --> ST["M7 MachbaseAppender\nsrc/db/stream.js"]
+    TBL --> src_conn["source_conn\nMachbaseClient(machcli)"]
+    ST --> tgt_conn["target_conn\nMachbaseClient(machcli)"]
 
     TBL --> TY["src/db/types.js\nColumnType/Column/TableSchema"]
 ```
@@ -951,8 +968,9 @@ classDiagram
     class MachbaseClient {
         +connect()
         +close()
-        +query(sql, values) rows
-        +appendOpen(table, columns) AppendStreamSession
+        +query(sql, ...params) Rows
+        +exec(sql, ...params) Result
+        +append(table) Appender
         +selectTableType(tableName) type
         +selectTagDataTables(logicalTable) DataTable[]
         +selectColumnsByTableName(name) columns
@@ -1104,11 +1122,19 @@ sequenceDiagram
 | B-04 | Job 재시작 전략 | Worker 하나라도 에러 시 AbortController로 전체 취소 → while(!shutdown) 루프로 Job 전체 재시작. job 독립(다른 job에 영향 없음) |
 | B-05 | AbortSignal → shutdownFlag 연동 | Worker.run()은 `signal.aborted || shutdownFlag.value` proxy `effectiveShutdownFlag`를 _runStateMachine에 전달하여 abort 시 STEADY 루프 즉시 탈출 |
 | B-06 | target.autoCreate DDL 생성 방식 | `Column.sqlType()`으로 컬럼 타입 결정. TAG: `FLAG_PRIMARY`→PRIMARY KEY, `FLAG_BASETIME`→BASETIME, `FLAG_SUMMARIZED`→SUMMARIZED, `FLAG_METADATA`→METADATA 절. PRIMARY KEY / BASETIME 없으면 throw. LOG: 컬럼 순서 그대로 CREATE TABLE. |
-| B-07 | autoCreate 시 별도 연결 사용 | TAG 테이블 생성은 dst의 기존 `TagTable.client`와 별도로 신규 `MachbaseClient` 생성 후 즉시 close. 연결 재사용 금지 원칙(B-01) 유지. |
+| B-07 | autoCreate 시 별도 연결 사용 | TAG 테이블 생성은 dst의 기존 `TagTable.client`와 별도로 신규 `MachbaseClient`(machcli 래퍼) 생성 후 즉시 close. 연결 재사용 금지 원칙(B-01) 유지. |
 | B-08 | TAG meta sync 실행 시점 | `_discoverMapping()` 성공 후, Workers 시작 전 1회 실행. 매칭 기준: `_ID`(tagId). src `_ID=N` → dst `_ID=N` 비교. name 불일치 또는 metadata column value 불일치 시 `UPDATE TAG METADATA`. 신규 태그(dst에 없음): 데이터 append 시 dst DB 자동 생성 — sync 단계 스킵. 실패 시 에러 로그 → null 반환 → 5초 후 루프 재시작. |
 | B-09 | job autoStart 기본값 | `JobConfig.autoStart` 기본값은 `true`. Replicator.run() 시 각 job을 register한 뒤, `autoStart=true`인 job만 즉시 `scheduler.start()` 호출. `autoStart=false`인 job은 등록은 되지만 시작하지 않으며, REST API(`POST /api/jobs/:id/start`)를 통해 수동 시작해야 한다. `shutdownTimeoutMs`는 모든 등록된 job 중 최댓값을 shutdown timer에 적용한다. |
 | — | STARTUP_INTEGRITY retry 시 배치 재처리 범위 | 배치 내 이미 처리한 row는 건너뜀, 실패 row부터 재처리 |
 | — | Statement ID 고갈 대응 (STEADY) | stmtCount 추적, 900 도달 시 `srcTable.close(); srcTable.open()` 호출 |
+| M-01 | 런타임 마이그레이션 | Node.js v22 → machbase-neo jsh (goja 기반). 실행: `../machbase-neo/machbase-neo jsh app.js`. |
+| M-02 | DB 클라이언트 교체 | `@machbase/ts-client` (비동기 CMI) → `machcli` (jsh 내장 동기 API). 모든 DB 호출이 동기로 변환. async/await 제거. |
+| M-03 | HTTP 서버 교체 | `express`/`cors` → jsh 내장 `http` 모듈 사용. |
+| M-04 | 파일 I/O 변환 | `fs/promises` (async) → `fs` 동기 API. 체크포인트 파일 읽기/쓰기 모두 동기. |
+| M-05 | VOLATILE TABLE INSERT 방식 변경 | machcli에서 VOLATILE TABLE은 append 불가 → `exec('INSERT INTO ... VALUES(?,?,?)', v1, v2, v3)` 파라미터 바인딩 방식으로 변경. TIME 정밀도 유지됨. |
+| M-06 | AbortController 자체 구현 | jsh 미지원 → `job.js` 내 직접 구현. |
+| M-07 | BigInt 타입 검사 헬퍼 | jsh 내 `typeof bigint` 동작 차이 → `_isBigInt()` 헬퍼 함수 도입. |
+| M-08 | __dirname 대체 | jsh에서 `__dirname` 사용 불가 → `process.cwd()` (= `/work`) 사용. `CHECKPOINT_DIRECTORY` = `/work/data`. |
 
 ---
 
@@ -1134,7 +1160,10 @@ sequenceDiagram
 ### 12.3 실행 방법
 
 ```bash
-node app.js
+# machbase-neo jsh로 실행
+../machbase-neo/machbase-neo jsh app.js
 # 또는 설정 파일 경로 직접 지정
-node app.js /path/to/config.json
+../machbase-neo/machbase-neo jsh app.js /path/to/config.json
 ```
+
+> **주의**: 런타임이 machbase-neo jsh로 변경되어 `node app.js`로는 실행할 수 없다. jsh의 cwd는 `/work`이며, 체크포인트 파일은 `/work/data/`, 로그 파일은 `/work/logs/` 에 저장된다.
