@@ -1,0 +1,14 @@
+{
+  "logging": {
+    "level": "info",
+    "stdout": true,
+    "file": {
+      "enabled": true,
+      "directory": "/work/logs"
+    }
+  },
+  "api": {
+    "port": 8080
+  },
+  "shutdownTimeoutMs": 30000
+}
