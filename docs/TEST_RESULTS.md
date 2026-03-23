@@ -11,7 +11,7 @@
 
 | 구분 | 파일 수 | 테스트 수 | pass | fail | 실행 시간 |
 |------|---------|----------|------|------|-----------|
-| 단위 테스트 | 10개 | 165개 | **165** | 0 | ~0.6초 |
+| 단위 테스트 | 9개 | 187개 | **187** | 0 | ~0.6초 |
 | 통합 테스트 (TAG) | 1개 | 11개 | **11** | 0 | ~51초 |
 | 통합 테스트 (LOG) | 1개 | 8개 | **8** | 0 | ~7초 |
 | 통합 테스트 (table) | 1개 | 17개 | **17** | 0 | — |
@@ -21,7 +21,7 @@
 
 ---
 
-## 단위 테스트 (165개 pass)
+## 단위 테스트 (187개 pass)
 
 ```
 node --test tests/unit/*.test.js
@@ -37,15 +37,6 @@ node --test tests/unit/*.test.js
 | 4 | load: source.dataTable 불일치 → `{ exists: false, err }` |
 | 5 | load: JSON 파싱 실패 → `{ exists: false, err }` |
 | 6 | rid = 0n 저장 및 로드 |
-
-### client.test.js — fixDoubleEndian (4개)
-
-| # | 테스트 항목 |
-|---|------------|
-| 1 | 정상 double 값은 변환되지 않음 |
-| 2 | BE로 저장된 double → LE 오독 복원 |
-| 3 | 0, Infinity, NaN은 변환하지 않음 |
-| 4 | number 아닌 값은 변환하지 않음 |
 
 ### config.test.js — Config (51개)
 
@@ -318,7 +309,7 @@ node --test tests/integration/table.test.js
 ## 테스트 실행 명령
 
 ```bash
-# 단위 테스트 전체 (165개)
+# 단위 테스트 전체 (187개)
 node --test tests/unit/*.test.js
 
 # 개별 파일
@@ -347,7 +338,6 @@ tests/
 │   ├── fixtures/
 │   │   └── worker_fixtures.js       # Worker 테스트 공통 픽스처
 │   ├── checkpoint.test.js           # CheckpointStore (6개)
-│   ├── client.test.js               # fixDoubleEndian (4개)
 │   ├── config.test.js               # Config load/validate/CRUD (51개)
 │   ├── http_server.test.js          # HttpServer Jobs REST API (19개)
 │   ├── http_server_servers.test.js  # HttpServer Servers REST API (23개)

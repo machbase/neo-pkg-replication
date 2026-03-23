@@ -202,13 +202,6 @@ test('integrity.enabled 비불리언 → 오류', async () => {
   await assert.rejects(() => Config.load(filePath), /integrity\.enabled/i);
 });
 
-test('tagIdentifier.value 비문자열 → 오류', async () => {
-  const config = structuredClone(BASE_CONFIG);
-  config.replication.jobs[0].source.tagIdentifier = { mode: 'prefix', value: 123 };
-  const filePath = await writeConfig(config);
-  await assert.rejects(() => Config.load(filePath), /tagIdentifier\.value/i);
-});
-
 test('shutdownTimeoutMs 비정수 → warn 후 기본값 30000', async () => {
   const config = structuredClone(BASE_CONFIG);
   config.replication.jobs[0].shutdownTimeoutMs = 'bad';
@@ -490,4 +483,209 @@ test('autoStart: 비boolean → config 오류', async () => {
   config.replication.jobs[0].autoStart = 'yes';
   const filePath = await writeConfig(config);
   await assert.rejects(() => Config.load(filePath), /autoStart/i);
+});
+
+// === filter 테스트 ===
+
+test('filter 미지정 → source.filter === null', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+  assert.equal(config.replication.jobs[0].source.filter, null);
+});
+
+test('filter 정상 — column 대문자 정규화', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'value', min: 0, max: 100 }];
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  const f = result.replication.jobs[0].source.filter[0];
+  assert.equal(f.column, 'VALUE');
+  assert.equal(f.min, 0);
+  assert.equal(f.max, 100);
+});
+
+test('filter — min만 설정 (max 생략) 허용', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'VALUE', min: 0 }];
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  const f = result.replication.jobs[0].source.filter[0];
+  assert.equal(f.min, 0);
+  assert.equal(f.max, undefined);
+});
+
+test('filter — in 정상 설정 (문자열 배열)', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'NAME', in: ['sensor_a', 'sensor_b'] }];
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  const f = result.replication.jobs[0].source.filter[0];
+  assert.deepEqual(f.in, ['sensor_a', 'sensor_b']);
+});
+
+test('filter — like 정상 설정', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'NAME', like: 'sensor_%' }];
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  const f = result.replication.jobs[0].source.filter[0];
+  assert.equal(f.like, 'sensor_%');
+});
+
+test('filter — 빈 배열 → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+test('filter — column 누락 → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ min: 0 }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+test('filter — min: Infinity → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'VALUE', min: Infinity }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+test('filter — max: "x" → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'VALUE', max: 'x' }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+test('filter — min > max → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'VALUE', min: 100, max: 0 }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+test('filter — in: 빈 배열 → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'NAME', in: [] }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+test('filter — in: 숫자 포함 → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'NAME', in: ['a', 123] }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+test('filter — like: 비문자열 → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [{ column: 'NAME', like: 123 }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+test('filter — 중복 column → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.filter = [
+    { column: 'VALUE', min: 0 },
+    { column: 'value', max: 100 },
+  ];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /filter/i);
+});
+
+// === transform 테스트 ===
+
+test('transform 미지정 → source.transform === null', async () => {
+  const filePath = await writeConfig(BASE_CONFIG);
+  const config = await Config.load(filePath);
+  assert.equal(config.replication.jobs[0].source.transform, null);
+});
+
+test('transform 정상 — column 대문자 정규화, 기본값 적용', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [{ column: 'value', add: 1, multiply: 0.001 }];
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  const t = result.replication.jobs[0].source.transform[0];
+  assert.equal(t.column, 'VALUE');
+  assert.equal(t.add, 1);
+  assert.equal(t.multiply, 0.001);
+});
+
+test('transform — add 생략 → 기본값 0, multiply 생략 → 기본값 1', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [{ column: 'TEMP' }];
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  const t = result.replication.jobs[0].source.transform[0];
+  assert.equal(t.add, 0);
+  assert.equal(t.multiply, 1);
+});
+
+test('transform — multiply: 0 허용', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [{ column: 'VALUE', multiply: 0 }];
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  assert.equal(result.replication.jobs[0].source.transform[0].multiply, 0);
+});
+
+test('transform — prefix/suffix 정상 설정', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [{ column: 'NAME', prefix: 'site1/', suffix: '_copy' }];
+  const filePath = await writeConfig(config);
+  const result = await Config.load(filePath);
+  const t = result.replication.jobs[0].source.transform[0];
+  assert.equal(t.prefix, 'site1/');
+  assert.equal(t.suffix, '_copy');
+});
+
+test('transform — 빈 배열 → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /transform/i);
+});
+
+test('transform — column 누락 → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [{ add: 1 }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /transform/i);
+});
+
+test('transform — add: "x" → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [{ column: 'VALUE', add: 'x' }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /transform/i);
+});
+
+test('transform — multiply: Infinity → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [{ column: 'VALUE', multiply: Infinity }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /transform/i);
+});
+
+test('transform — prefix: 123 → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [{ column: 'NAME', prefix: 123 }];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /transform/i);
+});
+
+test('transform — 중복 column → config 오류', async () => {
+  const config = JSON.parse(JSON.stringify(BASE_CONFIG));
+  config.replication.jobs[0].source.transform = [
+    { column: 'VALUE', add: 1 },
+    { column: 'value', multiply: 2 },
+  ];
+  const filePath = await writeConfig(config);
+  await assert.rejects(() => Config.load(filePath), /transform/i);
 });

@@ -12,7 +12,7 @@
     "test:all": "node --test tests/unit/**/*.test.js tests/integration/**/*.test.js"
   },
   "dependencies": {
-    "@machbase/ts-client": "^0.9.3",
+    "@machbase/ts-client": "^1.0.0",
     "cors": "^2.8.6",
     "express": "^5.2.1"
   }

@@ -322,7 +322,7 @@ describe('Job — AbortController 전파', () => {
       const worker = new WorkerClass(
         {
           id: 'job-signal-test',
-          source: { server: 'src', table: 'TAG', tagIdentifier: { mode: 'none', value: '' }, columns: null },
+          source: { server: 'src', table: 'TAG', columns: null, filter: null, transform: null },
           target: { server: 'dst', table: 'TAG' },
           startMode: 'full', pollIntervalMs: 20, queryLimit: 100,
         },
@@ -371,7 +371,7 @@ describe('Job — AbortController 전파', () => {
     ];
     const jobConfig = {
       id: 'job-abort-test',
-      source: { server: 'src', table: 'TAG', tagIdentifier: { mode: 'none', value: '' }, columns: null },
+      source: { server: 'src', table: 'TAG', columns: null, filter: null, transform: null },
       target: { server: 'dst', table: 'TAG' },
       startMode: 'full', pollIntervalMs: 20, queryLimit: 100, integrity: { enabled: false },
     };

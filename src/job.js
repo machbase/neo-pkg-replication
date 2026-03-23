@@ -244,7 +244,8 @@ class Job {
     const { source, target } = this.jobConfig;
     const srcConfig = this.servers.find(s => s.name === source.server);
     const dstConfig = this.servers.find(s => s.name === target.server);
-    const tagIdentifier = source.tagIdentifier;
+    const transform = source.transform ?? null;
+    const nameRule = transform?.find(t => t.column === 'NAME') ?? null;
 
     const metaColNames = srcSchema.columns
       .filter(c => c.flag & FLAG_METADATA)
@@ -276,7 +277,7 @@ class Job {
       const dstRow = dstById.get(BigInt(srcRow._ID));
       if (!dstRow) continue; // 신규 태그 — append 시 dst DB 자동 생성
 
-      const canonicalName = TagMetaCache._applyIdentifier(srcRow.name, tagIdentifier);
+      const canonicalName = TagMetaCache._applyNameRule(srcRow.name, nameRule);
       const sets = [];
       const nameChanged = dstRow.name !== canonicalName;
       if (nameChanged) sets.push({ name: 'NAME', value: canonicalName });

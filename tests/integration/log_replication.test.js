@@ -25,6 +25,7 @@ const path = require('path');
 
 const { MachbaseClient } = require('../../src/db/client.js');
 const { LogTable } = require('../../src/db/table.js');
+const { FLAG_METADATA } = require('../../src/db/types.js');
 const CheckpointStore = require('../../src/db/checkpoint.js');
 const { Worker } = require('../../src/worker/worker.js');
 
@@ -72,10 +73,10 @@ async function dropTable(conn, name) {
 async function buildLogSchemaPair(srcTable, dstTable) {
   const srcLogTable = new LogTable(srcTable, DB_CONFIG);
   let srcSchema;
-  try { await srcLogTable.open(false); srcSchema = await srcLogTable.getSchema(); } finally { await srcLogTable.close(); }
+  try { await srcLogTable.open(); srcSchema = await srcLogTable.getSchema(); } finally { await srcLogTable.close(); }
   const dstLogTable = new LogTable(dstTable, DB_CONFIG);
   let dstSchema;
-  try { await dstLogTable.open(false); dstSchema = await dstLogTable.getSchema(); } finally { await dstLogTable.close(); }
+  try { await dstLogTable.open(); dstSchema = await dstLogTable.getSchema(); } finally { await dstLogTable.close(); }
   return { srcSchema, dstSchema };
 }
 
@@ -90,19 +91,18 @@ function makeShutdownFlag(timeoutMs = 500) {
   return flag;
 }
 
-function baseMapping(srcTable, dstTable, execOverrides = {}) {
+function baseMapping(srcTable, dstTable, overrides = {}) {
   return {
-    source: { server: 'src', table: srcTable, tag_identifier: { mode: 'none', value: '' }, columns: null },
+    source: { server: 'src', table: srcTable, columns: null },
     target: { server: 'dst', table: dstTable },
-    execution: {
-      start_mode: 'full',
-      query_limit: 100,
-      poll_interval_ms: 100,
-      on_save_failure: 'continue',
-      integrity: { enabled: false },
-      retry: { max_attempts: 3, base_delay_ms: 10, max_delay_ms: 100 },
-      ...execOverrides,
-    },
+    startMode: 'full',
+    queryLimit: 100,
+    ridRangeSize: 50000,
+    pollIntervalMs: 100,
+    onSaveFailure: 'continue',
+    integrity: { enabled: false },
+    retry: { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 100 },
+    ...overrides,
   };
 }
 
@@ -110,19 +110,19 @@ function baseMapping(srcTable, dstTable, execOverrides = {}) {
  * LOG Worker 실행 헬퍼
  * src-only 컬럼 존재 시 throw (job_runner._discoverMapping 로직과 동일)
  */
-async function runLogWorker(jobId, srcTable, dstTable, tmpDir, execOverrides = {}) {
+async function runLogWorker(jobId, srcTable, dstTable, tmpDir, overrides = {}) {
   const { srcSchema, dstSchema } = await buildLogSchemaPair(srcTable, dstTable);
 
   // src-only 컬럼 검출
   const dstNames = new Set(dstSchema.columns.map(c => c.name));
   const srcOnlyCols = srcSchema.columns
-    .filter(c => c.category !== 'metadata' && !dstNames.has(c.name))
+    .filter(c => !(c.flag & FLAG_METADATA) && !dstNames.has(c.name))
     .map(c => c.name);
   if (srcOnlyCols.length > 0) {
     throw new Error(`source has columns not present in destination: ${srcOnlyCols.join(', ')}`);
   }
 
-  const mapping = baseMapping(srcTable, dstTable, execOverrides);
+  const mapping = baseMapping(srcTable, dstTable, overrides);
   const worker = new Worker(
     { ...mapping, id: jobId, checkpoint: { directory: tmpDir } },
     'LOG',
@@ -167,7 +167,7 @@ test('LOG-01: 동일 스키마 LOG→LOG 복제 — 행수/value/cp 검증', asy
     const store = new CheckpointStore(tmpDir);
     const { exists, cp } = await store.load(jobId, SRC);
     assert.equal(exists, true, 'cp 저장됨');
-    assert.ok(cp.last_success_rid > 0n, `last_success_rid > 0 (실제: ${cp.last_success_rid})`);
+    assert.ok(cp.lastSuccessRid > 0n, `lastSuccessRid > 0 (실제: ${cp.lastSuccessRid})`);
   } finally {
     await dropTable(conn, SRC); await dropTable(conn, DST);
     await conn.close();
@@ -271,16 +271,16 @@ test('LOG-04: 동일 컬럼명 but 타입 다름 (SRC: value DOUBLE, DST: value 
       replicationError = err;
     }
 
-    // 타입 불일치 시 에러 없이 복제되거나 appendStream에서 에러가 날 수 있음
-    // 실제 동작 결과를 로그로 확인
+    // 타입 불일치: 에러 없이 복제(암묵적 변환)되거나 appendStream에서 에러가 나 0행
+    // 두 경우 모두 허용하되, 에러가 없으면 2행이 복제되어야 함
     const vc = await makeConn();
     try {
       const rows = await vc.query(`SELECT name, value FROM ${DST} ORDER BY _RID ASC`);
-      console.log(JSON.stringify({
-        level: 'info', stage: 'test', test: 'LOG-04',
-        msg: `타입 불일치 복제 결과: ${rows.length}행, error: ${replicationError?.message ?? 'none'}`,
-      }));
-      assert.ok(rows.length >= 0, '복제 결과가 있어야 함 (0행 이상)');
+      if (replicationError === null) {
+        assert.equal(rows.length, 2, `에러 없이 복제 시 2행이어야 함 (실제: ${rows.length})`);
+      } else {
+        assert.equal(rows.length, 0, `에러 발생 시 0행이어야 함 (실제: ${rows.length})`);
+      }
     } finally { await vc.close(); }
   } finally {
     await dropTable(conn, SRC); await dropTable(conn, DST);
@@ -302,7 +302,7 @@ test('LOG-05: start_mode=full — RID 0부터 전체 복제', async () => {
     await conn.execute(`INSERT INTO ${SRC} VALUES ('full_a', ${nowNs(0)}, 10.0)`);
     await conn.execute(`INSERT INTO ${SRC} VALUES ('full_b', ${nowNs(1)}, 20.0)`);
 
-    await runLogWorker(`log-05-${TS}`, SRC, DST, tmpDir, { start_mode: 'full' });
+    await runLogWorker(`log-05-${TS}`, SRC, DST, tmpDir, { startMode: 'full' });
 
     const vc = await makeConn();
     try {
@@ -332,7 +332,7 @@ test('LOG-06: start_mode=now — 기존 데이터 복제 안 함', async () => {
     await conn.execute(`INSERT INTO ${SRC} VALUES ('old_a', ${nowNs(-1000)}, 99.0)`);
     await conn.execute(`INSERT INTO ${SRC} VALUES ('old_b', ${nowNs(-500)},  88.0)`);
 
-    await runLogWorker(`log-06-${TS}`, SRC, DST, tmpDir, { start_mode: 'now' });
+    await runLogWorker(`log-06-${TS}`, SRC, DST, tmpDir, { startMode: 'now' });
 
     const vc = await makeConn();
     try {
@@ -383,8 +383,8 @@ test('LOG-07: cp 재시작 — cp 이후 데이터만 복제, cp 갱신', async 
     } finally { await vc.close(); }
 
     const { cp: cp2 } = await store.load(jobId, SRC);
-    assert.ok(cp2.last_success_rid > cp1.last_success_rid,
-      `cp 갱신됨 (1차: ${cp1.last_success_rid}, 2차: ${cp2.last_success_rid})`);
+    assert.ok(cp2.lastSuccessRid > cp1.lastSuccessRid,
+      `cp 갱신됨 (1차: ${cp1.lastSuccessRid}, 2차: ${cp2.lastSuccessRid})`);
   } finally {
     await dropTable(conn, SRC); await dropTable(conn, DST);
     await conn.close();

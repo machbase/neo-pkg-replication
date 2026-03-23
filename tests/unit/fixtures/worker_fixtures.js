@@ -72,7 +72,7 @@ function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
 
   const origTagDataOpen = tableMod.TagDataTable.prototype.open;
   const origTagDataClose = tableMod.TagDataTable.prototype.close;
-  const origTagDataLoadCache = tableMod.TagDataTable.prototype.loadTagMetaCache;
+  const origTagDataLoadCache = tableMod.TagDataTable.prototype.cacheTagMetaAll;
   const origTagDataGetMaxRid = tableMod.TagDataTable.prototype.getMaxRid;
   const origTagDataRead = tableMod.TagDataTable.prototype.read;
 
@@ -117,7 +117,7 @@ function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
 
   tableMod.TagDataTable.prototype.open = async function() {};
   tableMod.TagDataTable.prototype.close = async function() { return null; };
-  tableMod.TagDataTable.prototype.loadTagMetaCache = async function() { return null; };
+  tableMod.TagDataTable.prototype.cacheTagMetaAll = async function() { return null; };
   tableMod.TagDataTable.prototype.getMaxRid = async function() { return 0n; };
   tableMod.TagDataTable.prototype.read = readFn
     ? async function(...args) { return readFn(...args); }
@@ -145,7 +145,7 @@ function setupWorkerPrototypeMocks({ readFn, appendFn } = {}) {
     clientMod.MachbaseClient.prototype.close = origClose;
     tableMod.TagDataTable.prototype.open = origTagDataOpen;
     tableMod.TagDataTable.prototype.close = origTagDataClose;
-    tableMod.TagDataTable.prototype.loadTagMetaCache = origTagDataLoadCache;
+    tableMod.TagDataTable.prototype.cacheTagMetaAll = origTagDataLoadCache;
     tableMod.TagDataTable.prototype.getMaxRid = origTagDataGetMaxRid;
     tableMod.TagDataTable.prototype.read = origTagDataRead;
     tableMod.TagTable.prototype.open = origTagOpen;
@@ -167,7 +167,7 @@ function makeTagWorker(jobId, _tmpDir, overrides, shutdownFlag) {
   return new Worker(
     {
       id: jobId,
-      source: { server: 'src', table: 'TAG', tagIdentifier: { mode: 'none', value: '' }, columns: null },
+      source: { server: 'src', table: 'TAG', columns: null, filter: null, transform: null },
       target: { server: 'dst', table: 'TAG2' },
       queryLimit: 100,
       pollIntervalMs: 20,
@@ -193,7 +193,7 @@ function makeLogWorker(jobId, _tmpDir, overrides, shutdownFlag) {
   return new Worker(
     {
       id: jobId,
-      source: { server: 'src', table: 'LOG', tagIdentifier: { mode: 'none', value: '' }, columns: null },
+      source: { server: 'src', table: 'LOG', columns: null, filter: null, transform: null },
       target: { server: 'dst', table: 'LOG2' },
       queryLimit: 100,
       pollIntervalMs: 20,

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { TagMetaCache, TagTable } = require('../../src/db/table.js');
 const { ColumnType, Column, TableSchema } = require('../../src/db/types.js');
 
-// ─── TagMetaCache._applyIdentifier ──────────────────────────────────────────
+// ─── TagMetaCache ────────────────────────────────────────────────────────────
 
 test('TagMetaCache.set: tag name에 null byte → throw', () => {
   const cache = new TagMetaCache();

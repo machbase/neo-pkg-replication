@@ -29,6 +29,27 @@ function maxRid(rows) {
 }
 
 /**
+ * transform[] 적용: (value + add) * multiply, prefix/suffix
+ * number 타입 컬럼에만 add/multiply 적용, BigInt/null/string은 skip
+ * transform이 null/빈 배열이면 rows를 그대로 반환
+ */
+function _applyTransform(rows, transform) {
+  if (!transform || transform.length === 0) return rows;
+  return rows.map(row => {
+    const out = { ...row };
+    for (const t of transform) {
+      const val = out[t.column];
+      if (typeof val === 'number') {
+        out[t.column] = (val + t.add) * t.multiply;
+      }
+      // BigInt(datetime/long), null은 skip — prefix/suffix는 TAG NAME에만 해당하며
+      // table.js의 _applyNameRule에서 이미 처리됨
+    }
+    return out;
+  });
+}
+
+/**
  * 공통 retry 루프: fn()을 retry 설정에 따라 반복 호출
  *
  * fn은 다음 중 하나를 반환해야 함:
@@ -149,12 +170,7 @@ class Worker {
     try {
       await srcTable.open();
 
-      const openErr = await dstTable.open(true);
-      if (openErr) {
-        getLogger().error('worker', { ...logCtx, msg: `dstTable.open failed: ${openErr.message}` });
-        await srcTable.close();
-        return;
-      }
+      await dstTable.open();
 
       await this._runStateMachine({
         srcTable,
@@ -180,9 +196,11 @@ class Worker {
     const ridRangeSize  = jobConfig.ridRangeSize;
     const pollIntervalMs = jobConfig.pollIntervalMs;
     const sourceColumns = jobConfig.source.columns;
-    const tagIdentifier = jobConfig.source.tagIdentifier;
+    const filter    = jobConfig.source.filter    ?? null;
+    const transform = jobConfig.source.transform ?? null;
+    const nameRule  = transform?.find(t => t.column === 'NAME') ?? null;
     const retry = new RetryHandler(jobConfig.retry ?? {});
-    const checkpointStore = new CheckpointStore(CHECKPOINT_DIRECTORY);
+    const checkpointStore = new CheckpointStore(jobConfig.checkpoint?.directory ?? CHECKPOINT_DIRECTORY);
     const logCtx = { job_id: jobConfig.id, partition: dataTable };
 
     // ═══════════════════════════════════════════════════════════
@@ -199,8 +217,7 @@ class Worker {
       const startMode = jobConfig.startMode;
       if (startMode === 'now') {
         try {
-          const maxRidVal = await srcTable.getMaxRid();
-          startRid = maxRidVal + 1n;
+          startRid = (await srcTable.getMaxRid()) + 1n;
         } catch (err) {
           getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (startMode=now): ${err.message}` });
           return;
@@ -215,7 +232,7 @@ class Worker {
 
     // TAG alias cache 로드
     if (tableType === 'TAG') {
-      const loadErr = await srcTable.loadTagMetaCache();
+      const loadErr = await srcTable.cacheTagMetaAll();
       if (loadErr) {
         getLogger().warn('worker', { ...logCtx, msg: `loadTagMetaCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
@@ -235,8 +252,9 @@ class Worker {
         startRid,
         srcTable,
         dstTable,
-        tagIdentifier,
+        nameRule,
         sourceColumns,
+        filter,
         batchSize,
         ridRangeSize,
         retry,
@@ -261,7 +279,7 @@ class Worker {
           await srcTable.close();
           await srcTable.open();
           if (tableType === 'TAG') {
-            await srcTable.loadTagMetaCache();
+            await srcTable.cacheTagMetaAll();
           }
           stmtCount = 0;
           getLogger().debug('worker', { ...logCtx, msg: 'sourceConn refreshed (statement ID threshold)' });
@@ -272,7 +290,13 @@ class Worker {
       }
 
       // 소스 배치 읽기
-      const { rows, err: readErr } = await srcTable.read(startRid, batchSize, ridRangeSize, tagIdentifier, sourceColumns);
+      let readResult;
+      if (tableType === 'TAG') {
+        readResult = await srcTable.read(startRid, batchSize, ridRangeSize, nameRule, sourceColumns, filter);
+      } else {
+        readResult = await srcTable.read(startRid, batchSize, ridRangeSize, filter);
+      }
+      const { rows, err: readErr } = readResult;
       if (readErr) {
         getLogger().error('worker', { ...logCtx, phase: 'STEADY', msg: `read failed: ${readErr.message}` });
         return;
@@ -289,7 +313,10 @@ class Worker {
       }
 
       const maxRidInBatch = maxRid(rows);
-      const outRows = rows.map(row => row.data);
+      const outRows = _applyTransform(
+        rows.map(row => row.data),
+        transform
+      );
       const droppedNoMeta = 0; // drop_not_found 행은 srcTable.read()가 이미 제외
 
       if (shutdownFlag.value) return;
@@ -325,8 +352,9 @@ class Worker {
     startRid,
     srcTable,
     dstTable,
-    tagIdentifier,
+    nameRule,
     sourceColumns,
+    filter,
     batchSize,
     ridRangeSize,
     retry,
@@ -351,7 +379,8 @@ class Worker {
         await intConn.connect();
 
         // 소스 배치 읽기 (drop_not_found 행은 srcTable.read()가 이미 제외)
-        const { rows, err: readErr } = await srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, tagIdentifier, sourceColumns);
+        // STARTUP_INTEGRITY는 TAG 전용이므로 항상 TagDataTable.read() 시그니처 사용
+        const { rows, err: readErr } = await srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, nameRule, sourceColumns, filter);
         if (readErr) {
           getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readErr.message}` });
           outcome = 'return'; break;

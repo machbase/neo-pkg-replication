@@ -28,6 +28,7 @@ const path = require('path');
 
 const { MachbaseClient } = require('../../src/db/client.js');
 const { TagTable, LogTable } = require('../../src/db/table.js');
+const { FLAG_METADATA } = require('../../src/db/types.js');
 const CheckpointStore = require('../../src/db/checkpoint.js');
 const { Worker } = require('../../src/worker/worker.js');
 
@@ -127,17 +128,16 @@ function makeShutdownFlag(timeoutMs = 500) {
 
 function baseMapping(srcTable, dstTable, overrides = {}) {
   return {
-    source: { server: 'src', table: srcTable, tag_identifier: { mode: 'none', value: '' }, columns: null },
+    source: { server: 'src', table: srcTable, columns: null },
     target: { server: 'dst', table: dstTable },
-    execution: {
-      start_mode: 'full',
-      query_limit: 100,
-      poll_interval_ms: 100,
-      on_save_failure: 'continue',
-      integrity: { enabled: false },
-      retry: { max_attempts: 3, base_delay_ms: 10, max_delay_ms: 100 },
-      ...overrides,
-    },
+    startMode: 'full',
+    queryLimit: 100,
+    ridRangeSize: 50000,
+    pollIntervalMs: 100,
+    onSaveFailure: 'continue',
+    integrity: { enabled: false },
+    retry: { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 100 },
+    ...overrides,
   };
 }
 
@@ -154,7 +154,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
   const srcTagTable = new TagTable(DB_CONFIG, srcTable);
   let partitions, srcSchema, dstSchema;
   try {
-    await srcTagTable.open(false);
+    await srcTagTable.open();
     partitions = await srcTagTable.getDataTables();
     if (partitions.length === 0) throw new Error(`No partitions for ${srcTable}`);
     srcSchema = await srcTagTable.getSchema();
@@ -165,7 +165,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
   // 대상 스키마 조회
   const dstTagTable = new TagTable(DB_CONFIG, dstTable);
   try {
-    await dstTagTable.open(false);
+    await dstTagTable.open();
     const dstPartitions = await dstTagTable.getDataTables();
     if (dstPartitions.length === 0) throw new Error(`No partitions for ${dstTable}`);
     dstSchema = await dstTagTable.getSchema();
@@ -176,7 +176,7 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
   // src-only 컬럼 검출 (job_runner._discoverMapping 로직과 동일)
   const dstNames = new Set(dstSchema.columns.map(c => c.name));
   const srcOnlyCols = srcSchema.columns
-    .filter(c => c.category !== 'metadata' && !dstNames.has(c.name))
+    .filter(c => !(c.flag & FLAG_METADATA) && !dstNames.has(c.name))
     .map(c => c.name);
   if (srcOnlyCols.length > 0) {
     // discover 실패 → 모든 파티션 스킵
@@ -187,7 +187,6 @@ async function runTagWorkers(jobId, srcTable, dstTable, tmpDir, mappingOverrides
     ...baseMapping(srcTable, dstTable),
     ...mappingOverrides,
     source: { ...baseMapping(srcTable, dstTable).source, ...(mappingOverrides.source || {}) },
-    execution: { ...baseMapping(srcTable, dstTable).execution, ...(mappingOverrides.execution || {}) },
   };
 
   for (const part of partitions) {
@@ -242,7 +241,7 @@ test('TAG-01: 동일 스키마 TAG→TAG 복제 — 행수/value/cp 검증', asy
       for (const p of ps) {
         const { exists, cp } = await store.load(jobId, p.data_table);
         if (exists) {
-          assert.ok(cp.last_success_rid >= 0n);
+          assert.ok(cp.lastSuccessRid >= 0n);
         }
       }
     } finally { await pc.close(); }
@@ -352,17 +351,16 @@ test('TAG-04: 동일 컬럼명 but 타입 다름 (SRC: quality DOUBLE, DST: qual
       replicationError = err;
     }
 
-    // 타입 불일치 시 에러 없이 복제되거나, appendStream에서 에러가 날 수 있음
-    // 실제 동작 결과를 로그로 확인
+    // 타입 불일치: 에러 없이 복제(암묵적 변환)되거나 appendStream에서 에러가 나 0행
+    // 두 경우 모두 허용하되, 에러가 없으면 2행이 복제되어야 함
     const vc = await makeConn();
     try {
       const rows = await vc.query(`SELECT name, value FROM ${DST} ORDER BY time ASC`);
-      // 타입 암묵적 변환으로 복제 성공하거나 0행(에러)일 수 있음 — 실제 결과 기록
-      console.log(JSON.stringify({
-        level: 'info', stage: 'test', test: 'TAG-04',
-        msg: `타입 불일치 복제 결과: ${rows.length}행, error: ${replicationError?.message ?? 'none'}`,
-      }));
-      assert.ok(rows.length >= 0, '복제 결과가 있어야 함 (0행 이상)');
+      if (replicationError === null) {
+        assert.equal(rows.length, 2, `에러 없이 복제 시 2행이어야 함 (실제: ${rows.length})`);
+      } else {
+        assert.equal(rows.length, 0, `에러 발생 시 0행이어야 함 (실제: ${rows.length})`);
+      }
     } finally { await vc.close(); }
   } finally {
     await dropTable(conn, SRC); await dropTable(conn, DST);
@@ -386,7 +384,7 @@ test('TAG-05: start_mode=full — RID 0부터 전체 복제', async () => {
       { name: 'full_b', timeNs: nowNs(1), value: 20.0 },
     ]);
 
-    await runTagWorkers(`tag-05-${TS}`, SRC, DST, tmpDir, { execution: { start_mode: 'full' } });
+    await runTagWorkers(`tag-05-${TS}`, SRC, DST, tmpDir, { startMode: 'full' });
 
     const vc = await makeConn();
     try {
@@ -415,7 +413,7 @@ test('TAG-06: start_mode=now — 기존 데이터 복제 안 함', async () => {
       { name: 'old_b', timeNs: nowNs(-500),  value: 88.0 },
     ]);
 
-    await runTagWorkers(`tag-06-${TS}`, SRC, DST, tmpDir, { execution: { start_mode: 'now' } });
+    await runTagWorkers(`tag-06-${TS}`, SRC, DST, tmpDir, { startMode: 'now' });
 
     const vc = await makeConn();
     try {
@@ -476,17 +474,38 @@ test('TAG-07: cp 재시작 — cp 이후 데이터만 복제, cp 갱신', async 
       assert.equal(byName['batch2_a'], 3.3);
     } finally { await vc.close(); }
 
-    // cp 갱신 확인
+    // cp 갱신 확인: 2차 실행 후 cp를 저장한 파티션이 존재하고
+    // cp1(1차)과 비교해 lastSuccessRid가 증가한 파티션이 있어야 함
     const pc2 = await makeConn();
+    let hasAdvanced = false;
     try {
       const ps = await pc2.selectTagDataTables(SRC);
       for (const p of ps) {
         const { exists, cp: cp2 } = await store.load(jobId, p.data_table);
-        if (exists && cp1) {
-          assert.ok(cp2.last_success_rid >= cp1.last_success_rid, 'cp 갱신됨');
+        if (exists && cp2.lastSuccessRid > cp1.lastSuccessRid) {
+          hasAdvanced = true;
+          break;
         }
       }
     } finally { await pc2.close(); }
+    // batch2_a는 cp1이 저장된 파티션과 동일하거나 다른 파티션에 들어갈 수 있음.
+    // DST 3행 검증이 이미 완료되었으므로, cp가 존재하는 파티션이 cp1보다
+    // 앞서야 한다. TAG 파티션이 여러 개일 때 batch2_a가 cp1 파티션에
+    // 들어가야만 hasAdvanced=true. 그 외의 경우 행 수 검증으로 대체.
+    if (!hasAdvanced) {
+      // 새 파티션에 들어간 경우: cp1 파티션 rid는 그대로, 새 파티션 cp만 생성됨
+      // → DST 3행으로 이미 복제 동작 검증 완료
+      const pc3 = await makeConn();
+      let totalCpParts = 0;
+      try {
+        const ps = await pc3.selectTagDataTables(SRC);
+        for (const p of ps) {
+          const { exists } = await store.load(jobId, p.data_table);
+          if (exists) totalCpParts++;
+        }
+      } finally { await pc3.close(); }
+      assert.ok(totalCpParts > 0, 'cp 저장된 파티션이 존재해야 함');
+    }
   } finally {
     await dropTable(conn, SRC); await dropTable(conn, DST);
     await conn.close();
@@ -510,7 +529,7 @@ test('TAG-08: tag_identifier prefix — DST name = prefix + canonical', async ()
     ]);
 
     await runTagWorkers(`tag-08-${TS}`, SRC, DST, tmpDir, {
-      source: { tag_identifier: { mode: 'prefix', value: 'SRC_' } },
+      source: { transform: [{ column: 'NAME', prefix: 'SRC_' }] },
     });
 
     const vc = await makeConn();
@@ -545,10 +564,10 @@ test('TAG-09: STARTUP_INTEGRITY — 재시작 시 중복 없이 복제', async (
 
     const jobId = `tag-09-${TS}`;
     // 1차 복제 — cp 저장
-    await runTagWorkers(jobId, SRC, DST, tmpDir, { execution: { integrity: { enabled: true } } });
+    await runTagWorkers(jobId, SRC, DST, tmpDir, { integrity: { enabled: true } });
 
     // 2차 재시작 — STARTUP_INTEGRITY 수행, 기존 행 중복 없이 복제
-    await runTagWorkers(jobId, SRC, DST, tmpDir, { execution: { integrity: { enabled: true } } });
+    await runTagWorkers(jobId, SRC, DST, tmpDir, { integrity: { enabled: true } });
 
     const vc = await makeConn();
     try {
@@ -590,19 +609,15 @@ describe('TAG-10: LOG 테이블은 cp+integrity=true여도 STARTUP_INTEGRITY 미
     const jobId = `tag-10-${TS}`;
 
     // LOG 테이블 스키마 빌드
-    async function runLogWorker() {
+    async function runLogWorkerLocal() {
       const srcLogTable = new LogTable(SRC, DB_CONFIG);
       let srcSchema;
-      try { await srcLogTable.open(false); srcSchema = await srcLogTable.getSchema(); } finally { await srcLogTable.close(); }
+      try { await srcLogTable.open(); srcSchema = await srcLogTable.getSchema(); } finally { await srcLogTable.close(); }
       const dstLogTable = new LogTable(DST, DB_CONFIG);
       let dstSchema;
-      try { await dstLogTable.open(false); dstSchema = await dstLogTable.getSchema(); } finally { await dstLogTable.close(); }
+      try { await dstLogTable.open(); dstSchema = await dstLogTable.getSchema(); } finally { await dstLogTable.close(); }
 
-      const mapping = {
-        ...baseMapping(SRC, DST, { integrity: { enabled: true } }),
-        execution: { ...baseMapping(SRC, DST).execution, integrity: { enabled: true } },
-      };
-
+      const mapping = baseMapping(SRC, DST, { integrity: { enabled: true } });
       const worker = new Worker(
         { ...mapping, id: jobId, checkpoint: { directory: tmpDir } },
         'LOG',
@@ -617,22 +632,25 @@ describe('TAG-10: LOG 테이블은 cp+integrity=true여도 STARTUP_INTEGRITY 미
     }
 
     // 1차 실행 → cp 저장
-    await runLogWorker();
+    await runLogWorkerLocal();
     const store = new CheckpointStore(tmpDir);
     const { exists } = await store.load(jobId, SRC);
     assert.equal(exists, true, '1차 실행 후 cp 저장됨');
 
-    // 2차 실행 — 로그 캡처하여 STARTUP_INTEGRITY 미출력 확인
-    const logs = [];
-    const orig = console.log;
-    console.log = (...args) => { logs.push(args.join(' ')); orig(...args); };
+    // 2차 실행 — process.stdout.write 캡처하여 integrity check 로그 미출력 확인
+    const capturedLines = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk, ...rest) => {
+      capturedLines.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return origWrite(chunk, ...rest);
+    };
     try {
-      await runLogWorker();
+      await runLogWorkerLocal();
     } finally {
-      console.log = orig;
+      process.stdout.write = origWrite;
     }
 
-    const integrityLog = logs.find(l => l.includes('STARTUP_INTEGRITY'));
+    const integrityLog = capturedLines.find(l => l.includes('integrity check start'));
     assert.equal(integrityLog, undefined, 'LOG 테이블은 STARTUP_INTEGRITY 미수행');
   });
 });

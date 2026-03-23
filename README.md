@@ -226,16 +226,6 @@ node --test tests/integration/table.test.js
 
 ---
 
-## 알려진 제약
-
-### @machbase/ts-client FLOAT/DOUBLE endian 버그
-
-`@machbase/ts-client@0.9.3`의 쿼리 결과 디코더가 `FLT32`/`FLT64` 타입을 항상 Little-Endian으로 읽지만, Machbase TAG 파티션에 따라 서버가 Big-Endian으로 저장하는 경우가 있어 값이 손상된다.
-
-`src/db/client.js`의 `fixDoubleEndian()` 함수가 `MachbaseClient.query()` 반환 직후 자동으로 보정한다. 상세 분석은 [docs/ENDIAN_BUG.md](docs/ENDIAN_BUG.md) 참고.
-
----
-
 ## 디렉토리 구조
 
 ```
@@ -250,7 +240,7 @@ repli-js/
 │   ├── config/
 │   │   └── config.js         # Config 클래스 및 도메인 클래스 전체
 │   ├── db/
-│   │   ├── client.js         # MachbaseClient (fixDoubleEndian 포함)
+│   │   ├── client.js         # MachbaseClient
 │   │   ├── stream.js         # MachbaseStream, _toCell
 │   │   ├── table.js          # LogTable, TagTable, TagDataTable, TagAliasCache
 │   │   ├── checkpoint.js     # CheckpointStore (atomic write, BigInt 지원)
@@ -264,8 +254,7 @@ repli-js/
 ├── docs/
 │   ├── PROJECT.md            # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 │   ├── API.md                # REST API 명세
-│   ├── TEST_RESULTS.md       # 테스트 결과 보고서
-│   └── ENDIAN_BUG.md         # @machbase/ts-client endian 버그 상세 분석
+│   └── TEST_RESULTS.md       # 테스트 결과 보고서
 └── tests/
     ├── unit/                 # 단위 테스트 (165개)
     └── integration/          # 통합 테스트 (실 DB 필요)

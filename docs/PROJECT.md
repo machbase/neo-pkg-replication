@@ -2,7 +2,7 @@
 
 **프로젝트**: Machbase TAG / Log 테이블 복제 도구
 **런타임**: Node.js v22 (CommonJS)
-**최종 수정**: 2026-03-19 (autoStart 기능 추가, _syncTagMeta TAG meta 동기화, replicator.test.js 확장, config.test.js autoStart 검증 추가)
+**최종 수정**: 2026-03-23 (columnRules 분리 → filter(WHERE절 필터), transform(post-read 값 변환). TAG NAME filter는 META 조회 시 WHERE절로 처리)
 
 ---
 
@@ -56,7 +56,7 @@
 | 데이터 테이블 | 실제 데이터가 저장되는 테이블. Tag 테이블의 경우 `{logical}_DATA_{index}` 형태 |
 | `_rid` | 데이터 테이블별 순차적이고 unique한 일련번호 (단조 증가) |
 | 체크포인트 | 데이터 테이블별 마지막 성공 복제 `_rid` (파일로 저장) |
-| canonical tag_name | tag_id → tag_name 변환 후 tagIdentifier(prefix/suffix/none)를 적용한 최종 tag_name' |
+| canonical tag_name | tag_id → tag_name 변환 후 transform의 NAME 규칙(prefix/suffix)을 적용한 최종 tag_name |
 | job | 하나의 소스 논리 테이블과 대상 테이블 간의 복제 단위 설정 |
 | Worker | data_table 1개당 생성되는 독립 복제 실행 단위 |
 | STARTUP_INTEGRITY | 재시작 직후 수행하는 중복 skip 및 시작 위치 보정 단계 (Tag 전용) |
@@ -81,9 +81,9 @@ repli-js/
 │   ├── config/
 │   │   └── config.js           # Config + 도메인 클래스 전체 (ServerConfig, JobConfig 등)
 │   ├── db/
-│   │   ├── client.js           # MachbaseClient, fixDoubleEndian(), toInt64
+│   │   ├── client.js           # MachbaseClient, toInt64
 │   │   ├── stream.js           # MachbaseStream, _toCell (append 스트림 래퍼)
-│   │   ├── table.js            # TagAliasCache, LogTable, TagTable, TagDataTable
+│   │   ├── table.js            # TagMetaCache, LogTable, TagTable, TagDataTable
 │   │   ├── checkpoint.js       # CheckpointStore (atomic write, BigInt 지원 내장)
 │   │   └── types.js            # ColumnType, Column, TableSchema (순수 도메인 모델)
 │   ├── worker/
@@ -97,22 +97,20 @@ repli-js/
 │   │   ├── fixtures/
 │   │   │   └── worker_fixtures.js    # Worker 테스트 공통 픽스처 (makeTagWorker 등)
 │   │   ├── checkpoint.test.js        # CheckpointStore 단위 테스트 (6개)
-│   │   ├── client.test.js            # fixDoubleEndian 단위 테스트 (4개)
-│   │   ├── config.test.js            # Config load/validate/CRUD 단위 테스트 (51개, autoStart 4개 포함)
+│   │   ├── config.test.js            # Config load/validate/CRUD 단위 테스트 (65개, autoStart/filter/transform 포함)
 │   │   ├── http_server.test.js       # HttpServer REST API 단위 테스트 (19개)
 │   │   ├── http_server_servers.test.js # HttpServer /api/servers 엔드포인트 테스트 (23개)
 │   │   ├── integrity_checker.test.js # TagTable.findFirstMissRow 단위 테스트 (7개)
 │   │   ├── job-scheduler.test.js     # Job._discoverMapping + JobScheduler 단위 테스트 (19개)
 │   │   ├── replicator.test.js        # Replicator 단위 테스트 (6개: SIGTERM/SIGINT/autoStart/api/shutdownTimeout/empty)
 │   │   ├── retry.test.js             # RetryHandler 단위 테스트 (15개)
-│   │   └── worker-state.test.js      # Worker 상태 머신 + E2E mock 시나리오 (20개)
+│   │   └── worker-state.test.js      # Worker 상태 머신 + E2E mock 시나리오 + transform (22개)
 │   └── integration/
 │       ├── tag_replication.test.js   # TAG 테이블 통합 테스트 (11개)
 │       ├── log_replication.test.js   # LOG 테이블 통합 테스트 (8개)
 │       └── table.test.js             # LogTable/TagTable/TagDataTable 통합 테스트 (17개)
 ├── docs/
-│   ├── PROJECT.md               # 본 문서
-│   └── ENDIAN_BUG.md            # @machbase/ts-client endian 버그 상세 분석
+│   └── PROJECT.md               # 본 문서
 └── package.json
 ```
 
@@ -230,10 +228,40 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) → STEADY
 | source.server | string | servers[].name 참조 |
 | source.table | string | 원본 논리 테이블명 |
 | source.columns | string[]\|null | SELECT 허용 컬럼 목록. null이면 전체 컬럼. UPPERCASE 정규화. |
-| source.tagIdentifier | TagIdentifierConfig | tag name 식별자 방식 (mode: prefix/suffix/none) |
+| source.filter | ColumnFilterConfig[]\|null | WHERE절 필터 목록. null이면 필터 없음. read 전 적용. |
+| source.transform | ColumnTransformConfig[]\|null | 값 변환 목록. null이면 변환 없음. read 후 적용. |
 | target.server | string | servers[].name 참조 |
 | target.table | string | 대상 테이블명. `autoCreate: true`인 경우 빈 문자열 허용 → src.table과 동일한 이름으로 자동 생성. |
 | target.autoCreate | boolean | `true`이면 대상 테이블 미존재 시 src 스키마 기반으로 자동 CREATE. 기본 `false`. |
+
+**ColumnFilterConfig** (`source.filter[]` 항목)
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| column | string | 필수 | 대상 컬럼명 (UPPERCASE 정규화) |
+| min | number | — | WHERE절 하한 필터 (숫자형 컬럼만). 생략 가능 |
+| max | number | — | WHERE절 상한 필터 (숫자형 컬럼만). 생략 가능 |
+| in | string[] | — | WHERE `column IN (?, ...)` 필터 (VARCHAR/TEXT 컬럼, 파라미터 바인딩). 생략 가능 |
+| like | string | — | WHERE `column LIKE ?` 필터 (VARCHAR/TEXT 컬럼, 파라미터 바인딩). 생략 가능 |
+
+- `min`/`max`: read 시 SQL WHERE절에 포함. 숫자형 컬럼에만 적용.
+- `in`/`like`: VARCHAR/TEXT 컬럼에 파라미터 바인딩으로 적용.
+- TAG 테이블의 NAME 컬럼 `in`/`like`: `loadTagMetaCache()` 시 `selectTagMeta()` WHERE절로 처리 → 해당 태그만 캐시에 로드. 캐시 miss 발생 시에는 `selectTagNameByTagId()`로 단건 DB 조회.
+- 중복 column 항목 → config 검증 오류. `min > max` → config 검증 오류.
+
+**ColumnTransformConfig** (`source.transform[]` 항목)
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| column | string | 필수 | 대상 컬럼명 (UPPERCASE 정규화) |
+| add | number | 0 | 수치 변환 덧셈 오프셋. 적용 수식: `(value + add) * multiply` |
+| multiply | number | 1 | 수치 변환 배율 |
+| prefix | string | — | 문자열 컬럼 앞에 추가할 값. 생략 가능 |
+| suffix | string | — | 문자열 컬럼 뒤에 추가할 값. 생략 가능 |
+
+- `prefix`/`suffix`: TAG 테이블의 경우 `TagMetaCache._applyNameRule()`을 통해 read() 내부에서 canonical name 생성 시 반영. `_syncTagMeta()`에도 동일하게 적용.
+- `add`/`multiply`: read 후 `_applyTransform()`에서 number 타입 컬럼에만 적용. BigInt(datetime/long 등) 컬럼은 skip.
+- 중복 column 항목 → config 검증 오류.
 
 **target.autoCreate 동작**
 - `false` (기본): 대상 테이블이 없으면 에러 로그 후 job skip (재시작 루프 유지)
@@ -286,9 +314,10 @@ config.removeJob(id)
 - `Config._buildJob(job, servers)` 내부에서 모든 하위 클래스 생성
 - 각 클래스의 검증 책임:
   - `ServerConfig.valid()`: name/host/port/user/password 필수
-  - `SourceConfig.valid(jobId, servers)`: table 필수, server 참조 유효성, columns/tagIdentifier 검증
+  - `SourceConfig.valid(jobId, servers)`: table 필수, server 참조 유효성, columns/filter/transform 검증
   - `TargetConfig.valid(jobId, servers)`: table 또는 autoCreate 조건 충족, server 참조 유효성, autoCreate boolean 검증
-  - `TagIdentifierConfig.valid(jobId)`: mode 값 범위, value 타입
+  - `ColumnFilterConfig.valid(jobId)`: column 필수, min/max finite number, min≤max, in 비어있지 않은 문자열 배열, like string
+  - `ColumnTransformConfig.valid(jobId)`: column 필수, add/multiply finite number, prefix/suffix string
   - `IntegrityConfig.valid(jobId)`: enabled boolean
   - `RetryConfig.valid(jobId)`: strategy/maxAttempts/delay 값 범위
   - `LoggingConfig.valid()` + `LoggingFileConfig.valid()`: level/stdout/file 검증
@@ -319,7 +348,7 @@ client.selectColumnsByTableId(tableId) → [{ NAME, TYPE, ID }]
 client.selectMaxRid(tableName) → BigInt
 client.selectTagNames(logicalTable) → [{ _ID, name }]
 client.selectTagNameByTagId(logicalTable, tagId) → string|null
-client.selectTagMeta(logicalTable, metaColNames?) → [{ _ID, name, ...metaCols }]
+client.selectTagMeta(logicalTable, metaColNames?, nameFilter?) → [{ _ID, name, ...metaCols }]  // nameFilter: { in?, like? }
 client.updateTagMeta(logicalTable, oldName, sets) → Promise<void>  // UPDATE {table} METADATA SET ... WHERE NAME=...
 
 // DDL (autoCreate 기능)
@@ -361,22 +390,23 @@ CheckpointStore.save(jobId, dataTable, cp, stats) → err
 
 ---
 
-### M4. TagAliasCache / LogTable / TagTable / TagDataTable (`src/db/table.js`)
+### M4. TagMetaCache / LogTable / TagTable / TagDataTable (`src/db/table.js`)
 
 ```js
-// ── TagAliasCache ──
-cache = new TagAliasCache()
-cache.set(tagId, name)
+// ── TagMetaCache ──
+cache = new TagMetaCache()
+cache.set(tagId, name, meta?)          // meta: { [colName]: value } — metadata 컬럼 값
 cache.get(tagId) → string|undefined
-cache.resolve(tagId, tagIdentifier) → { canonical, status: 'ok'|'drop_not_found' }
+cache.resolve(tagId, nameRule) → { canonical, meta: object, status: 'ok'|'drop_not_found' }
 cache.size
+TagMetaCache._applyNameRule(tagName, nameRule)  // static, prefix/suffix 적용
 
 // ── LogTable ──
 logTable = new LogTable(logicalTable, config)
 await logTable.open(useStream?)   // DB 연결 + 선택적 append 스트림 열기
 await logTable.close()
 await logTable.getSchema() → TableSchema
-await logTable.read(startRid, limit?, rangeSize?) → { rows, err }
+await logTable.read(startRid, limit?, rangeSize?, filter?) → { rows, err }
 await logTable.append(rows) → Error|null
 await logTable.getMaxRid() → BigInt
 
@@ -392,26 +422,29 @@ await tagTable.append(rows) → Error|null
 dataTable = new TagDataTable(dataTable, config)
 await dataTable.open()
 await dataTable.close()
-await dataTable.loadTagAliasCache() → null   // 내부 aliasCache 구성
-await dataTable.read(startRid, limit?, rangeSize?, tagIdentifier?, sourceColumns?) → { rows, err }
+await dataTable.loadTagMetaCache(nameFilter?) → null   // 내부 aliasCache 구성. nameFilter: { in?, like? }
+await dataTable.read(startRid, limit?, rangeSize?, nameRule?, sourceColumns?, filter?) → { rows, err }
 await dataTable.getMaxRid() → BigInt
 ```
 
 **구현 항목**
-- `TagAliasCache.set`: name에 `\x00` 포함 시 throw — existSet key 충돌 방지 (캐시 입력 시점에서 차단)
-- `TagAliasCache.resolve`: 캐시에서만 조회. miss → `drop_not_found` (단건 DB 조회는 Worker가 담당)
-- `TagAliasCache._applyIdentifier(tagName, tagIdentifier)`: prefix/suffix/none 변환
+- `TagMetaCache.set(tagId, name, meta?)`: name에 `\x00` 포함 시 throw. meta는 metadata 컬럼 값 객체 (기본 `{}`)
+- `TagMetaCache.resolve(tagId, nameRule)`: 캐시에서만 조회. miss → `drop_not_found`. 반환 시 `meta` 포함
+- `TagMetaCache._applyNameRule(tagName, nameRule)`: nameRule(transform의 NAME 항목)의 prefix/suffix를 tagName에 적용
+- `_buildWhereClause(filter, columnNamesUpper, schema)`: filter[] 기반으로 min/max/in/like WHERE 조건 생성 (내부 헬퍼). NAME 컬럼은 TAG 파티션 쿼리에서 자동 제외.
 - `LogTable`/`TagTable`: `MachbaseClient` 내부 생성, `open(useStream=false)` 시 연결 (스트림 선택적)
 - `TagTable.getSchema(dataTableId)`: META 컬럼 + DATA 파티션 컬럼 조합
-- `TagDataTable.read`: aliasCache 설정 시 tagId → canonical name resolve, drop_not_found 행 제외
+- `TagDataTable.loadTagMetaCache(nameFilter?)`: `selectTagMeta(logicalTable, metaColNames, nameFilter)`로 META 조회. nameFilter 있으면 WHERE `name IN (...)` / `name LIKE ?` 적용 → 해당 태그만 캐시에 로드. metadata 컬럼 값 포함.
+- `TagDataTable.read`: nameRule로 canonical name resolve (prefix/suffix 적용), filter의 min/max/in/like로 WHERE 필터, drop_not_found 행 제외
+- `LogTable.read`: filter의 min/max/in/like로 WHERE 필터 추가
 - 행 구조: `{ rid: BigInt, data: { NAME, TIME, VALUE, ... } }` (UPPERCASE key)
 
-**SQL (TAG 읽기)**
+**SQL (TAG 읽기, filter 적용 예시)**
 ```sql
 SELECT /*+ RID_RANGE(data_table, startRid, endRid) */
        _RID, name, time, value
 FROM   data_table
-WHERE  _RID >= startRid
+WHERE  _RID >= startRid AND VALUE >= 0 AND VALUE <= 100
 LIMIT  limit
 ```
 
@@ -528,7 +561,7 @@ RESOLVE_START → (STARTUP_INTEGRITY, TAG+cp존재+integrity.enabled) → STEADY
 - `checkpointStore.load(jobId, dataTable)`
 - cp 존재 → `startRid = cp.lastSuccessRid + 1n` (startMode 무시)
 - cp 없음/손상 → startMode 기준: `full`=0n, `now`=`srcTable.getMaxRid() + 1n`, `ridAfter`=설정값
-- TAG 테이블: `srcTable.loadTagAliasCache()` 호출
+- TAG 테이블: `srcTable.loadTagMetaCache(nameFilter)` 호출 (nameFilter: filter에서 NAME 컬럼 항목 추출)
 
 **STARTUP_INTEGRITY_PHASE**
 - 진입 조건: `tableType === 'TAG'` && `cpExists` && `exec.integrity?.enabled !== false`
@@ -545,15 +578,17 @@ stmtCount = 0  (배치당 2 statement 소비 — MAX + SELECT)
 while NOT shutdown_requested:
   if stmtCount >= 900: srcTable.close(); srcTable.open(); stmtCount = 0
 
-  rows = srcTable.read(startRid, batchSize, ridRangeSize, tagIdentifier, sourceColumns)
+  [TAG] rows = srcTable.read(startRid, batchSize, ridRangeSize, nameRule, sourceColumns, filter)
+  [LOG] rows = srcTable.read(startRid, batchSize, ridRangeSize, filter)
   stmtCount += 2
   if rows.empty: sleepOrShutdown(pollIntervalMs); continue
 
   maxRidInBatch = MAX(rows.rid)
 
-  [TAG] 각 row: aliasCache.resolve() → drop 시 skip (srcTable.read()가 내부 aliasCache로 처리)
-        outRows = rows.map(row => row.data)
-  [LOG] outRows = rows.map(row => row.data)
+  // filter(min/max/in/like)는 read() 내부 WHERE절에서 이미 처리됨
+  // transform.NAME(prefix/suffix)는 read() 내부 _applyNameRule()에서 이미 처리됨
+  outRows = _applyTransform(rows.map(row => row.data), transform)
+  // _applyTransform: number 타입 컬럼에만 (value + add) * multiply 적용. BigInt/string은 skip.
 
   if outRows not empty:
     _appendRows(dstTable, outRows, ...)  [retry 포함]
@@ -702,8 +737,9 @@ while NOT shutdown_requested:
 
   maxRidInBatch = MAX(rows.rid)
 
-  [TAG] rows → aliasCache.resolve → canonical tag_name' 치환 → outRows
-  [LOG] outRows = rows 그대로
+  // filter(min/max/in/like): read() WHERE절에서 처리
+  // transform.NAME(prefix/suffix): read() 내부 _applyNameRule()에서 처리
+  outRows = _applyTransform(rows, transform)  // add/multiply 수치 변환 (number 컬럼만)
 
   if outRows is not empty:
     write(outRows)
@@ -867,7 +903,7 @@ SIGTERM 수신
 | 컬럼 규칙 검증 | 1번째=tag id(integer), 2번째=time(int64) 검증 | 검증 없음 |
 | 매핑 제한 | 1:1, 1:n, n:m 모두 허용 | 1:1만 허용 (n:1 금지) |
 | tag_id → canonical 변환 | 수행 (resolveTagCanonical) | 수행하지 않음 |
-| tag_identifier 적용 | 적용 (prefix/suffix/none) | 적용하지 않음 |
+| transform NAME prefix/suffix | 적용 (TagMetaCache._applyNameRule, read() 내부) | 적용 (LogTable.read 내부 처리) |
 | STARTUP_INTEGRITY 수행 | 체크포인트 있고 integrity.enabled=true 시 수행 | 수행하지 않음 |
 | 재시작 중복 방지 | 가능 (tag_name + time 존재 여부 확인) | 불가능 (의도적 허용) |
 | drop_not_found 처리 | tag_id 메타 없으면 row drop, cp 전진 | 해당 없음 |
@@ -891,7 +927,7 @@ graph TD
     JS --> W["Worker\nsrc/worker/worker.js"]
 
     W --> CP["M3 CheckpointStore\nsrc/db/checkpoint.js"]
-    W --> TBL["M4 src/db/table.js\nLogTable/TagTable\nTagDataTable/TagAliasCache"]
+    W --> TBL["M4 src/db/table.js\nLogTable/TagTable\nTagDataTable/TagMetaCache"]
     W --> RH["M8 RetryHandler\nsrc/lib/retry.js"]
 
     TBL --> ST["M7 MachbaseStream\nsrc/db/stream.js"]
@@ -932,24 +968,24 @@ classDiagram
         +logicalTable string
         +columns Column[]
     }
-    class TagAliasCache {
-        +set(tagId, name)
+    class TagMetaCache {
+        +set(tagId, name, meta)
         +get(tagId) string
-        +resolve(tagId, tagIdentifier) result
+        +resolve(tagId, nameRule) result
         +size int
     }
     class TagDataTable {
         +open()
         +close()
-        +loadTagAliasCache()
-        +read(startRid, limit, rangeSize, tagIdentifier, sourceColumns) rows
+        +loadTagMetaCache(nameFilter)
+        +read(startRid, limit, rangeSize, nameRule, sourceColumns, filter) rows
         +getMaxRid() maxRid
         +setSchema(schema)
     }
     class LogTable {
         +open(useStream)
         +close()
-        +read(startRid, limit, rangeSize) rows
+        +read(startRid, limit, rangeSize, filter) rows
         +append(rows) err
         +getMaxRid() maxRid
         +setSchema(schema)
@@ -1033,13 +1069,13 @@ sequenceDiagram
         W->>SRC: setSchema(srcSchema); open()
         W->>DST: new TagTable(dstConfig, dstTable)
         W->>DST: setSchema(dstSchema); open(useStream=true)
-        W->>SRC: loadTagAliasCache() [TAG: 전체 alias 로드]
+        W->>SRC: loadTagMetaCache(nameFilter) [TAG: nameFilter 있으면 해당 태그만 로드, 없으면 전체]
 
         W->>CP: load(jobId, _TAG_DATA_0)
         CP-->>W: { exists: false }
 
         loop STEADY_REPLICATION
-            W->>SRC: read(startRid, batchSize, ridRangeSize, tagIdentifier, sourceColumns)
+            W->>SRC: read(startRid, batchSize, ridRangeSize, nameRule, sourceColumns, filter)
             SRC-->>W: { rows, err }
             W->>DST: append(outRows)
             W->>CP: save(jobId, _TAG_DATA_0, maxRidInBatch, stats)
@@ -1076,85 +1112,7 @@ sequenceDiagram
 
 ---
 
-## 12. @machbase/ts-client 알려진 버그
-
-#### 버그: FLOAT/DOUBLE 쿼리 결과 endian 오류
-
-- **버전**: `@machbase/ts-client@0.9.3`
-- **위치**: `node_modules/@machbase/ts-client/dist/connection.js`, `decodeFixedField()` 함수 (1164~1167줄)
-
-**원인**
-
-`decodeFixedField()`는 쿼리 결과 행의 고정 길이 필드를 디코딩하는 standalone 함수다. 정수 계열(`INT16`~`INT64`, `UINT16`~`UINT64`, `DATETIME`)은 Big-Endian(`readInt16BE` 등)으로 읽고, 부동소수점 계열(`FLT32`, `FLT64`)은 **Little-Endian**(`readFloatLE`, `readDoubleLE`)으로 읽도록 하드코딩되어 있다.
-
-```js
-// connection.js:1164-1167 (버그 있는 원본 코드)
-case CMD_FLT32_TYPE:
-    return field.readFloatLE(0);   // ← 항상 LE
-case CMD_FLT64_TYPE:
-    return field.readDoubleLE(0);  // ← 항상 LE
-```
-
-그러나 Machbase 서버의 TAG 데이터 파티션은 **파티션 인덱스(DATA_0, DATA_1, …)에 따라 DOUBLE 값을 BE 또는 LE로 저장**한다. 서버가 BE로 저장한 값을 클라이언트가 LE로 읽으면, IEEE 754 상 지수부가 0에 가까운 극소값(denormal)으로 해석된다.
-
-**예시**
-
-| 실제 값 | BE 저장 바이트 | LE로 잘못 읽은 결과 |
-|---------|---------------|-------------------|
-| `3200.0` | `40 A9 00 00 00 00 00 00` | `2.1407e-319` |
-| `85.0`   | `40 55 40 00 00 00 00 00` | `2.083044e-317` |
-| `1.1`    | `3F F1 99 99 99 99 99 9A` | `1.1` (DATA_1: LE 저장이므로 정상) |
-
-연결 핸드셰이크에서 `serverEndian = 0`(LE)으로 기록하지만(`429~438줄`), `decodeFixedField()`는 `serverEndian`을 받는 파라미터가 없어 이 정보를 사용할 수 없다.
-
-**우회 구현**
-
-BE로 저장된 값을 LE로 잘못 읽으면 다음 두 가지 패턴으로 나타난다:
-
-1. **denormal 패턴**: `0 < |v| < FLOAT_MIN_NORMAL(1.175e-38)` — 대부분의 BE DOUBLE 값이 이 범위에 해당
-2. **대형 정수 패턴**: `Number.isInteger(v) && |v| > 0xffffffff` — 일부 BE 값을 LE로 읽으면 매우 큰 정수처럼 보임
-
-   예: BE `1.732051` → LE `-2.077e+34`, BE `0.267` → LE `9.232e+254`
-
-   이 대형 정수값은 `@machbase/ts-client`의 `AppendStreamSessionImpl`(prepared statement 경로)에서 `inferParameterType()`에 의해 `int64`로 잘못 추론되어 `writeBigInt64LE` 범위 초과 오류로 이어진다.
-
-반대로 실측 센서값이 우연히 이 패턴에 들어오는 경우는 실무상 없으므로, `db/client.js`의 `fixDoubleEndian()` 함수에서 다음과 같이 사후 보정한다. 상세 분석은 [ENDIAN_BUG.md](./ENDIAN_BUG.md) 참고.
-
-```js
-// db/client.js — fixDoubleEndian()
-if (typeof v !== 'number' || v === 0 || !isFinite(v)) continue;
-const abs = Math.abs(v);
-// BE→LE 오독 패턴 두 가지:
-//   1. denormal: abs < FLOAT_MIN_NORMAL
-//   2. 큰 정수: Number.isInteger(v) && abs > 0xffffffff
-if (abs < FLOAT_MIN_NORMAL || (Number.isInteger(v) && abs > 0xffffffff)) {
-    _fixBuf.writeDoubleLE(v, 0);
-    const asDoubleBE = _fixBuf.readDoubleBE(0);
-    if (Math.abs(asDoubleBE) >= DOUBLE_MIN_NORMAL) {
-        row[key] = asDoubleBE;  // DOUBLE 컬럼 BE→LE 오독 복원
-    } else {
-        _fixBuf.writeFloatLE(v, 0);
-        row[key] = _fixBuf.readFloatBE(0);  // FLOAT 컬럼 시도
-    }
-}
-```
-
-`MachbaseClient.query()` 반환 직전에 모든 row에 대해 이 보정을 적용한다. 라이브러리를 `npm install`로 재설치해도 프로젝트 코드 내에 우회 로직이 있으므로 재발하지 않는다.
-
-**AppendStreamSession 경로별 동작 차이**
-
-`@machbase/ts-client`의 append 구현은 두 가지 경로가 있다:
-
-| 경로 | 클래스 | 타입 추론 |
-|------|--------|-----------|
-| tagMode=true (native) | `NativeAppendStreamSession` | `encodeNativeColumnValue()`: 컬럼 타입 기반 인코딩. `inferParameterType()` 미호출. |
-| tagMode=false (prepared stmt) | `AppendStreamSessionImpl` | `inferParameterType(value)`: **런타임 값**으로 타입 재추론. `number`가 `isInteger && abs > 0xffffffff`이면 `'int64'`로 추론 → `BigInt()` 변환 시 범위 초과. |
-
-`fixDoubleEndian()`로 query 결과에서 오독된 대형 정수를 원래 float 값으로 복원하면, `inferParameterType()`이 올바르게 `'float'` 타입으로 추론하므로 문제가 해결된다.
-
----
-
-## 13. 미결 사항 및 향후 과제
+## 12. 미결 사항 및 향후 과제
 
 ### 12.1 미결 사항
 
@@ -1170,7 +1128,7 @@ if (abs < FLOAT_MIN_NORMAL || (Number.isInteger(v) && abs > 0xffffffff)) {
 | 메타 정보 동기화 루틴 | 미정의 | 별도 설계 예정 |
 | 상태 조회 API / Prometheus 메트릭 | Backlog | 1차는 구조화 로그로 대체 |
 | Log 테이블 `_arrival_time` 전달 옵션 | Backlog | `log.include_arrival_time` (기본 false) |
-| Log 테이블 tag_identifier 확장 | Backlog | `log.identifier_columns` |
+| Log 테이블 NAME prefix/suffix 적용 | 완료 | transform의 NAME 규칙으로 지원됨 |
 | Log 테이블 재시작 정합성 옵션 | Backlog | `log.integrity.key_columns` |
 
 ### 12.3 실행 방법

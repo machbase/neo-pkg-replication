@@ -225,6 +225,86 @@ describe('Worker — STEADY_REPLICATION', () => {
   });
 });
 
+// ─── transform ────────────────────────────────────────────────────────────────
+
+describe('Worker — transform', () => {
+  test('(value + add) * multiply 수식 검증', async () => {
+    const shutdownFlag = { value: false };
+    let batchCall = 0;
+    const appendedRows = [];
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => {
+        batchCall++;
+        if (batchCall === 1) {
+          return {
+            rows: [{ rid: 1n, data: { NAME: 'sensor', TIME: 1000n, VALUE: 5.0 } }],
+            err: null,
+          };
+        }
+        shutdownFlag.value = true;
+        return { rows: [], err: null };
+      },
+      appendFn: async function(rows) {
+        appendedRows.push(...rows);
+        return null;
+      },
+    });
+
+    try {
+      // VALUE: (5.0 + 10) * 2 = 30.0
+      const worker = makeTagWorker('test-transform', null, {
+        source: { server: 'src', table: 'TAG', columns: null, filter: null,
+          transform: [{ column: 'VALUE', add: 10, multiply: 2 }] },
+      }, shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(appendedRows.length, 1);
+      assert.equal(appendedRows[0].VALUE, 30.0, '(5.0 + 10) * 2 = 30.0');
+    } finally {
+      restore();
+    }
+  });
+
+  test('BigInt 컬럼(TIME)은 transform 지정해도 skip — 원본 그대로', async () => {
+    const shutdownFlag = { value: false };
+    let batchCall = 0;
+    const appendedRows = [];
+
+    const { restore } = setupWorkerPrototypeMocks({
+      readFn: () => {
+        batchCall++;
+        if (batchCall === 1) {
+          return {
+            rows: [{ rid: 1n, data: { NAME: 'sensor', TIME: 9999n, VALUE: 1.0 } }],
+            err: null,
+          };
+        }
+        shutdownFlag.value = true;
+        return { rows: [], err: null };
+      },
+      appendFn: async function(rows) {
+        appendedRows.push(...rows);
+        return null;
+      },
+    });
+
+    try {
+      // TIME은 BigInt → transform 적용 안 됨
+      const worker = makeTagWorker('test-transform-bigint', null, {
+        source: { server: 'src', table: 'TAG', columns: null, filter: null,
+          transform: [{ column: 'TIME', add: 1, multiply: 2 }] },
+      }, shutdownFlag);
+      await worker.run(makeSignal());
+
+      assert.equal(appendedRows.length, 1);
+      assert.equal(appendedRows[0].TIME, 9999n, 'BigInt TIME은 transform skip — 원본 그대로');
+    } finally {
+      restore();
+    }
+  });
+});
+
 // ─── STARTUP_INTEGRITY ────────────────────────────────────────────────────────
 
 describe('Worker — STARTUP_INTEGRITY', () => {

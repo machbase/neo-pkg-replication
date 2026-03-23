@@ -163,11 +163,6 @@ class Config {
 
     const metaSync = job.metaSync;
 
-    const rawTagId = job.source?.tagIdentifier;
-    const tagIdentifier = rawTagId
-      ? new TagIdentifierConfig(rawTagId)
-      : new TagIdentifierConfig({ mode: 'none', value: '' });
-
     const rawCols = job.source?.columns;
     let sourceColumns = null;
     if (rawCols !== undefined && rawCols !== null) {
@@ -176,12 +171,23 @@ class Config {
         : rawCols;
     }
 
+    const rawFilter = job.source?.filter ?? null;
+    const filter = rawFilter
+      ? rawFilter.map(r => new ColumnFilterConfig(r))
+      : null;
+
+    const rawTransform = job.source?.transform ?? null;
+    const transform = rawTransform
+      ? rawTransform.map(r => new ColumnTransformConfig(r))
+      : null;
+
     const source = job.source
       ? new SourceConfig({
-          server:        job.source.server,
-          table:         job.source.table,
-          tagIdentifier,
-          columns:       sourceColumns,
+          server:    job.source.server,
+          table:     job.source.table,
+          columns:   sourceColumns,
+          filter,
+          transform,
         })
       : null;
 
@@ -230,25 +236,76 @@ class ServerConfig {
   }
 }
 
-// ─── TagIdentifierConfig ──────────────────────────────────────────────────────
+// ─── ColumnFilterConfig ───────────────────────────────────────────────────────
 
-const VALID_TAG_IDENTIFIER_MODES = ['prefix', 'suffix', 'none'];
-
-class TagIdentifierConfig {
-  constructor({ mode, value = '' }) {
-    this.mode  = mode;
-    this.value = value;
+class ColumnFilterConfig {
+  constructor({ column, min, max, in: inList, like }) {
+    this.column = typeof column === 'string' ? column.toUpperCase() : column;
+    this.min    = min;
+    this.max    = max;
+    this.in     = inList;
+    this.like   = like;
   }
 
   valid(jobId) {
-    if (this.mode === undefined || this.mode === null) {
-      throw new Error(`tagIdentifier.mode is required (must be one of: ${VALID_TAG_IDENTIFIER_MODES.join(', ')}) in job '${jobId}'`);
+    if (!this.column || typeof this.column !== 'string' || this.column.trim() === '') {
+      throw new Error(`source.filter[].column must be a non-empty string in job '${jobId}'`);
     }
-    if (!VALID_TAG_IDENTIFIER_MODES.includes(this.mode)) {
-      throw new Error(`Invalid tagIdentifier.mode '${this.mode}' (must be one of: ${VALID_TAG_IDENTIFIER_MODES.join(', ')}) in job '${jobId}'`);
+    if (this.min !== undefined) {
+      if (typeof this.min !== 'number' || !Number.isFinite(this.min)) {
+        throw new Error(`source.filter[].min must be a finite number in job '${jobId}'`);
+      }
     }
-    if (this.value !== undefined && typeof this.value !== 'string') {
-      throw new Error(`tagIdentifier.value must be a string, got: ${typeof this.value} in job '${jobId}'`);
+    if (this.max !== undefined) {
+      if (typeof this.max !== 'number' || !Number.isFinite(this.max)) {
+        throw new Error(`source.filter[].max must be a finite number in job '${jobId}'`);
+      }
+    }
+    if (this.min !== undefined && this.max !== undefined && this.min > this.max) {
+      throw new Error(`source.filter[].min must be <= max in job '${jobId}'`);
+    }
+    if (this.in !== undefined) {
+      if (!Array.isArray(this.in) || this.in.length === 0) {
+        throw new Error(`source.filter[].in must be a non-empty array in job '${jobId}'`);
+      }
+      for (const v of this.in) {
+        if (typeof v !== 'string') {
+          throw new Error(`source.filter[].in must contain only strings in job '${jobId}'`);
+        }
+      }
+    }
+    if (this.like !== undefined && typeof this.like !== 'string') {
+      throw new Error(`source.filter[].like must be a string in job '${jobId}'`);
+    }
+  }
+}
+
+// ─── ColumnTransformConfig ────────────────────────────────────────────────────
+
+class ColumnTransformConfig {
+  constructor({ column, add, multiply, prefix, suffix }) {
+    this.column   = typeof column === 'string' ? column.toUpperCase() : column;
+    this.add      = add      !== undefined ? add      : 0;
+    this.multiply = multiply !== undefined ? multiply : 1;
+    this.prefix   = prefix;
+    this.suffix   = suffix;
+  }
+
+  valid(jobId) {
+    if (!this.column || typeof this.column !== 'string' || this.column.trim() === '') {
+      throw new Error(`source.transform[].column must be a non-empty string in job '${jobId}'`);
+    }
+    if (typeof this.add !== 'number' || !Number.isFinite(this.add)) {
+      throw new Error(`source.transform[].add must be a finite number in job '${jobId}'`);
+    }
+    if (typeof this.multiply !== 'number' || !Number.isFinite(this.multiply)) {
+      throw new Error(`source.transform[].multiply must be a finite number in job '${jobId}'`);
+    }
+    if (this.prefix !== undefined && typeof this.prefix !== 'string') {
+      throw new Error(`source.transform[].prefix must be a string in job '${jobId}'`);
+    }
+    if (this.suffix !== undefined && typeof this.suffix !== 'string') {
+      throw new Error(`source.transform[].suffix must be a string in job '${jobId}'`);
     }
   }
 }
@@ -256,11 +313,12 @@ class TagIdentifierConfig {
 // ─── SourceConfig ─────────────────────────────────────────────────────────────
 
 class SourceConfig {
-  constructor({ server, table, columns, tagIdentifier }) {
-    this.server        = server;
-    this.table         = table;
-    this.tagIdentifier = tagIdentifier;
-    this.columns       = columns;
+  constructor({ server, table, columns, filter, transform }) {
+    this.server    = server;
+    this.table     = table;
+    this.columns   = columns;
+    this.filter    = filter    ?? null;
+    this.transform = transform ?? null;
   }
 
   valid(jobId, servers) {
@@ -270,15 +328,36 @@ class SourceConfig {
     if (!servers.find(s => s.name === this.server)) {
       throw new Error(`Unknown source server alias: "${this.server}" in job '${jobId}'`);
     }
-    if (this.tagIdentifier) {
-      this.tagIdentifier.valid(jobId);
-    }
     if (this.columns !== null && this.columns !== undefined) {
       if (!Array.isArray(this.columns) || this.columns.length === 0) {
         throw new Error(`source.columns must be a non-empty array when specified in job '${jobId}'`);
       }
       if (!this.columns.every(c => typeof c === 'string' && c.trim() !== '')) {
         throw new Error(`source.columns entries must be non-empty strings in job '${jobId}'`);
+      }
+    }
+    if (this.filter !== null && this.filter !== undefined) {
+      if (!Array.isArray(this.filter) || this.filter.length === 0) {
+        throw new Error(`source.filter must be a non-empty array when specified in job '${jobId}'`);
+      }
+      for (const r of this.filter) {
+        r.valid(jobId);
+      }
+      const cols = this.filter.map(r => r.column);
+      if (new Set(cols).size !== cols.length) {
+        throw new Error(`source.filter has duplicate column entries in job '${jobId}'`);
+      }
+    }
+    if (this.transform !== null && this.transform !== undefined) {
+      if (!Array.isArray(this.transform) || this.transform.length === 0) {
+        throw new Error(`source.transform must be a non-empty array when specified in job '${jobId}'`);
+      }
+      for (const r of this.transform) {
+        r.valid(jobId);
+      }
+      const cols = this.transform.map(r => r.column);
+      if (new Set(cols).size !== cols.length) {
+        throw new Error(`source.transform has duplicate column entries in job '${jobId}'`);
       }
     }
   }
@@ -523,6 +602,6 @@ class ReplicationConfig {
 }
 
 module.exports = { Config, JobConfig, ServerConfig, SourceConfig, TargetConfig,
-                   IntegrityConfig, RetryConfig, TagIdentifierConfig,
+                   IntegrityConfig, RetryConfig, ColumnFilterConfig, ColumnTransformConfig,
                    LoggingConfig, LoggingFileConfig, ApiConfig, ReplicationConfig,
                    CHECKPOINT_DIRECTORY };

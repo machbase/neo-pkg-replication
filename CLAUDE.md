@@ -24,7 +24,7 @@ repli-js/
 │   ├── db/
 │   │   ├── client.js             # MachbaseClient, toInt64 — DB 연결·쿼리 (I/O 계층)
 │   │   ├── stream.js             # MachbaseStream, _toCell — append 스트림 래퍼
-│   │   ├── table.js              # TagAliasCache, LogTable, TagTable, TagDataTable
+│   │   ├── table.js              # TagMetaCache, LogTable, TagTable, TagDataTable
 │   │   └── checkpoint.js         # CheckpointStore — cp 파일 load/save (atomic write, BigInt 내장)
 │   ├── worker/
 │   │   └── worker.js             # Worker 클래스 — 상태 머신: RESOLVE_START → STARTUP_INTEGRITY → STEADY_REPLICATION
@@ -36,7 +36,6 @@ repli-js/
 ├── tests/
 │   ├── unit/
 │   │   ├── checkpoint.test.js          # CheckpointStore 단위 테스트 (6개)
-│   │   ├── client.test.js              # fixDoubleEndian 단위 테스트 (4개)
 │   │   ├── config.test.js              # Config 단위 테스트 (30개)
 │   │   ├── integrity_checker.test.js   # TagTable.findFirstMissRow 단위 테스트 (7개)
 │   │   ├── retry.test.js               # RetryHandler 단위 테스트 (15개)
@@ -46,8 +45,7 @@ repli-js/
 │       ├── log_replication.test.js     # LOG 테이블 통합 테스트 (8개)
 │       └── table.test.js               # LogTable/TagTable/TagDataTable 통합 테스트 (17개)
 ├── docs/
-│   ├── PROJECT.md                # 상세 설계 문서 (아키텍처, UML, 결정 이력)
-│   └── ENDIAN_BUG.md             # @machbase/ts-client endian 버그 상세 분석
+│   └── PROJECT.md                # 상세 설계 문서 (아키텍처, UML, 결정 이력)
 └── package.json
 ```
 
@@ -102,7 +100,8 @@ Config
  ├─ replication: ReplicationConfig
  │   └─ jobs: JobConfig[]
  │       ├─ source: SourceConfig
- │       │   └─ tagIdentifier: TagIdentifierConfig
+ │       │   ├─ filter: ColumnFilterConfig[] (optional)
+ │       │   └─ transform: ColumnTransformConfig[] (optional)
  │       ├─ target: TargetConfig
  │       ├─ integrity: IntegrityConfig (optional)
  │       └─ retry: RetryConfig (optional)
@@ -115,7 +114,7 @@ Config
 - `static async load(filePath?)` → `Config` 인스턴스 반환 (기본 경로: `../../config.json`)
 - `async save()` — atomic write (tmp → rename)
 - `addJob(rawJob)` / `updateJob(id, rawJob)` / `removeJob(id)`
-- `module.exports = { Config, JobConfig, ServerConfig, SourceConfig, TargetConfig, IntegrityConfig, RetryConfig, TagIdentifierConfig, LoggingConfig, LoggingFileConfig, ApiConfig, ReplicationConfig, CHECKPOINT_DIRECTORY }`
+- `module.exports = { Config, JobConfig, ServerConfig, SourceConfig, TargetConfig, IntegrityConfig, RetryConfig, ColumnFilterConfig, ColumnTransformConfig, LoggingConfig, LoggingFileConfig, ApiConfig, ReplicationConfig, CHECKPOINT_DIRECTORY }`
 
 **각 클래스의 `valid()` 메서드**
 - 생성 후 호출하여 검증. 실패 시 throw.
@@ -140,7 +139,7 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 1. **RESOLVE_START**: cp 파일 로드 → `startRid` 결정
    - cp 존재 → `lastSuccessRid + 1n`
    - cp 없음 → `startMode` 기준 (`full`=0n, `now`=srcTable.getMaxRid()+1n, `ridAfter`=BigInt(jobConfig.ridAfter))
-   - TAG 테이블: `srcTable.loadTagAliasCache()` 로드
+   - TAG 테이블: `srcTable.loadTagMetaCache()` 로드
 2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 + `integrity.enabled !== false` 시만):
    - `startRid`부터 배치 읽기 → `dstTable.findFirstMissRow()` 대상 DB 존재 확인 (VOLATILE TABLE + JOIN)
    - firstMiss 발견 → `safeCpRid` 저장 후 STEADY 진입
@@ -167,7 +166,6 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 
 - `MachbaseClient` 클래스: `@machbase/ts-client` 연결 래퍼
   - `connect()` / `close()` / `query(sql, values?)` / `appendOpen(table, columns)` / `execute(sql)`
-  - `query()` 반환 직후 `fixDoubleEndian()` 자동 적용 (BE/LE 혼재 버그 우회)
   - **카탈로그 메서드**: `selectTableType`, `selectTagDataTables`, `selectColumnsByTableName`, `selectColumnsByTableId`, `selectMaxRid`, `selectTagNames`, `selectTagNameByTagId`
   - **DDL 메서드**: `createTagTable(tableName, srcSchema)`, `createLogTable(tableName, srcSchema)` — autoCreate 기능에서 사용
 - `toInt64(val)` → BigInt 변환 유틸리티
@@ -179,13 +177,17 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 - `MachbaseStream` 클래스: appendOpen 스트림 생명주기 래퍼
 - `module.exports = { MachbaseStream, _toCell }`
 
-### db/table.js — TagAliasCache / LogTable / TagTable / TagDataTable
+### db/table.js — TagMetaCache / LogTable / TagTable / TagDataTable
 
-- `TagAliasCache`: TAG alias 캐시 (tag_id → canonical name)
+- `TagMetaCache`: TAG 메타 캐시 (tag_id → `{ name, meta }` — canonical name + metadata 컬럼 값)
+  - `_applyNameRule(tagName, nameRule)`: transform의 NAME 컬럼 규칙 적용 (prefix/suffix)
 - `LogTable`: LOG 테이블 스키마 조회 + read + append
+  - `read(startRid, limit?, rangeSize?, filter?)` — filter의 min/max/in/like를 WHERE절로 반영 (in/like는 파라미터 바인딩 사용)
 - `TagTable`: TAG 논리 테이블 스키마 조회 + append + findFirstMissRow
+  - `loadTagMetaCache(nameFilter?)` — nameFilter: `{ in?, like? }`, WHERE절로 META 조회 범위 제한
 - `TagDataTable`: TAG 데이터 파티션 단위 읽기
-- `module.exports = { TagAliasCache, LogTable, TagTable, TagDataTable }`
+  - `read(startRid, limit?, rangeSize?, nameRule?, sourceColumns?, filter?)` — nameRule로 NAME 변환, filter의 min/max/in/like를 WHERE절로 반영 (in/like는 파라미터 바인딩 사용)
+- `module.exports = { TagMetaCache, LogTable, TagTable, TagDataTable }`
 
 ### checkpoint/store.js — CheckpointStore
 
@@ -217,7 +219,15 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
         "server": "src",
         "table": "TAG",
         "columns": ["TIME", "VALUE"],
-        "tagIdentifier": { "mode": "none" }
+        "filter": [
+          { "column": "NAME", "in": ["sensor_a", "sensor_b"] },
+          { "column": "VALUE", "min": 0, "max": 100 },
+          { "column": "LABEL", "like": "sensor_%" }
+        ],
+        "transform": [
+          { "column": "NAME", "prefix": "site1/" },
+          { "column": "VALUE", "multiply": 0.001 }
+        ]
       },
       "target": { "server": "dst", "table": "TAG2", "autoCreate": false },
       "startMode": "full",
@@ -242,10 +252,25 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 - `["TIME", "VALUE"]` → 지정된 컬럼만 SELECT (대소문자 무관, UPPERCASE 정규화)
 - 빈 배열(`[]`) 또는 비문자열 항목 → config 검증 오류 (throw)
 
-`source.tag_identifier` 필드:
-- `{ "mode": "none" }` → 태그명 그대로 사용 (기본값)
-- `{ "mode": "prefix", "value": "site1/" }` → 태그명 앞에 prefix 추가
-- `{ "mode": "suffix", "value": "_copy" }` → 태그명 뒤에 suffix 추가
+`source.filter` 필드 (WHERE절 필터, read 전 적용):
+- 미지정(`null`) → 필터 없음 (기본값)
+- 각 항목: `{ "column": "COLNAME", "min": ..., "max": ..., "in": [...], "like": "..." }`
+  - `column`: 대상 컬럼명 (대소문자 무관, UPPERCASE 정규화), 필수
+  - `min` / `max`: WHERE절 필터 (숫자형 컬럼에만 적용). 각각 optional
+  - `in`: VARCHAR/TEXT 컬럼에 WHERE `column IN (?, ?, ...)` 필터 적용 (문자열 배열, 파라미터 바인딩)
+  - `like`: VARCHAR/TEXT 컬럼에 WHERE `column LIKE ?` 필터 적용 (문자열, 파라미터 바인딩)
+  - TAG 테이블의 NAME 컬럼 `in`/`like` 필터: META 테이블 조회 시 WHERE절로 처리 (파티션 WHERE에는 미포함)
+  - 중복 column 항목 → config 검증 오류 (throw)
+  - `min > max` → config 검증 오류 (throw)
+
+`source.transform` 필드 (post-read 값 변환, read 후 적용):
+- 미지정(`null`) → 변환 없음 (기본값)
+- 각 항목: `{ "column": "COLNAME", "add": 0, "multiply": 1, "prefix": "...", "suffix": "..." }`
+  - `column`: 대상 컬럼명 (대소문자 무관, UPPERCASE 정규화), 필수
+  - `add`: 수치 변환 덧셈 오프셋 (기본 `0`). 적용 공식: `(value + add) * multiply`
+  - `multiply`: 수치 변환 배율 (기본 `1`). BigInt 컬럼(datetime/long)은 skip
+  - `prefix` / `suffix`: 문자열 컬럼 앞/뒤에 붙이는 값. TAG/LOG 모두 지원
+  - 중복 column 항목 → config 검증 오류 (throw)
 
 `target.autoCreate` 필드:
 - 미지정 또는 `false` (기본): 대상 테이블 사전 생성 필요. 없으면 job skip.
@@ -322,7 +347,7 @@ LIMIT 1000
 - **BigInt 처리**: RID 값은 BigInt. JSON 직렬화 시 `BigInt → string` 변환 필요
 - **에러 처리**: `@machbase/ts-client`의 `QueryError` 클래스로 DB 에러 구분
 - **로깅**: `lib/logger.js`의 `Logger` 클래스 사용. `logger.trace(...)` / `logger.debug(...)` / `logger.info(...)` / `logger.warn(...)` / `logger.error(...)` 형태로 호출.
-  - `trace`: 매우 상세한 값 변환 로그 (예: fixDoubleEndian)
+  - `trace`: 매우 상세한 값 변환 로그
   - `debug`: 반복성 내부 상태 진단 로그 (예: stmtCount 갱신, STARTUP_INTEGRITY 배치 진행)
   - `info`: 상태 전환 및 정상 동작 로그 (예: job start/stop, checkpoint_saved, STEADY 진입)
   - `warn`: 예상치 못한 상황, 계속 실행 가능 (예: alias cache miss, MAX(_RID) fallback)
@@ -342,31 +367,22 @@ node --test tests/integration/log_replication.test.js
 node --test tests/integration/table.test.js
 ```
 
-현재 테스트 현황: **161 단위 = 161 pass / 0 fail** (`node --test tests/unit/*.test.js`)
+현재 테스트 현황: **187 단위 = 187 pass / 0 fail** (`node --test tests/unit/*.test.js`)
 - checkpoint.test.js: CheckpointStore load/save/mismatch (6개)
-- client.test.js: fixDoubleEndian (4개)
-- config.test.js: 설정 검증 + addJob/updateJob/removeJob/save + autoCreate (47개)
+- config.test.js: 설정 검증 + addJob/updateJob/removeJob/save + autoCreate + filter/transform (65개)
 - http_server.test.js: Jobs REST API 7개 엔드포인트 (19개)
 - http_server_servers.test.js: Servers REST API 8개 엔드포인트 (23개)
 - integrity_checker.test.js: TagTable.findFirstMissRow (7개)
 - job-scheduler.test.js: Job._discoverMapping + autoCreate + AbortController 전파 + JobScheduler (19개)
 - replicator.test.js: Replicator SIGTERM (1개)
 - retry.test.js: RetryHandler 백오프 로직 (15개)
-- worker-state.test.js: Worker 상태 머신 + E2E mock 시나리오 (stmtCount 갱신 포함) (20개)
+- worker-state.test.js: Worker 상태 머신 + E2E mock 시나리오 + transform 적용 (22개)
 
 ## 실행 방법
 
 ```bash
 node app.js [config.json 경로]  # 경로 미지정 시 ./config.json 사용
 ```
-
-## @machbase/ts-client double endian 버그 우회 (중요)
-
-- **버그**: `decodeFixedField()`가 FLT32/FLT64를 항상 `readFloatLE`/`readDoubleLE`로 읽음
-- **현상**: TAG 파티션에 따라 BE로 저장된 값을 LE로 읽어 denormal(극소값) 발생
-- **우회**: `db/client.js`의 `fixDoubleEndian()` — `MachbaseClient.query()` 반환 직전 자동 적용
-  - `FLOAT_MIN_NORMAL(1.175e-38)` 미만 nonzero → DOUBLE BE→LE 복원 시도, 실패 시 FLOAT 시도
-  - 상세: `docs/ENDIAN_BUG.md`
 
 ## 알려진 한계 / TODO
 
