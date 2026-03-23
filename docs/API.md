@@ -68,28 +68,66 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 
 ### JobConfig
 
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `id` | string | 고유 식별자 |
-| `shutdownTimeoutMs` | number | 종료 대기 타임아웃 (ms), 기본 30000 |
-| `source` | object | 소스 설정 |
-| `source.server` | string | servers 배열의 name 참조 |
-| `source.table` | string | 원본 테이블명 |
-| `source.columns` | string[] \| null | SELECT 컬럼 목록 (null=전체) |
-| `source.tagIdentifier` | object | 태그명 식별자 (`mode`: prefix/suffix/none, `value`: string) |
-| `target` | object | 대상 설정 |
-| `target.server` | string | servers 배열의 name 참조 |
-| `target.table` | string | 대상 테이블명. `autoCreate: true`이면 빈 문자열 허용 (소스 테이블명 사용). |
-| `target.autoCreate` | boolean | `true`이면 대상 테이블 미존재 시 src 스키마로 자동 생성. 기본 `false`. |
-| `queryLimit` | number | 배치당 최대 레코드 수, 기본 5000 |
-| `ridRangeSize` | number | RID 범위 힌트 크기, 기본 50000 |
-| `pollIntervalMs` | number | 폴링 주기 (ms), 기본 1000 |
-| `startMode` | string | `full` \| `now` \| `ridAfter` |
-| `ridAfter` | string \| null | startMode=ridAfter 시 기준 RID |
-| `onSaveFailure` | string | `continue` \| `abort` |
-| `integrity` | object \| null | `{ enabled: boolean }` |
-| `metaSync` | boolean \| null | TAG meta 동기화 활성화 여부. 기본 `null` (활성화). `false` 로 비활성화. |
-| `retry` | object \| null | `{ strategy, maxAttempts, baseDelayMs, maxDelayMs, multiplier }` |
+| 필드 | 타입 | 필수 | 기본값 | 설명 |
+|------|------|------|--------|------|
+| `id` | string | ✓ | — | 고유 식별자 |
+| `shutdownTimeoutMs` | number | | 30000 | 종료 대기 타임아웃 (ms) |
+| `source` | object | ✓ | — | 소스 설정 |
+| `source.server` | string | ✓ | — | servers 배열의 name 참조 |
+| `source.table` | string | ✓ | — | 원본 테이블명 |
+| `source.columns` | string[] \| null | | null | SELECT 컬럼 목록 (null=전체) |
+| `source.filter` | object[] \| null | | null | WHERE절 필터 목록. 아래 ColumnFilter 참조. |
+| `source.transform` | object[] \| null | | null | read 후 값 변환 목록. 아래 ColumnTransform 참조. |
+| `target` | object | ✓ | — | 대상 설정 |
+| `target.server` | string | ✓ | — | servers 배열의 name 참조 |
+| `target.table` | string | ✓ | — | 대상 테이블명. `autoCreate: true`이면 빈 문자열 허용 (소스 테이블명 사용). |
+| `target.autoCreate` | boolean | | false | `true`이면 대상 테이블 미존재 시 src 스키마로 자동 생성. |
+| `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
+| `ridAfter` | number \| null | | null | `startMode: "ridAfter"` 시 기준 RID |
+| `queryLimit` | number | | 5000 | 배치당 최대 레코드 수 |
+| `ridRangeSize` | number | | 50000 | RID 범위 힌트 크기 |
+| `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |
+| `onSaveFailure` | string | | `"continue"` | `"continue"` \| `"abort"` |
+| `integrity` | object \| null | | null | `{ "enabled": boolean }`. TAG 테이블 전용. |
+| `retry` | object \| null | | null | 아래 RetryConfig 참조. |
+
+### ColumnFilter
+
+`source.filter` 배열의 각 항목.
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `column` | string | ✓ | 대상 컬럼명 (대소문자 무관) |
+| `min` | number \| null | | 숫자형 컬럼 하한값 (이상) |
+| `max` | number \| null | | 숫자형 컬럼 상한값 (이하) |
+| `in` | string[] \| null | | 문자열 컬럼 IN 필터 |
+| `like` | string \| null | | 문자열 컬럼 LIKE 패턴 |
+
+- `column` 중복 시 검증 오류
+- `min > max` 시 검증 오류
+- TAG 테이블의 `NAME` 컬럼 `in`/`like`는 META 조회 시 WHERE절로 처리
+
+### ColumnTransform
+
+`source.transform` 배열의 각 항목.
+
+| 필드 | 타입 | 필수 | 기본값 | 설명 |
+|------|------|------|--------|------|
+| `column` | string | ✓ | — | 대상 컬럼명 (대소문자 무관) |
+| `add` | number | | 0 | 수치 덧셈 오프셋. 공식: `(value + add) * multiply` |
+| `multiply` | number | | 1 | 수치 배율. BigInt 컬럼(datetime/long)은 skip. |
+| `prefix` | string \| null | | null | 문자열 컬럼 앞에 붙이는 값 |
+| `suffix` | string \| null | | null | 문자열 컬럼 뒤에 붙이는 값 |
+
+- `column` 중복 시 검증 오류
+
+### RetryConfig
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `maxAttempts` | number | 5 | 최대 재시도 횟수 |
+| `baseDelayMs` | number | 100 | 초기 재시도 지연 (ms) |
+| `maxDelayMs` | number | 30000 | 최대 재시도 지연 (ms) |
 
 ---
 
@@ -241,7 +279,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
   "data": [
     { "name": "TIME",  "type": "int64",   "length": 0 },
     { "name": "VALUE", "type": "float64", "length": 0 },
-    { "name": "TAG",   "type": "varchar", "length": 80 }
+    { "name": "NAME",  "type": "varchar", "length": 80 }
   ]
 }
 ```
@@ -288,13 +326,17 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
     {
       "id": "job-1",
       "status": "stopped",
-      "autoStart": true,
       "shutdownTimeoutMs": 30000,
       "source": {
         "server": "src",
         "table": "TAG",
-        "columns": null,
-        "tagIdentifier": { "mode": "none", "value": "" }
+        "columns": ["NAME", "TIME", "VALUE"],
+        "filter": [
+          { "column": "NAME", "in": ["sensor_a", "sensor_b"], "like": null }
+        ],
+        "transform": [
+          { "column": "VALUE", "add": 0, "multiply": 0.001, "prefix": null, "suffix": null }
+        ]
       },
       "target": {
         "server": "dst",
@@ -308,13 +350,10 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
       "pollIntervalMs": 1000,
       "onSaveFailure": "continue",
       "integrity": { "enabled": true },
-      "metaSync": null,
       "retry": {
-        "strategy": "exponential",
         "maxAttempts": 5,
         "baseDelayMs": 100,
-        "maxDelayMs": 30000,
-        "multiplier": 2
+        "maxDelayMs": 30000
       }
     }
   ]
@@ -341,13 +380,13 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
   "data": {
     "id": "job-1",
     "status": "stopped",
-    "autoStart": true,
     "shutdownTimeoutMs": 30000,
     "source": {
       "server": "src",
       "table": "TAG",
       "columns": null,
-      "tagIdentifier": { "mode": "none", "value": "" }
+      "filter": null,
+      "transform": null
     },
     "target": {
       "server": "dst",
@@ -361,14 +400,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": { "enabled": true },
-    "metaSync": null,
-    "retry": {
-      "strategy": "exponential",
-      "maxAttempts": 5,
-      "baseDelayMs": 100,
-      "maxDelayMs": 30000,
-      "multiplier": 2
-    }
+    "retry": null
   }
 }
 ```
@@ -383,6 +415,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ### POST /api/jobs
 
 새 job 생성. 생성된 job은 `stopped` 상태이며 자동 시작되지 않는다.
+생성 성공 시 config.json에 저장된다.
 
 **요청 본문**: JobConfig 형식 (id 필수)
 
@@ -395,12 +428,24 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 }
 ```
 
-`autoCreate: true` 예시 (대상 테이블 없으면 자동 생성):
+`filter` / `transform` 포함 예시:
 
 ```json
 {
   "id": "job-3",
-  "source": { "server": "src", "table": "TAG" },
+  "source": {
+    "server": "src",
+    "table": "TAG",
+    "columns": ["NAME", "TIME", "VALUE"],
+    "filter": [
+      { "column": "NAME", "in": ["sensor_a", "sensor_b"] },
+      { "column": "VALUE", "min": 0, "max": 100 }
+    ],
+    "transform": [
+      { "column": "NAME", "prefix": "site1/" },
+      { "column": "VALUE", "multiply": 0.001 }
+    ]
+  },
   "target": { "server": "dst", "table": "", "autoCreate": true },
   "startMode": "full"
 }
@@ -414,13 +459,13 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
   "data": {
     "id": "job-2",
     "status": "stopped",
-    "autoStart": true,
     "shutdownTimeoutMs": 30000,
     "source": {
       "server": "src",
       "table": "TAG",
       "columns": null,
-      "tagIdentifier": { "mode": "none", "value": "" }
+      "filter": null,
+      "transform": null
     },
     "target": {
       "server": "dst",
@@ -434,7 +479,6 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": null,
-    "metaSync": null,
     "retry": null
   }
 }
@@ -442,7 +486,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 
 **응답 400** — config 검증 실패
 ```json
-{ "ok": false, "reason": "job.source.table is required ...", "data": null }
+{ "ok": false, "reason": "source.table is required in job 'job-2'", "data": null }
 ```
 
 **응답 409** — id 중복
@@ -455,6 +499,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 ### PUT /api/jobs/:id
 
 기존 job 설정 수정. `stopped` 상태일 때만 가능.
+수정 성공 시 config.json에 저장된다.
 
 **요청 본문**: JobConfig 형식 (id 제외 가능, path param으로 대체)
 
@@ -466,13 +511,13 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
   "data": {
     "id": "job-1",
     "status": "stopped",
-    "autoStart": true,
     "shutdownTimeoutMs": 30000,
     "source": {
       "server": "src",
       "table": "TAG",
       "columns": null,
-      "tagIdentifier": { "mode": "none", "value": "" }
+      "filter": null,
+      "transform": null
     },
     "target": {
       "server": "dst",
@@ -486,15 +531,14 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": { "enabled": true },
-    "metaSync": null,
     "retry": null
   }
 }
 ```
 
+**응답 400** — config 검증 실패
 **응답 404** — job 없음
 **응답 409** — job이 실행 중
-
 ```json
 { "ok": false, "reason": "Job 'job-1' is running", "data": null }
 ```
@@ -503,7 +547,7 @@ F.E는 `ok === false` 여부만 확인하면 된다. `false`인 경우 `reason` 
 
 ### DELETE /api/jobs/:id
 
-job 삭제. `stopped` 상태일 때만 가능.
+job 삭제. `stopped` 상태일 때만 가능. config.json에서도 제거된다.
 
 **응답 204** — No Content
 
@@ -524,13 +568,13 @@ job 시작.
   "data": {
     "id": "job-1",
     "status": "running",
-    "autoStart": true,
     "shutdownTimeoutMs": 30000,
     "source": {
       "server": "src",
       "table": "TAG",
       "columns": null,
-      "tagIdentifier": { "mode": "none", "value": "" }
+      "filter": null,
+      "transform": null
     },
     "target": {
       "server": "dst",
@@ -544,7 +588,6 @@ job 시작.
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": { "enabled": true },
-    "metaSync": null,
     "retry": null
   }
 }
@@ -570,13 +613,13 @@ job 중지. 실행 중인 worker가 현재 배치를 완료할 때까지 대기 
   "data": {
     "id": "job-1",
     "status": "stopped",
-    "autoStart": true,
     "shutdownTimeoutMs": 30000,
     "source": {
       "server": "src",
       "table": "TAG",
       "columns": null,
-      "tagIdentifier": { "mode": "none", "value": "" }
+      "filter": null,
+      "transform": null
     },
     "target": {
       "server": "dst",
@@ -590,7 +633,6 @@ job 중지. 실행 중인 worker가 현재 배치를 완료할 때까지 대기 
     "pollIntervalMs": 1000,
     "onSaveFailure": "continue",
     "integrity": { "enabled": true },
-    "metaSync": null,
     "retry": null
   }
 }
