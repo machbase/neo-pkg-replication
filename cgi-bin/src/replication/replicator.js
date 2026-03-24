@@ -245,8 +245,21 @@ class Replicator {
       msg: `starting ${dataTables.length} worker(s)`,
     });
 
+    const workerConfig = {
+      id:             this.id,
+      source:         this.source,
+      target:         this.target,
+      queryLimit:     this.queryLimit,
+      ridRangeSize:   this.ridRangeSize,
+      pollIntervalMs: this.pollIntervalMs,
+      startMode:      this.startMode,
+      ridAfter:       this.ridAfter,
+      onSaveFailure:  this.onSaveFailure,
+      integrity:      this.integrity,
+      retry:          this.retry,
+    };
     const workers = dataTables.map(dataTable =>
-      new Worker(this, dataTable, srcSchema, dstSchema, this.shutdownFlag)
+      new Worker(workerConfig, dataTable, srcSchema, dstSchema, this.shutdownFlag)
     );
 
     const ac = new AbortController();

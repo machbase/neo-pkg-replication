@@ -1,4 +1,6 @@
 {
+  "internalPort": 57321,
+  "shutdownTimeoutMs": 30000,
   "logging": {
     "level": "info",
     "stdout": true,
@@ -6,9 +8,5 @@
       "enabled": true,
       "directory": "/work/logs"
     }
-  },
-  "api": {
-    "port": 8080
-  },
-  "shutdownTimeoutMs": 30000
+  }
 }

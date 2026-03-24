@@ -1,19 +1,12 @@
 {
-  "logging": {
-    "level": "debug",
-    "stdout": true,
-    "file": {
-      "enabled": true,
-      "directory": "/work/logs"
-    }
-  },
+  "id": "repli-a",
   "source": {
     "host": "192.168.1.183",
     "port": 5656,
     "user": "SYS",
     "password": "MANAGER",
     "table": "TAG",
-    "columns": ["name", "time", "value"],
+    "columns": null,
     "filter": null,
     "transform": null
   },
@@ -25,12 +18,12 @@
     "table": "TAG_COPY",
     "autoCreate": true
   },
-  "shutdownTimeoutMs": 30000,
-  "startMode": "full",
+  "startMode": "now",
   "ridAfter": null,
   "pollIntervalMs": 1000,
   "queryLimit": 5000,
   "ridRangeSize": 50000,
+  "shutdownTimeoutMs": 30000,
   "onSaveFailure": "continue",
   "integrity": true,
   "retry": {

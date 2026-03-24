@@ -6,11 +6,10 @@ const { JsonFile } = require('../lib/json_file.js');
 const { Replicator } = require('../replication/replicator.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 
-const CONF_DIR = path.join(process.cwd(), 'conf.d');
-
 // status 값: 'stopped' | 'running' | 'stopping'
 class ReplicatorManager {
-  constructor() {
+  constructor(confDir) {
+    this._confDir = confDir || path.join(process.cwd(), 'conf.d');
     // Map<configName, { config, replicator, status, promise }>
     this._registry = new Map();
   }
@@ -20,16 +19,16 @@ class ReplicatorManager {
   autoStart() {
     let files;
     try {
-      files = fs.readdirSync(CONF_DIR).filter(f => f.endsWith('.json') && f !== 'server.json');
+      files = fs.readdirSync(this._confDir).filter(f => f.endsWith('.json') && f !== 'server.json');
     } catch (_) {
-      getLogger().warn('manager', { msg: `conf.d not found or unreadable: ${CONF_DIR}` });
+      getLogger().warn('manager', { msg: `conf.d not found or unreadable: ${this._confDir}` });
       return;
     }
 
     for (const file of files) {
       const name = file.replace(/\.json$/, '');
       try {
-        const config = new JsonFile(path.join(CONF_DIR, file)).read();
+        const config = new JsonFile(path.join(this._confDir, file)).read();
         this._register(name, config);
         this._start(name);
       } catch (err) {
@@ -143,11 +142,11 @@ class ReplicatorManager {
   }
 
   _saveConfig(name, config) {
-    new JsonFile(path.join(CONF_DIR, `${name}.json`)).write(config);
+    new JsonFile(path.join(this._confDir, `${name}.json`)).write(config);
   }
 
   _deleteConfig(name) {
-    try { fs.unlinkSync(path.join(CONF_DIR, `${name}.json`)); } catch (_) {}
+    try { fs.unlinkSync(path.join(this._confDir, `${name}.json`)); } catch (_) {}
   }
 }
 
