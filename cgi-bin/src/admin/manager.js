@@ -2,9 +2,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { JsonFile } = require('../src/lib/json_file.js');
-const { Replicator } = require('../src/replication/replicator.js');
-const { getInstance: getLogger } = require('../src/lib/logger.js');
+const { JsonFile } = require('../lib/json_file.js');
+const { Replicator } = require('../replication/replicator.js');
+const { getInstance: getLogger } = require('../lib/logger.js');
 
 const CONF_DIR = path.join(process.cwd(), 'conf.d');
 

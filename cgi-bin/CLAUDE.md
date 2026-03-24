@@ -11,39 +11,40 @@ Machbase TAG/LOG 테이블 간 데이터 복제(replication) 도구.
 ## 디렉토리 구조
 
 ```
-repli-js/
-├── app.js                        # 진입점 — Config.load() → Replicator 실행
-├── config.json                   # 실행 설정 (jobs, 접속 정보 등)
+cgi-bin/
+├── neo-repli.js                  # replicator 진입점 -- 단일 복제 작업 실행
+├── neo-admin.js                  # admin 진입점 -- ReplicatorManager + AdminHttpServer 실행
+├── replicators.js                # CGI: GET(목록) / POST(등록)
+├── replicator.js                 # CGI: GET/PUT/DELETE ?name=xxx
+├── replicator-start.js           # CGI: POST ?name=xxx — 시작
+├── replicator-stop.js            # CGI: POST ?name=xxx — 종료
+├── conf.d/
+│   ├── server.json               # admin 서버 설정 (internalPort 필수)
+│   └── *.json                    # replicator별 설정 파일
 ├── src/
-│   ├── replicator.js             # Replicator -- SIGTERM/SIGINT 처리, Job 직접 실행
-│   ├── job.js                    # Job, AbortController (직접 구현)
-│   ├── config/
-│   │   └── config.js             # Config 클래스 및 config 도메인 클래스 전체
+│   ├── replication/
+│   │   ├── replicator.js         # Replicator -- SIGTERM/SIGINT 처리, Job 직접 실행
+│   │   ├── job.js                # Job, AbortController (직접 구현)
+│   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
+│   ├── admin/
+│   │   ├── manager.js            # ReplicatorManager -- conf.d CRUD + replicator 생명주기
+│   │   ├── http_server.js        # AdminHttpServer -- REST API (internalPort)
+│   │   └── cgi_util.js           # CGI 유틸 -- readInternalPort, forward, parseQuery, readBody, reply
 │   ├── db/
-│   │   ├── client.js             # MachbaseClient, toInt64 -- DB 연결·쿼리 (machcli 래퍼)
-│   │   ├── stream.js             # MachbaseStream, _toCell -- append 스트림 래퍼
+│   │   ├── client.js             # MachbaseClient -- DB 연결·쿼리 (machcli 래퍼)
+│   │   ├── stream.js             # MachbaseStream -- append 스트림 래퍼
 │   │   ├── table.js              # TagMetaCache, LogTable, TagTable, TagDataTable
-│   │   └── checkpoint.js         # CheckpointStore -- cp 파일 load/save (atomic write, BigInt 내장)
-│   ├── worker/
-│   │   └── worker.js             # Worker 클래스 -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
+│   │   ├── checkpoint.js         # CheckpointStore -- cp 파일 load/save
+│   │   └── types.js              # ColumnType, Column, TableSchema -- 순수 도메인 모델
 │   └── lib/
-│       ├── logger.js             # Logger 클래스 -- 날짜 로테이션, stdout/file 출력
+│       ├── logger.js             # Logger -- 날짜 로테이션, stdout/file 출력
 │       ├── retry.js              # RetryHandler 유틸리티
-│       └── types.js              # ColumnType, Column, TableSchema -- 순수 도메인 모델 (I/O 없음)
-├── data/                         # 런타임 생성 -- job별 파티션 cp 파일 저장 디렉토리 (/work/data/ 고정)
-├── tests/
-│   ├── unit/
-│   │   ├── checkpoint.test.js          # CheckpointStore 단위 테스트 (6개)
-│   │   ├── config.test.js              # Config 단위 테스트
-│   │   ├── integrity_checker.test.js   # TagTable.findFirstMissRow 단위 테스트 (7개)
-│   │   └── retry.test.js               # RetryHandler 단위 테스트 (15개)
-│   └── integration/
-│       ├── tag_replication.test.js     # TAG 테이블 통합 테스트 (11개)
-│       ├── log_replication.test.js     # LOG 테이블 통합 테스트 (8개)
-│       └── table.test.js               # LogTable/TagTable/TagDataTable 통합 테스트 (17개)
-├── docs/
-│   └── PROJECT.md                # 상세 설계 문서 (아키텍처, UML, 결정 이력)
-└── package.json
+│       ├── json_file.js          # JsonFile -- atomic read/write
+│       └── signal.js             # registerSignals -- SIGTERM/SIGINT 처리
+├── data/                         # 런타임 생성 -- replicator별 파티션 cp 파일 저장 (/work/data/ 고정)
+└── tests/
+    ├── unit/                     # 단위 테스트
+    └── integration/              # 통합 테스트 (실 DB 필요)
 ```
 
 ## 핵심 모듈 상세
@@ -115,20 +116,20 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 
 **CHECKPOINT_DIRECTORY**: `/work/data` 고정 경로 (`process.cwd()` 기반, 외부 설정 불필요)
 
-### src/worker/worker.js — Worker 클래스
+### src/replication/worker.js — Worker 클래스
 
-`Worker(jobConfig, tableType, dataTable, srcSchema, dstSchema, srcConfig, dstConfig, shutdownFlag)` 클래스. `run(signal)` 메서드에서 3단계 상태 전이:
+`Worker(config, dataTable, srcSchema, dstSchema, shutdownFlag)` 클래스. `run(signal)` 메서드에서 3단계 상태 전이:
+- 테이블 타입은 `srcSchema.tableType`으로 판단 (`'TAG'` | `'LOG'`)
 
 1. **RESOLVE_START**: cp 파일 로드 -> `startRid` 결정
    - cp 존재 -> `lastSuccessRid + 1n`
-   - cp 없음 -> `startMode` 기준 (`full`=0n, `now`=srcTable.getMaxRid()+1n, `ridAfter`=BigInt(jobConfig.ridAfter))
-   - TAG 테이블: `srcTable.loadTagMetaCache()` 로드
-2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 + `integrity.enabled !== false` 시만):
+   - cp 없음 -> `startMode` 기준 (`full`=0n, `now`=srcTable.getMaxRid()+1n, `ridAfter`=BigInt(config.ridAfter))
+   - TAG 테이블: `srcTable.cacheTagMetaAll()` 로드
+2. **STARTUP_INTEGRITY** (TAG 테이블 + cp 존재 + `integrity !== false` 시만):
    - `startRid`부터 배치 읽기 -> `dstTable.findFirstMissRow()` 대상 DB 존재 확인 (VOLATILE TABLE + JOIN)
    - firstMiss 발견 -> `safeCpRid` 저장 후 STEADY 진입
-   - 배치마다 신규 `MachbaseClient(dstConfig)` 생성 (statement ID 소진 방지)
+   - 배치마다 신규 `MachbaseClient(config.target)` 생성
 3. **STEADY_REPLICATION**: 루프 -- `srcTable.read()` -> `dstTable.append()` -> cp 저장(maxRidInBatch) -> sleep(pollIntervalMs)
-   - `stmtCount` 추적, 900 도달 시 `srcTable.close()` + `srcTable.open()` (연결 재생성)
    - AbortSignal과 shutdownFlag를 합산하는 `effectiveShutdownFlag` proxy 사용
 - `module.exports = { Worker }`
 
@@ -171,6 +172,32 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
   - `read(startRid, limit?, rangeSize?, nameRule?, sourceColumns?, filter?)` -- nameRule로 NAME 변환, filter의 min/max/in/like를 WHERE절로 반영 (in/like는 파라미터 바인딩 사용)
 - `module.exports = { TagMetaCache, LogTable, TagTable, TagDataTable }`
 
+### src/admin/manager.js — ReplicatorManager
+
+- `ReplicatorManager` 클래스: replicator 생명주기 관리
+  - `autoStart()` — `conf.d/` 스캔 후 전체 자동 시작
+  - `list()` / `get(name)` / `register(name, config)` / `update(name, config)` / `remove(name)`
+  - `start(name)` / `stop(name)` / `stopAll()`
+  - register/update 시 duplicate id 검사 — 중복이면 `'duplicate replicator id ...'` 메시지로 throw
+- conf.d 파일 경로: `{cwd}/conf.d/{name}.json`
+- `module.exports = { ReplicatorManager }`
+
+### src/admin/http_server.js — AdminHttpServer
+
+- `AdminHttpServer(manager, port)` 클래스: jsh `http` 모듈 기반 REST API 서버
+  - `start()` / `stop()`
+  - `127.0.0.1:{internalPort}`로 바인딩 (localhost only)
+- `module.exports = { AdminHttpServer }`
+
+### src/admin/cgi_util.js — CGI 유틸
+
+- `readInternalPort()` — `conf.d/server.json`에서 `internalPort` 읽기
+- `forward(port, method, path, body?)` — AdminHttpServer로 HTTP 요청 포워딩, `Promise<{ status, body }>` 반환
+- `parseQuery()` — `QUERY_STRING` 환경변수 파싱
+- `readBody()` — stdin에서 JSON body 읽기
+- `reply(status, data)` — stdout으로 CGI 응답 출력
+- `module.exports = { readInternalPort, forward, parseQuery, readBody, reply }`
+
 ### checkpoint/store.js — CheckpointStore
 
 - `CheckpointStore(directory)`: `load(dataTable)` / `save(dataTable, cp, stats, opts?)`
@@ -178,7 +205,24 @@ integrity (IntegrityConfig?), retry (RetryConfig?)
 - atomic write 내장 (`.{Date.now()}.tmp` -> `fs.renameSync`) — `fs` 동기 API 사용
 - BigInt reviver/replacer 내장 (`lastSuccessRid` 키만 BigInt 복원)
 
-## config.json 형식
+## conf.d/server.json 형식
+
+```json
+{
+  "internalPort": 57321,
+  "shutdownTimeoutMs": 30000,
+  "logging": {
+    "level": "info",
+    "stdout": true,
+    "file": { "enabled": false, "directory": "/work/logs" }
+  }
+}
+```
+
+- `internalPort`: **필수**. 미설정 시 `neo-admin.js` 시작 실패. CGI 파일들이 이 포트로 포워딩.
+- 외부에서 직접 접근하지 않도록 `127.0.0.1`에만 바인딩됨.
+
+## config.json 형식 (replicator 개별 설정)
 
 ```json
 {

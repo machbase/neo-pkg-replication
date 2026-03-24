@@ -1,7 +1,7 @@
 'use strict';
 
 const http = require('http');
-const { getInstance: getLogger } = require('../src/lib/logger.js');
+const { getInstance: getLogger } = require('../lib/logger.js');
 
 /**
  * REST API

@@ -1,8 +1,38 @@
 # repli-js REST API 명세
 
-**Base URL**: `http://{host}:{port}/api`
-**기본 포트**: `8080` (환경변수 `REPLI_ADMIN_PORT`로 변경 가능)
+## 접근 방식
+
+### HTTP 직접 접근 (`src/admin/http_server.js`)
+
+`neo-admin.js` 실행 시 `conf.d/server.json`의 `internalPort`로 HTTP 서버가 열린다.
+
+```
+http://127.0.0.1:{internalPort}/api/replicators
+```
+
+### CGI 접근 (`cgi-bin/*.js`)
+
+machbase-neo web-ui의 cgi-bin을 통해 접근한다.
+CGI 파일은 요청을 내부 HTTP 서버(`internalPort`)로 포워딩한다.
+
+| CGI 파일 | 메서드 | 설명 |
+|----------|--------|------|
+| `replicators.js` | GET, POST | 목록 조회 / 등록 |
+| `replicator.js?name=xxx` | GET, PUT, DELETE | 단건 조회 / 수정 / 제거 |
+| `replicator-start.js?name=xxx` | POST | 시작 |
+| `replicator-stop.js?name=xxx` | POST | 종료 |
+
 **Content-Type**: `application/json`
+
+### conf.d/server.json
+
+```json
+{
+  "internalPort": 57321
+}
+```
+
+`internalPort` 미설정 시 `neo-admin.js` 시작 실패.
 
 ---
 
@@ -28,8 +58,12 @@
 
 | HTTP 상태 | 원인 |
 |-----------|------|
+| 400 | 필수 파라미터 누락 |
 | 404 | 리소스가 존재하지 않음 |
+| 405 | 허용되지 않는 HTTP 메서드 |
+| 409 | duplicate replicator id |
 | 500 | 서버 내부 오류 |
+| 503 | internalPort 미설정 (CGI 전용) |
 
 ---
 
@@ -42,13 +76,14 @@
 
 | 필드 | 타입 | 필수 | 기본값 | 설명 |
 |------|------|------|--------|------|
+| `id` | string \| null | | `"{source.table}_{target.table}"` | replicator 고유 ID. 미설정 시 자동 생성. 중복 불가. |
 | `source` | object | ✓ | — | 소스 DB + 테이블 설정 |
 | `source.host` | string | ✓ | — | 소스 DB 호스트 |
 | `source.port` | number | ✓ | — | 소스 DB 포트 |
 | `source.user` | string | ✓ | — | 소스 DB 사용자명 |
 | `source.password` | string | ✓ | — | 소스 DB 비밀번호 |
 | `source.table` | string | ✓ | — | 원본 테이블명 |
-| `source.columns` | string[] \| null | | null | SELECT 컬럼 목록 (null=전체) |
+| `source.columns` | string[] \| null | | null | SELECT 컬럼 목록 (null=전체). TAG 테이블이면 NAME, TIME 필수 포함. |
 | `source.filter` | object[] \| null | | null | WHERE절 필터 목록 |
 | `source.transform` | object[] \| null | | null | read 후 값 변환 목록 |
 | `target` | object | ✓ | — | 대상 DB + 테이블 설정 |
@@ -56,7 +91,7 @@
 | `target.port` | number | ✓ | — | 대상 DB 포트 |
 | `target.user` | string | ✓ | — | 대상 DB 사용자명 |
 | `target.password` | string | ✓ | — | 대상 DB 비밀번호 |
-| `target.table` | string | ✓ | — | 대상 테이블명. `autoCreate: true`이면 빈 문자열 허용. |
+| `target.table` | string | ✓ | — | 대상 테이블명. `autoCreate: true`이면 빈 문자열 허용 (source.table 이름 사용). |
 | `target.autoCreate` | boolean | | false | 대상 테이블 미존재 시 src 스키마로 자동 생성 |
 | `shutdownTimeoutMs` | number | | 30000 | 종료 대기 타임아웃 (ms) |
 | `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
@@ -65,9 +100,9 @@
 | `ridRangeSize` | number | | 50000 | RID 범위 힌트 크기 |
 | `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |
 | `onSaveFailure` | string | | `"continue"` | `"continue"` \| `"abort"` |
-| `integrity` | boolean \| null | | null | `true`=활성화, `false`=비활성화 — TAG 테이블 전용 |
+| `integrity` | boolean \| null | | null | `false`=비활성화, 그 외=활성화 — TAG 테이블 STARTUP_INTEGRITY 단계 제어 |
+| `metaSync` | boolean | | true | TAG 테이블 복제 시작 전 META 동기화 여부 |
 | `retry` | object \| null | | null | RetryConfig 참조 |
-| `logging` | object \| null | | null | 로깅 설정 (아래 참조) |
 
 ### RetryConfig
 
