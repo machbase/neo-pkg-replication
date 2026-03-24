@@ -1,27 +1,33 @@
-'use strict';
-
 /**
- * GET  /cgi-bin/replicators  — 목록 조회
- * POST /cgi-bin/replicators  — 등록 (body: { name, config })
+ * GET  /cgi-bin/replicators  -- 목록 조회
+ * POST /cgi-bin/replicators  -- 등록 (body: { name, config })
  */
 
 const path = require('path');
 const process = require('process');
-const { readInternalPort, readBody, reply, forward } = require(path.join(process.cwd(), 'src', 'admin', 'cgi_util.js'));
+const ROOT = path.resolve(path.dirname(process.argv[1]));
+const { listConfigs, readConfig, writeConfig, readBody, reply } = require(path.join(ROOT, 'src', 'admin', 'cgi_util.js'));
 
-const port = readInternalPort();
-if (!port) return reply(503, { ok: false, reason: 'internalPort not configured in conf.d/server.json' });
+const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
 
-const method = (process.env.REQUEST_METHOD || 'GET').toUpperCase();
+if (method === 'GET') {
+  const names = listConfigs();
+  const data = names.map(name => ({ name, config: readConfig(name) }));
+  reply(200, { ok: true, data });
 
-(async () => {
-  if (method === 'GET') {
-    const res = await forward(port, 'GET', '/api/replicators');
-    reply(res.status, res.body);
-  } else if (method === 'POST') {
-    const res = await forward(port, 'POST', '/api/replicators', readBody());
-    reply(res.status, res.body);
+} else if (method === 'POST') {
+  const body = readBody();
+  if (!body.name) {
+    reply(400, { ok: false, reason: 'name is required' });
+  } else if (!body.config) {
+    reply(400, { ok: false, reason: 'config is required' });
+  } else if (readConfig(body.name)) {
+    reply(409, { ok: false, reason: `replicator '${body.name}' already exists` });
   } else {
-    reply(405, { ok: false, reason: 'method not allowed' });
+    writeConfig(body.name, body.config);
+    reply(201, { ok: true, data: { name: body.name } });
   }
-})();
+
+} else {
+  reply(405, { ok: false, reason: 'method not allowed' });
+}

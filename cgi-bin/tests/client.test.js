@@ -2,11 +2,12 @@
 
 const process = require('process');
 const path = require('path');
-const ROOT = process.cwd();
+const TESTS_DIR = path.resolve(path.dirname(process.argv[1]));
+const ROOT = path.resolve(TESTS_DIR, '..');
 
-const { suite, test, assert, run } = require(path.join(ROOT, 'tests', 'test.js'));
-const { MachbaseClient } = require(path.join(ROOT, 'src', 'db', 'client.js'));
-const { SRC, SRC_TABLE } = require(path.join(ROOT, 'tests', 'fixtures.js'));
+const { suite, test, assert, run } = require(TESTS_DIR + '/test.js');
+const { MachbaseClient } = require(ROOT + '/src/db/client.js');
+const { SRC, SRC_TABLE } = require(TESTS_DIR + '/fixtures.js');
 
 suite('MachbaseClient', () => {
 

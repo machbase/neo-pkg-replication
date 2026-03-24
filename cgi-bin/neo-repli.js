@@ -2,12 +2,11 @@
 
 const process = require('process');
 const path = require('path');
-const ROOT = process.cwd();
+const ROOT = path.resolve(path.dirname(process.argv[1]));
 
 const { JsonFile } = require(path.join(ROOT, 'src', 'lib', 'json_file.js'));
 const { init: initLogger, getInstance: getLogger } = require(path.join(ROOT, 'src', 'lib', 'logger.js'));
 const { Replicator } = require(path.join(ROOT, 'src', 'replication', 'replicator.js'));
-const { registerSignals } = require(path.join(ROOT, 'src', 'lib', 'signal.js'));
 
 const configPath = process.argv[2];
 if (!configPath) {
@@ -20,9 +19,12 @@ try {
   initLogger(config.logging);
 
   const shutdownFlag = { value: false };
-  registerSignals(shutdownFlag, config.shutdownTimeoutMs || 30000);
-
   const replicator = new Replicator(config, shutdownFlag);
+
+  process.addShutdownHook(() => {
+    getLogger().info('app', { msg: 'shutdown requested' });
+    replicator.shutdown();
+  });
 
   replicator.start().then(() => {
     process.exit(0);

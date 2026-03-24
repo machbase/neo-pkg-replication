@@ -1,20 +1,19 @@
-'use strict';
-
 /**
- * POST /cgi-bin/replicator-stop?name=xxx  — replicator 종료
+ * POST /cgi-bin/replicator-stop?name=xxx  -- replicator 종료 (데몬 연동 예정)
  */
 
 const path = require('path');
 const process = require('process');
-const { readInternalPort, forward, parseQuery, reply } = require(path.join(process.cwd(), 'src', 'admin', 'cgi_util.js'));
-
-const port = readInternalPort();
-if (!port) return reply(503, { ok: false, reason: 'internalPort not configured in conf.d/server.json' });
+const ROOT = path.resolve(path.dirname(process.argv[1]));
+const { readConfig, parseQuery, reply } = require(path.join(ROOT, 'src', 'admin', 'cgi_util.js'));
 
 const { name } = parseQuery();
-if (!name) return reply(400, { ok: false, reason: 'name is required' });
 
-(async () => {
-  const res = await forward(port, 'POST', `/api/replicators/${encodeURIComponent(name)}/stop`);
-  reply(res.status, res.body);
-})();
+if (!name) {
+  reply(400, { ok: false, reason: 'name is required' });
+} else if (!readConfig(name)) {
+  reply(404, { ok: false, reason: `replicator '${name}' not found` });
+} else {
+  // TODO: jsh 비동기 exec 지원 시 PID 파일 기반 SIGTERM으로 구현 예정
+  reply(503, { ok: false, reason: `daemon not supported yet. stop manually: kill $(cat cgi-bin/run/${name}.pid)` });
+}

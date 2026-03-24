@@ -1,13 +1,15 @@
 'use strict';
 
+const fs = require('fs');
 const process = require('process');
 const path = require('path');
-const ROOT = process.cwd();
+const TESTS_DIR = path.resolve(path.dirname(process.argv[1]));
+const ROOT = path.resolve(TESTS_DIR, '..');
 
-const { suite, test, assert, run } = require(path.join(ROOT, 'tests', 'test.js'));
-const { MachbaseClient } = require(path.join(ROOT, 'src', 'db', 'client.js'));
-const { Replicator } = require(path.join(ROOT, 'src', 'replication', 'replicator.js'));
-const { SRC, DST, SRC_TABLE, DST_TABLE } = require(path.join(ROOT, 'tests', 'fixtures.js'));
+const { suite, test, assert, run } = require(TESTS_DIR + '/test.js');
+const { MachbaseClient } = require(ROOT + '/src/db/client.js');
+const { Replicator } = require(ROOT + '/src/replication/replicator.js');
+const { SRC, DST, SRC_TABLE, DST_TABLE } = require(TESTS_DIR + '/fixtures.js');
 
 // 테스트용 config 기본값
 function makeConfig(overrides = {}) {
@@ -40,15 +42,23 @@ function dropDstTable() {
   }
 }
 
-// 체크포인트 파일 삭제 (SRC_TABLE 기준)
-function dropCheckpoints() {
-  const fs = require('fs');
-  const dir = path.join(ROOT, 'data');
+// replicator id 기준 체크포인트 디렉토리 삭제
+// 체크포인트 경로: /work/data/{replicatorId}/{dataTable}.json
+function dropCheckpoints(replicatorId) {
+  const dir = ROOT + '/../data/' + replicatorId;
   if (!fs.existsSync(dir)) return;
-  const files = fs.readdirSync(dir).filter(f => f.startsWith(SRC_TABLE + '_'));
-  for (const f of files) {
-    try { fs.unlinkSync(path.join(dir, f)); } catch (_) {}
+  for (const f of fs.readdirSync(dir)) {
+    try { fs.unlinkSync(dir + '/' + f); } catch (_) {}
   }
+  try { fs.rmdirSync(dir); } catch (_) {}
+}
+
+// makeConfig()에서 id 미설정 시 Replicator 자동 생성 규칙과 동일
+function deriveId(overrides = {}) {
+  const cfg = makeConfig(overrides);
+  if (cfg.id) return cfg.id;
+  const targetTable = cfg.target.table || cfg.source.table;
+  return `${cfg.source.table}_${targetTable}`;
 }
 
 suite('Replicator - discover', () => {
@@ -63,10 +73,17 @@ suite('Replicator - discover', () => {
     assert.ok(discovered.dstSchema);
   });
 
-  test('존재하지 않는 source 테이블 - discover 실패', () => {
+  test('존재하지 않는 source 테이블 - discover null 반환', () => {
     const r = new Replicator(makeConfig({
       source: { ...SRC, table: 'NO_SUCH_TABLE_XYZ' },
     }));
+    const discovered = r.discover();
+    assert.equal(discovered, null);
+  });
+
+  test('autoCreate=false + 대상 테이블 없음 - discover null 반환', () => {
+    dropDstTable();
+    const r = new Replicator(makeConfig({ target: { ...DST, table: DST_TABLE, autoCreate: false } }));
     const discovered = r.discover();
     assert.equal(discovered, null);
   });
@@ -76,10 +93,10 @@ suite('Replicator - discover', () => {
 suite('Replicator - replication', () => {
 
   test('전체 복제 후 dst 테이블에 데이터 존재', async () => {
+    const id = deriveId();
     dropDstTable();
-    dropCheckpoints();
+    dropCheckpoints(id);
 
-    // src의 현재 최대 RID 파악
     const srcClient = new MachbaseClient(SRC);
     let maxRid;
     try {
@@ -101,11 +118,9 @@ suite('Replicator - replication', () => {
     const replicator = new Replicator(config, shutdownFlag);
 
     const startPromise = replicator.start();
-    // 첫 배치 복제 후 pollIntervalMs 대기 진입 시점에 shutdown
     setTimeout(() => { shutdownFlag.value = true; }, 5000);
     await startPromise;
 
-    // dst에 데이터가 있는지 확인
     const dstClient = new MachbaseClient(DST);
     try {
       dstClient.connect();
@@ -121,18 +136,19 @@ suite('Replicator - replication', () => {
   });
 
   test('startMode=now - dst 테이블 autoCreate 확인', async () => {
+    const id = deriveId({ startMode: 'now' });
     dropDstTable();
+    dropCheckpoints(id);
 
     const shutdownFlag = { value: false };
     const config = makeConfig({ startMode: 'now', integrity: false });
     const replicator = new Replicator(config, shutdownFlag);
 
-    // discover+syncMeta 후 바로 shutdown (workers 진입 전)
+    // discover+syncMeta 후 바로 shutdown
     const startPromise = replicator.start();
     setTimeout(() => { shutdownFlag.value = true; }, 1000);
     await startPromise;
 
-    // dst 테이블이 autoCreate로 생성됐는지 확인
     const dstClient = new MachbaseClient(DST);
     try {
       dstClient.connect();

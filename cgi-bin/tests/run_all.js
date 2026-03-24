@@ -2,9 +2,9 @@
 
 const process = require('process');
 const path = require('path');
-const ROOT = process.cwd();
+const TESTS_DIR = path.resolve(path.dirname(process.argv[1]));
 
 // 모든 테스트를 순서대로 실행
-require(path.join(ROOT, 'tests', 'client.test.js'));
-require(path.join(ROOT, 'tests', 'table.test.js'));
-require(path.join(ROOT, 'tests', 'replication.test.js'));
+require(TESTS_DIR + '/client.test.js');
+require(TESTS_DIR + '/table.test.js');
+require(TESTS_DIR + '/replication.test.js');

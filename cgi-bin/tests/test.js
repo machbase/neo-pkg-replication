@@ -3,26 +3,16 @@
 const process = require('process');
 const path = require('path');
 
-// /work (jsh cwd) 기준 절대경로 헬퍼
-const ROOT = process.cwd();
-function src(p) { return path.join(ROOT, 'src', p); }
+// cgi-bin/ 루트 경로
+// argv[1] = 'cgi-bin/tests/test.js' (상대경로) -> resolve -> /work/cgi-bin/tests
+// ROOT = /work/cgi-bin
+const ROOT = path.resolve(path.dirname(process.argv[1]), '..');
+
+function src(p)   { return path.join(ROOT, 'src', p); }
 function tests(p) { return path.join(ROOT, 'tests', p); }
 
 /**
  * 경량 jsh 테스트 프레임워크
- *
- * 사용법:
- *   const { suite, test, assert } = require('./test.js');
- *   suite('MyModule', () => {
- *     test('something works', () => {
- *       assert.equal(1 + 1, 2);
- *     });
- *     test('async works', async () => {
- *       const result = await someAsyncFn();
- *       assert.ok(result);
- *     });
- *   });
- *   run();
  */
 
 let _suites = [];
@@ -46,7 +36,7 @@ async function run() {
   let totalPass = 0;
   let totalFail = 0;
 
-  const suitesToRun = _suites.splice(0); // 실행할 suite 가져오고 초기화 (중복 실행 방지)
+  const suitesToRun = _suites.splice(0);
 
   for (const s of suitesToRun) {
     console.println(`\n[${s.name}]`);

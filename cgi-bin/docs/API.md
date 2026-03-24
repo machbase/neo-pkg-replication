@@ -1,38 +1,48 @@
-# repli-js REST API 명세
+# repli-js CGI API 명세
 
 ## 접근 방식
 
-### HTTP 직접 접근 (`src/admin/http_server.js`)
+CGI 파일을 machbase-neo jsh로 직접 실행한다.
+각 CGI 파일은 `conf.d/` 디렉토리를 직접 읽고 쓴다.
 
-`neo-admin.js` 실행 시 `conf.d/server.json`의 `internalPort`로 HTTP 서버가 열린다.
+### jsh 직접 실행 (테스트용)
 
+```bash
+# 실행 위치: /home/machbase/repli
+# 주의: -e 플래그는 반드시 스크립트 파일 앞에 위치해야 함
+
+# GET 목록
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/replicators.js
+
+# GET 단건
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+
+# POST 등록
+echo '{"name":"repli-b","config":{...}}' | \
+  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST cgi-bin/replicators.js
+
+# PUT 수정
+echo '{...config...}' | \
+  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+
+# DELETE 삭제
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+
+# POST 시작 (현재 503 반환 — 수동 실행 안내)
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/replicator-start.js
+
+# POST 종료 (현재 503 반환 — 수동 종료 안내)
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/replicator-stop.js
 ```
-http://127.0.0.1:{internalPort}/api/replicators
-```
 
-### CGI 접근 (`cgi-bin/*.js`)
-
-machbase-neo web-ui의 cgi-bin을 통해 접근한다.
-CGI 파일은 요청을 내부 HTTP 서버(`internalPort`)로 포워딩한다.
+### CGI 파일 목록
 
 | CGI 파일 | 메서드 | 설명 |
 |----------|--------|------|
 | `replicators.js` | GET, POST | 목록 조회 / 등록 |
 | `replicator.js?name=xxx` | GET, PUT, DELETE | 단건 조회 / 수정 / 제거 |
-| `replicator-start.js?name=xxx` | POST | 시작 |
-| `replicator-stop.js?name=xxx` | POST | 종료 |
-
-**Content-Type**: `application/json`
-
-### conf.d/server.json
-
-```json
-{
-  "internalPort": 57321
-}
-```
-
-`internalPort` 미설정 시 `neo-admin.js` 시작 실패.
+| `replicator-start.js?name=xxx` | POST | 시작 (데몬 연동 예정) |
+| `replicator-stop.js?name=xxx` | POST | 종료 (데몬 연동 예정) |
 
 ---
 
@@ -41,8 +51,8 @@ CGI 파일은 요청을 내부 HTTP 서버(`internalPort`)로 포워딩한다.
 ```json
 {
   "ok":     true | false,
-  "reason": "<오류 메시지 | null>",
-  "data":   "<object | array | null>"
+  "reason": "<오류 메시지>",
+  "data":   "<object | array>"
 }
 ```
 
@@ -61,22 +71,17 @@ CGI 파일은 요청을 내부 HTTP 서버(`internalPort`)로 포워딩한다.
 | 400 | 필수 파라미터 누락 |
 | 404 | 리소스가 존재하지 않음 |
 | 405 | 허용되지 않는 HTTP 메서드 |
-| 409 | duplicate replicator id |
-| 500 | 서버 내부 오류 |
-| 503 | internalPort 미설정 (CGI 전용) |
+| 409 | 이미 존재하는 name |
+| 503 | 미구현 (start/stop 데몬 연동 전) |
 
 ---
 
-## Replicator 객체
-
-각 replicator는 `conf.d/` 디렉토리의 JSON 파일 하나에 대응한다.
-`name`은 파일명에서 `.json` 확장자를 제거한 값이다.
-
-### ReplicatorConfig
+## ReplicatorConfig
 
 | 필드 | 타입 | 필수 | 기본값 | 설명 |
 |------|------|------|--------|------|
-| `id` | string \| null | | `"{source.table}_{target.table}"` | replicator 고유 ID. 미설정 시 자동 생성. 중복 불가. |
+| `id` | string \| null | | `"{source.table}_{target.table}"` | replicator 고유 ID. 미설정 시 자동 생성. |
+| `logging` | object | | — | 로깅 설정 (LoggingConfig 참조) |
 | `source` | object | ✓ | — | 소스 DB + 테이블 설정 |
 | `source.host` | string | ✓ | — | 소스 DB 호스트 |
 | `source.port` | number | ✓ | — | 소스 DB 포트 |
@@ -93,15 +98,14 @@ CGI 파일은 요청을 내부 HTTP 서버(`internalPort`)로 포워딩한다.
 | `target.password` | string | ✓ | — | 대상 DB 비밀번호 |
 | `target.table` | string | ✓ | — | 대상 테이블명. `autoCreate: true`이면 빈 문자열 허용 (source.table 이름 사용). |
 | `target.autoCreate` | boolean | | false | 대상 테이블 미존재 시 src 스키마로 자동 생성 |
-| `shutdownTimeoutMs` | number | | 30000 | 종료 대기 타임아웃 (ms) |
 | `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
 | `ridAfter` | number \| null | | null | `startMode: "ridAfter"` 시 기준 RID |
+| `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |
 | `queryLimit` | number | | 5000 | 배치당 최대 레코드 수 |
 | `ridRangeSize` | number | | 50000 | RID 범위 힌트 크기 |
-| `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |
+| `shutdownTimeoutMs` | number | | 30000 | 종료 대기 타임아웃 (ms) |
 | `onSaveFailure` | string | | `"continue"` | `"continue"` \| `"abort"` |
-| `integrity` | boolean \| null | | null | `false`=비활성화, 그 외=활성화 — TAG 테이블 STARTUP_INTEGRITY 단계 제어 |
-| `metaSync` | boolean | | true | TAG 테이블 복제 시작 전 META 동기화 여부 |
+| `integrity` | boolean \| null | | null | `false`=비활성화, 그 외=활성화 |
 | `retry` | object \| null | | null | RetryConfig 참조 |
 
 ### RetryConfig
@@ -116,7 +120,7 @@ CGI 파일은 요청을 내부 HTTP 서버(`internalPort`)로 포워딩한다.
 
 | 필드 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
-| `level` | string | `"info"` | `"debug"` \| `"info"` \| `"warn"` \| `"error"` |
+| `level` | string | `"info"` | `"trace"` \| `"debug"` \| `"info"` \| `"warn"` \| `"error"` |
 | `stdout` | boolean | true | 표준 출력 여부 |
 | `file.enabled` | boolean | false | 파일 출력 여부 |
 | `file.directory` | string | `"/work/logs"` | 로그 파일 디렉토리 (절대경로) |
@@ -125,68 +129,55 @@ CGI 파일은 요청을 내부 HTTP 서버(`internalPort`)로 포워딩한다.
 
 ## 엔드포인트
 
-### GET /api/replicators
+### GET /cgi-bin/replicators
 
-등록된 replicator 전체 목록 조회.
+등록된 replicator 전체 목록과 config 조회.
 
 **응답 200**
 ```json
 {
   "ok": true,
   "data": [
-    { "name": "test", "status": "running" },
-    { "name": "prod", "status": "stopped" }
+    { "name": "repli-a", "config": { ... } },
+    { "name": "repli-b", "config": { ... } }
   ]
 }
 ```
 
-| 필드 | 설명 |
-|------|------|
-| `name` | conf.d 파일명 (확장자 제외) |
-| `status` | `"running"` \| `"stopped"` \| `"stopping"` |
-
 ---
 
-### GET /api/replicators/:name
+### GET /cgi-bin/replicator?name=xxx
 
-특정 replicator 조회.
+특정 replicator config 조회.
 
 **응답 200**
 ```json
 {
   "ok": true,
-  "data": {
-    "name": "test",
-    "status": "running",
-    "config": {
-      "source": { "host": "192.168.1.1", "port": 5656, "user": "SYS", "table": "TAG" },
-      "target": { "host": "192.168.1.2", "port": 5656, "user": "SYS", "table": "TAG_COPY" },
-      "startMode": "full",
-      "pollIntervalMs": 1000
-    }
-  }
+  "data": { "name": "repli-a", "config": { ... } }
 }
 ```
 
 **응답 404**
 ```json
-{ "ok": false, "reason": "not found" }
+{ "ok": false, "reason": "replicator 'xxx' not found" }
 ```
 
 ---
 
-### POST /api/replicators
+### POST /cgi-bin/replicators
 
-새 replicator 등록. `conf.d/{name}.json` 파일로 저장되며 `stopped` 상태로 등록된다.
+새 replicator 등록. `conf.d/{name}.json` 파일로 저장된다.
 
 **요청 본문**
 ```json
 {
-  "name": "prod",
+  "name": "repli-a",
   "config": {
-    "source": { "host": "10.0.0.1", "port": 5656, "user": "SYS", "password": "MANAGER", "table": "TAG" },
-    "target": { "host": "10.0.0.2", "port": 5656, "user": "SYS", "password": "MANAGER", "table": "TAG2" },
-    "startMode": "full",
+    "id": "repli-a",
+    "source": { "host": "...", "port": 5656, "user": "SYS", "password": "MANAGER", "table": "TAG" },
+    "target": { "host": "...", "port": 5656, "user": "SYS", "password": "MANAGER", "table": "TAG_COPY", "autoCreate": true },
+    "startMode": "now",
     "pollIntervalMs": 1000
   }
 }
@@ -194,73 +185,61 @@ CGI 파일은 요청을 내부 HTTP 서버(`internalPort`)로 포워딩한다.
 
 **응답 201**
 ```json
-{
-  "ok": true,
-  "data": { "name": "prod", "status": "stopped" }
-}
+{ "ok": true, "data": { "name": "repli-a" } }
 ```
 
-**응답 500** — name 중복 또는 파일 저장 실패
+**응답 409** — 이미 존재하는 name
 
 ---
 
-### PUT /api/replicators/:name
+### PUT /cgi-bin/replicator?name=xxx
 
-replicator 설정 수정. `stopped` 상태일 때만 가능. `conf.d/{name}.json` 파일이 갱신된다.
+replicator config 수정. `conf.d/{name}.json` 파일이 갱신된다.
 
 **요청 본문**: ReplicatorConfig 형식
 
 **응답 200**
 ```json
-{
-  "ok": true,
-  "data": { "name": "prod", "status": "stopped" }
-}
+{ "ok": true, "data": { "name": "repli-a" } }
 ```
-
-**응답 500** — 실행 중이거나 미존재
 
 ---
 
-### DELETE /api/replicators/:name
+### DELETE /cgi-bin/replicator?name=xxx
 
-replicator 제거. `stopped` 상태일 때만 가능. `conf.d/{name}.json` 파일도 삭제된다.
+replicator 제거. `conf.d/{name}.json` 파일도 삭제된다.
 
 **응답 200**
 ```json
 { "ok": true }
 ```
 
-**응답 500** — 실행 중이거나 미존재
+---
+
+### POST /cgi-bin/replicator-start?name=xxx
+
+replicator 시작. jsh 비동기 exec 지원 시 구현 예정.
+
+현재는 503을 반환하며, 수동 실행 명령을 안내한다.
+
+**응답 503**
+```json
+{ "ok": false, "reason": "daemon not supported yet. run manually: machbase-neo jsh cgi-bin/neo-repli.js cgi-bin/conf.d/{name}.json" }
+```
+
+**응답 404** — name이 존재하지 않음
 
 ---
 
-### POST /api/replicators/:name/start
+### POST /cgi-bin/replicator-stop?name=xxx
 
-replicator 시작.
+replicator 종료. jsh 비동기 exec 지원 시 PID 파일 기반 SIGTERM으로 구현 예정.
 
-**응답 200**
+현재는 503을 반환하며, 수동 종료 방법을 안내한다.
+
+**응답 503**
 ```json
-{
-  "ok": true,
-  "data": { "name": "prod", "status": "running" }
-}
+{ "ok": false, "reason": "daemon not supported yet. stop manually: kill $(cat cgi-bin/run/{name}.pid)" }
 ```
 
-**응답 500** — 이미 실행 중이거나 미존재
-
----
-
-### POST /api/replicators/:name/stop
-
-replicator 종료 요청. 비동기 — 실행 중인 배치가 완료되면 실제 종료된다.
-
-**응답 200**
-```json
-{
-  "ok": true,
-  "data": { "name": "prod", "status": "stopping" }
-}
-```
-
-**응답 500** — 실행 중이 아니거나 미존재
+**응답 404** — name이 존재하지 않음

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "source": {
+    "server": "",
+    "table": "TAG",
+    "dataTable": "_TAG_DATA_0"
+  },
+  "checkpoint": {
+    "lastSuccessRid": "277419",
+    "updatedAt": "2026-03-24T07:33:53.544Z"
+  }
+}

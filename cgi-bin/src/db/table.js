@@ -186,7 +186,7 @@ class LogTable {
     return this.stream.open(
       this.client,
       this.logicalTable,
-      this.schema.columns.map(c => ({ name: c.name, type: c.dataType() }))
+      this.schema.columns.map(c => ({ name: c.name, type: c.sqlType() }))
     );
   }
 
@@ -408,7 +408,7 @@ class TagTable {
     return this.stream.open(
       this.client,
       this.logicalTable,
-      this.schema.columns.map(c => ({ name: c.name, type: c.dataType() }))
+      this.schema.columns.map(c => ({ name: c.name, type: c.sqlType() }))
     );
   }
 

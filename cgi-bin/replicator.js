@@ -1,34 +1,43 @@
-'use strict';
-
 /**
- * GET    /cgi-bin/replicator?name=xxx  — 단건 조회
- * PUT    /cgi-bin/replicator?name=xxx  — 수정 (body: config)
- * DELETE /cgi-bin/replicator?name=xxx  — 제거
+ * GET    /cgi-bin/replicator?name=xxx  -- 단건 조회
+ * PUT    /cgi-bin/replicator?name=xxx  -- 수정 (body: config)
+ * DELETE /cgi-bin/replicator?name=xxx  -- 제거
  */
 
 const path = require('path');
 const process = require('process');
-const { readInternalPort, forward, parseQuery, readBody, reply } = require(path.join(process.cwd(), 'src', 'admin', 'cgi_util.js'));
+const ROOT = path.resolve(path.dirname(process.argv[1]));
+const { readConfig, writeConfig, deleteConfig, parseQuery, readBody, reply } = require(path.join(ROOT, 'src', 'admin', 'cgi_util.js'));
 
-const port = readInternalPort();
-if (!port) return reply(503, { ok: false, reason: 'internalPort not configured in conf.d/server.json' });
-
-const method = (process.env.REQUEST_METHOD || 'GET').toUpperCase();
+const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
 const { name } = parseQuery();
 
-if (!name) return reply(400, { ok: false, reason: 'name is required' });
-
-(async () => {
-  if (method === 'GET') {
-    const res = await forward(port, 'GET', `/api/replicators/${encodeURIComponent(name)}`);
-    reply(res.status, res.body);
-  } else if (method === 'PUT') {
-    const res = await forward(port, 'PUT', `/api/replicators/${encodeURIComponent(name)}`, readBody());
-    reply(res.status, res.body);
-  } else if (method === 'DELETE') {
-    const res = await forward(port, 'DELETE', `/api/replicators/${encodeURIComponent(name)}`);
-    reply(res.status, res.body);
+if (!name) {
+  reply(400, { ok: false, reason: 'name is required' });
+} else if (method === 'GET') {
+  const config = readConfig(name);
+  if (!config) {
+    reply(404, { ok: false, reason: `replicator '${name}' not found` });
   } else {
-    reply(405, { ok: false, reason: 'method not allowed' });
+    reply(200, { ok: true, data: { name, config } });
   }
-})();
+
+} else if (method === 'PUT') {
+  if (!readConfig(name)) {
+    reply(404, { ok: false, reason: `replicator '${name}' not found` });
+  } else {
+    writeConfig(name, readBody());
+    reply(200, { ok: true, data: { name } });
+  }
+
+} else if (method === 'DELETE') {
+  if (!readConfig(name)) {
+    reply(404, { ok: false, reason: `replicator '${name}' not found` });
+  } else {
+    deleteConfig(name);
+    reply(200, { ok: true });
+  }
+
+} else {
+  reply(405, { ok: false, reason: 'method not allowed' });
+}

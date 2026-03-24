@@ -2,12 +2,13 @@
 
 const process = require('process');
 const path = require('path');
-const ROOT = process.cwd();
+const TESTS_DIR = path.resolve(path.dirname(process.argv[1]));
+const ROOT = path.resolve(TESTS_DIR, '..');
 
-const { suite, test, assert, run } = require(path.join(ROOT, 'tests', 'test.js'));
-const { MachbaseClient } = require(path.join(ROOT, 'src', 'db', 'client.js'));
-const { TagTable } = require(path.join(ROOT, 'src', 'db', 'table.js'));
-const { SRC, DST, SRC_TABLE, DST_TABLE } = require(path.join(ROOT, 'tests', 'fixtures.js'));
+const { suite, test, assert, run } = require(TESTS_DIR + '/test.js');
+const { MachbaseClient } = require(ROOT + '/src/db/client.js');
+const { TagTable, TagDataTable } = require(ROOT + '/src/db/table.js');
+const { SRC, DST, SRC_TABLE, DST_TABLE } = require(TESTS_DIR + '/fixtures.js');
 
 suite('TagTable', () => {
 
@@ -41,10 +42,66 @@ suite('TagTable', () => {
     const table = new TagTable(SRC, SRC_TABLE);
     try {
       table.open();
+      const schema = table.getSchema();
+      table.setSchema(schema);
       const cache = table.loadTagMetaCache();
       assert.ok(cache, 'loadTagMetaCache should return a cache object');
     } finally {
       table.close();
+    }
+  });
+
+});
+
+suite('TagDataTable', () => {
+
+  test('open / cacheTagMetaAll / close', () => {
+    const tagTable = new TagTable(SRC, SRC_TABLE);
+    let dataTableName, schema;
+    try {
+      tagTable.open();
+      const parts = tagTable.getDataTables();
+      assert.ok(parts.length > 0, 'no partitions found');
+      dataTableName = parts[0].data_table;
+      schema = tagTable.getSchema();
+    } finally {
+      tagTable.close();
+    }
+
+    const dataTable = new TagDataTable(dataTableName, SRC);
+    try {
+      dataTable.open();
+      dataTable.setSchema(schema);
+      const err = dataTable.cacheTagMetaAll();
+      assert.ok(err === null || err === undefined, `cacheTagMetaAll failed: ${err}`);
+    } finally {
+      dataTable.close();
+    }
+  });
+
+  test('read - returns rows array', () => {
+    const tagTable = new TagTable(SRC, SRC_TABLE);
+    let dataTableName, schema;
+    try {
+      tagTable.open();
+      const parts = tagTable.getDataTables();
+      assert.ok(parts.length > 0);
+      dataTableName = parts[0].data_table;
+      schema = tagTable.getSchema();
+    } finally {
+      tagTable.close();
+    }
+
+    const dataTable = new TagDataTable(dataTableName, SRC);
+    try {
+      dataTable.open();
+      dataTable.setSchema(schema);
+      dataTable.cacheTagMetaAll();
+      const { rows, err } = dataTable.read(0n, 10, 50000, null, null, null);
+      assert.ok(err === null || err === undefined, `read failed: ${err}`);
+      assert.ok(Array.isArray(rows));
+    } finally {
+      dataTable.close();
     }
   });
 
@@ -73,31 +130,6 @@ suite('TagTable - autoCreate', () => {
       try { srcTable.close(); } catch (_) {}
       dstClient.close();
     }
-  });
-
-});
-
-suite('Replicator - discover', () => {
-
-  test('discover TAG table', () => {
-    const { Replicator } = require(path.join(ROOT, 'src', 'replication', 'replicator.js'));
-    const config = {
-      source: { ...SRC, table: SRC_TABLE, columns: null, filter: null, transform: null },
-      target: { ...DST, table: DST_TABLE, autoCreate: true },
-      startMode: 'full',
-      queryLimit: 100,
-      ridRangeSize: 50000,
-      pollIntervalMs: 1000,
-      onSaveFailure: 'continue',
-      integrity: true,
-    };
-    const replicator = new Replicator(config);
-    const discovered = replicator.discover();
-    assert.ok(discovered, 'discover should return result');
-    assert.equal(discovered.tableType, 'TAG');
-    assert.ok(discovered.dataTables.length > 0);
-    assert.ok(discovered.srcSchema);
-    assert.ok(discovered.dstSchema);
   });
 
 });
