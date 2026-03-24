@@ -53,3 +53,19 @@ coverage/
 Thumbs.db
 
 data
+# Dependencies
+node_modules/
+
+# Frontend build output
+frontend/dist/
+
+# Environment variables
+.env
+.env.*
+
+# System files
+.DS_Store
+
+# Runtime data
+data/
+logs/
