@@ -52,7 +52,7 @@ function parseQuery() {
 
 function readBody() {
   try {
-    const raw = fs.readFileSync('/dev/stdin', 'utf8');
+    const raw = process.stdin.read();
     return raw ? JSON.parse(raw) : {};
   } catch (_) {
     return {};

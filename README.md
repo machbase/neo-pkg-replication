@@ -12,6 +12,7 @@ Machbase TAG / LOG 테이블 간 데이터 복제(replication) 도구.
 ## 요구사항
 
 - machbase-neo (jsh 런타임 포함)
+- jq (neo-regress 테스트 실행 시 필요)
 
 ---
 
@@ -157,7 +158,9 @@ machbase-neo 웹 서버를 통해 replicator 설정을 관리한다. CGI 파일�
 
 ## 테스트
 
-실 DB 연결이 필요한 jsh 통합 테스트.
+### jsh 통합 테스트
+
+실 DB 연결이 필요한 jsh 통합 테스트. 테스트 DB: `192.168.1.183:5656`
 
 ```bash
 # 실행 위치: /home/machbase/repli
@@ -170,4 +173,17 @@ machbase-neo 웹 서버를 통해 replicator 설정을 관리한다. CGI 파일�
 ../machbase-neo/machbase-neo jsh cgi-bin/tests/run_all.js
 ```
 
-테스트 DB: `192.168.1.183:5656` (SRC/DST 동일, `fixtures.js` 참고)
+### neo-regress 통합 테스트
+
+NTF(Neo Test Framework) 기반 종단간 테스트. **커밋 전 반드시 수행해야 하며, diff가 없을 때만 커밋 가능하다.**
+
+```bash
+# 실행 위치: /home/machbase/neo-regress
+# 전제: machbase-neo 서버가 repli 디렉토리를 WebDir(--ui)로 실행 중이어야 함
+
+ntf testsuite/package/replication/replication.ts
+```
+
+테스트 구성은 `~/neo-regress/testsuite/package/replication/README` 참고.
+
+---

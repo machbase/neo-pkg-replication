@@ -525,7 +525,6 @@ process.addShutdownHook:
 
 1. **replicator-start/stop CGI**: 현재 503 반환 (수동 실행 안내). 데몬 연동 구현 예정.
 2. **onSaveFailure="abort"**: checkpoint 저장 실패 시 abort 동작 미구현 (continue와 동일).
-3. **repli-b.json 복구**: 테스트 대기 중 (`.bak` 파일로 보관).
 
 ---
 

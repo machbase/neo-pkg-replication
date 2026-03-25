@@ -5,6 +5,8 @@
 CGI 파일을 machbase-neo jsh로 직접 실행한다.
 각 CGI 파일은 `conf.d/` 디렉토리를 직접 읽고 쓴다.
 
+요청 본문은 `process.stdin.read()`로 읽는다 (`/dev/stdin` 미지원).
+
 ### jsh 직접 실행 (테스트용)
 
 ```bash

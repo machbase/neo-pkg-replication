@@ -225,6 +225,8 @@ retry.shouldRetry(err)                  // bool
 
 ## 테스트 실행
 
+### jsh 통합 테스트
+
 ```bash
 # 실행 위치: /home/machbase/repli
 
@@ -241,6 +243,20 @@ retry.shouldRetry(err)                  // bool
 - client.test.js: MachbaseClient 7개
 - table.test.js: TagTable/TagDataTable/autoCreate 6개
 - replication.test.js: Replicator discover/replication/syncMeta 6개
+
+### neo-regress 통합 테스트 (커밋 조건)
+
+**커밋 전 반드시 neo-regress 테스트를 수행해야 하며, diff가 없을 때만 커밋 가능하다.**
+
+```bash
+# 실행 위치: /home/machbase/neo-regress
+# 전제: machbase-neo 서버가 repli 디렉토리를 WebDir(--ui)로 실행 중이어야 함
+# 전제: jq 설치 필요
+
+ntf testsuite/package/replication/replication.ts
+```
+
+테스트 파일: `~/neo-regress/testsuite/package/replication/`
 
 ## 실행 방법
 
