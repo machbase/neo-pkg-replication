@@ -1,0 +1,42 @@
+{
+  "id": "repli-a",
+  "logging": {
+    "level": "trace",
+    "stdout": true,
+    "file": {
+      "enabled": true,
+      "directory": "/work/logs"
+    }
+  },
+  "source": {
+    "host": "192.168.1.183",
+    "port": 5656,
+    "user": "SYS",
+    "password": "MANAGER",
+    "table": "TAG",
+    "columns": null,
+    "filter": null,
+    "transform": null
+  },
+  "target": {
+    "host": "192.168.1.183",
+    "port": 5656,
+    "user": "SYS",
+    "password": "MANAGER",
+    "table": "TAG_COPY",
+    "autoCreate": true
+  },
+  "startMode": "now",
+  "ridAfter": null,
+  "pollIntervalMs": 1000,
+  "queryLimit": 5000,
+  "ridRangeSize": 50000,
+  "shutdownTimeoutMs": 30000,
+  "onSaveFailure": "continue",
+  "integrity": true,
+  "retry": {
+    "maxAttempts": 5,
+    "baseDelayMs": 100,
+    "maxDelayMs": 30000
+  }
+}

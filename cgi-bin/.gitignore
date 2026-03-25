@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+
+# Runtime data
+checkpoints/
+pids/
+*.pid
+*.pid.lock
+*.seed
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.*
+*.local
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# npm
+.npm
+*.tgz
+.yarn-integrity
+
+# ESLint cache
+.eslintcache
+
+# Node REPL history
+.node_repl_history
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# IDE - JetBrains
+.idea/
+
+# IDE - Sublime Text
+*.sublime-workspace
+
+# System files
+.DS_Store
+Thumbs.db
+
+data
