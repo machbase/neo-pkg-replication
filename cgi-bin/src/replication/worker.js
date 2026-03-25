@@ -6,7 +6,9 @@ const RetryHandler = require('../lib/retry.js');
 const { MachbaseClient } = require('../db/client.js');
 const { TagDataTable, TagTable, LogTable } = require('../db/table.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
-const CHECKPOINT_DIRECTORY = '/work/data';
+
+const CHECKPOINT_BASE = path.resolve(path.dirname(process.argv[1]));
+const CHECKPOINT_DIRECTORY = path.join(CHECKPOINT_BASE, 'data');
 
 // ─── 상수 ────────────────────────────────────────────────────────────────────
 
