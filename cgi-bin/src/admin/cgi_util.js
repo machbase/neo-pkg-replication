@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const process = require('process');
 
-const CONF_DIR = path.join(process.cwd(), 'cgi-bin', 'conf.d');
+const CONF_BASE = path.resolve(path.dirname(process.argv[1]));
+const CONF_DIR = require(path.join(CONF_BASE, 'conf.d'));
 
 // ── conf.d CRUD ───────────────────────────────────────────────────────────────
 
