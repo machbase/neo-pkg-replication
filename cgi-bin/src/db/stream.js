@@ -43,6 +43,7 @@ class MachbaseStream {
       for (const row of matrix) {
         this.stream.append(...row);
       }
+      this.stream.flush();
       return null;
     } catch (err) {
       getLogger().error('stream', { msg: `append failed: ${err.message}` });
