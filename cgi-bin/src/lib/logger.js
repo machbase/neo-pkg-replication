@@ -27,7 +27,7 @@ class Logger {
     this._fileEnabled = fileCfg.enabled === true;
     this._fileDir = fileCfg.directory || '/work/logs';
 
-    this._stream = null;
+    this._filePath = null;
     this._currentDate = null;
   }
 
@@ -43,16 +43,13 @@ class Logger {
     const text = `${line}\n  ${ts}  ${msg}\n${line}`;
     if (this._stdout) console.println(text);
     if (this._fileEnabled) {
-      this._ensureStream();
-      if (this._stream) this._stream.write(text + '\n', 'utf8');
+      this._ensurePath();
+      if (this._filePath) fs.appendFileSync(this._filePath, text + '\n', 'utf8');
     }
   }
 
   close() {
-    if (this._stream) {
-      this._stream.end();
-      this._stream = null;
-    }
+    this._stream = null;
   }
 
   _write(level, stage, fields = {}) {
@@ -69,8 +66,8 @@ class Logger {
     }
 
     if (this._fileEnabled) {
-      this._ensureStream();
-      if (this._stream) this._stream.write(line + '\n', 'utf8');
+      this._ensurePath();
+      if (this._filePath) fs.appendFileSync(this._filePath, line + '\n', 'utf8');
     }
   }
 
@@ -89,19 +86,13 @@ class Logger {
     return `${ts} [${label}] ${stage}${kv}`;
   }
 
-  _ensureStream() {
+  _ensurePath() {
     const today = new Date().toISOString().slice(0, 10);
-    if (this._currentDate === today && this._stream) return;
-
-    if (this._stream) {
-      this._stream.end();
-      this._stream = null;
-    }
+    if (this._currentDate === today && this._filePath) return;
 
     try {
       fs.mkdirSync(this._fileDir, { recursive: true });
-      const filePath = path.join(this._fileDir, `repli-${today}.log`);
-      this._stream = fs.createWriteStream(filePath, { flags: 'a', encoding: 'utf8' });
+      this._filePath = path.join(this._fileDir, `repli-${today}.log`);
       this._currentDate = today;
     } catch (err) {
       console.error(`[Logger] failed to open log file: ${err.message}`);
