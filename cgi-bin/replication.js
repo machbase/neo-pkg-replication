@@ -3,7 +3,7 @@
 const process = require('process');
 const path = require('path');
 const fs = require('fs');
-const ROOT = path.resolve(path.dirname(process.argv[1]), '..');
+const ROOT = path.resolve(path.dirname(process.argv[1]));
 
 const { JsonFile } = require(path.join(ROOT, 'src', 'lib', 'json_file.js'));
 const { init: initLogger, getInstance: getLogger } = require(path.join(ROOT, 'src', 'lib', 'logger.js'));

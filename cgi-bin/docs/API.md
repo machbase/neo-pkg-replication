@@ -229,7 +229,7 @@ replicator 시작. jsh 비동기 exec 지원 시 구현 예정.
 
 **응답**
 ```json
-{ "ok": false, "reason": "daemon not supported yet. run manually: machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/{name}.json" }
+{ "ok": false, "reason": "daemon not supported yet. run manually: machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/{name}.json" }
 ```
 
 ---

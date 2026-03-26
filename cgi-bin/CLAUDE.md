@@ -55,7 +55,7 @@ cgi-bin/
 ### bin/replication.js — 진입점
 
 ```bash
-../machbase-neo/machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/{name}.json
+../machbase-neo/machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/{name}.json
 ```
 
 - conf.d/{name}.json 읽기 -> `initLogger(config.logging)` -> `new Replicator(config, shutdownFlag).start()`
@@ -269,7 +269,7 @@ ntf testsuite/package/replication/replication.ts
 
 ```bash
 # replicator 실행
-../machbase-neo/machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/repli-a.json
+../machbase-neo/machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/repli-a.json
 
 # CGI 테스트 (-e 플래그는 스크립트 파일 앞에 위치)
 ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js

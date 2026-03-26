@@ -61,7 +61,7 @@ repli/
 # 실행 위치: /home/machbase/repli
 
 # replicator 실행 (conf.d/{name}.json 하나를 읽어 실행)
-../machbase-neo/machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/repli-a.json
+../machbase-neo/machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/repli-a.json
 ```
 
 종료는 `Ctrl+C` (`process.addShutdownHook` 기반 graceful shutdown). 현재 처리 중인 배치를 완료한 뒤 체크포인트를 저장하고 종료한다.

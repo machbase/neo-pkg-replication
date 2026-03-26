@@ -4,8 +4,8 @@
 
 const path = require('path');
 const process = require('process');
-const _sn = process.env.get('SCRIPT_NAME');
-const ROOT = _sn.slice(0, _sn.indexOf('/cgi-bin/') + '/cgi-bin'.length);
+const _argv = process.argv[1];
+const ROOT = _argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
 const CGI = require(path.join(ROOT, 'src', 'cgi', 'cgi_util.js'));
 
 const { name } = CGI.parseQuery();
@@ -14,7 +14,7 @@ function POST() {
   if (!name) return CGI.reply({ ok: false, reason: 'name is required' });
   if (!CGI.readConfig(name)) return CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
   // TODO: jsh 비동기 exec 지원 시 process.exec()로 구현 예정
-  CGI.reply({ ok: false, reason: `daemon not supported yet. run manually: machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/${name}.json` });
+  CGI.reply({ ok: false, reason: `daemon not supported yet. run manually: machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/${name}.json` });
 }
 
 const handlers = { POST };
