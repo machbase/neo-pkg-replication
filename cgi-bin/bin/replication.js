@@ -2,7 +2,8 @@
 
 const process = require('process');
 const path = require('path');
-const ROOT = path.resolve(path.dirname(process.argv[1]));
+const fs = require('fs');
+const ROOT = path.resolve(path.dirname(process.argv[1]), '..');
 
 const { JsonFile } = require(path.join(ROOT, 'src', 'lib', 'json_file.js'));
 const { init: initLogger, getInstance: getLogger } = require(path.join(ROOT, 'src', 'lib', 'logger.js'));
@@ -18,11 +19,17 @@ try {
   const config = new JsonFile(configPath).read();
   initLogger(config.logging);
 
+  const configName = path.basename(configPath, '.json');
+  const pidFile = path.join(ROOT, 'run', `${configName}.pid`);
+  fs.mkdirSync(path.dirname(pidFile), { recursive: true });
+  fs.writeFileSync(pidFile, String(process.pid), 'utf-8');
+
   const shutdownFlag = { value: false };
   const replicator = new Replicator(config, shutdownFlag);
 
   process.addShutdownHook(() => {
     getLogger().info('app', { msg: 'shutdown requested' });
+    try { fs.unlinkSync(pidFile); } catch (_) {}
     replicator.shutdown();
   });
 

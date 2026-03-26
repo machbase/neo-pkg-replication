@@ -12,19 +12,22 @@ Machbase TAG/LOG 테이블 간 데이터 복제(replication) 도구.
 
 ```
 cgi-bin/
-├── neo-repli.js                  # replicator 진입점 -- conf.d/{name}.json 하나를 읽어 Replicator 실행
-├── replicators.js                # CGI: GET(목록 조회) / POST(등록)
-├── replicator.js                 # CGI: GET/PUT/DELETE ?name=xxx
-├── replicator-start.js           # CGI: POST ?name=xxx -- 시작 (503, 데몬 연동 예정)
-├── replicator-stop.js            # CGI: POST ?name=xxx -- 종료 (503, 데몬 연동 예정)
+├── bin/
+│   └── replication.js            # replicator 진입점 -- conf.d/{name}.json 하나를 읽어 Replicator 실행, PID 파일 관리
+├── api/
+│   ├── rc.js                     # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
+│   └── rc/
+│       ├── list.js               # CGI: GET 목록 조회 (실행 상태 + 체크포인트 포함)
+│       ├── start.js              # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
+│       └── stop.js               # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
 ├── conf.d/
 │   └── {name}.json               # replicator별 설정 파일 (ReplicatorConfig 형식)
 ├── src/
 │   ├── replication/
 │   │   ├── replicator.js         # Replicator -- discover -> syncMeta -> Workers 루프
 │   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
-│   ├── admin/
-│   │   └── cgi_util.js           # CGI 유틸 -- conf.d CRUD + parseQuery + readBody + reply
+│   ├── cgi/
+│   │   └── cgi_util.js           # CGI 유틸 (CGI class) -- conf.d CRUD + parseQuery + readBody + reply + isRunning + readCheckpoints
 │   ├── db/
 │   │   ├── client.js             # MachbaseClient -- DB 연결/쿼리 (machcli 래퍼)
 │   │   ├── stream.js             # MachbaseStream -- append 스트림 래퍼
@@ -35,12 +38,11 @@ cgi-bin/
 │       ├── logger.js             # Logger -- 날짜 로테이션, stdout/file 출력
 │       ├── retry.js              # RetryHandler
 │       └── json_file.js          # JsonFile -- atomic read/write
-├── data/                         # 런타임 생성 -- 체크포인트 파일 저장 (/work/data/{id}/ 고정)
 ├── tests/
 │   ├── test.js                   # jsh 테스트 프레임워크 (suite/test/assert/run)
 │   ├── fixtures.js               # 테스트 DB 접속 정보
 │   ├── client.test.js            # MachbaseClient 통합 테스트 (7개)
-│   ├── table.test.js             # TagTable/TagDataTable 통합 테스트 (6개)
+│   ├── table.test.js             # TagTable/TagDataTable 통합 테스트 (13개)
 │   ├── replication.test.js       # Replicator 통합 테스트 (6개)
 │   └── run_all.js                # 전체 테스트 일괄 실행
 └── docs/
@@ -50,14 +52,15 @@ cgi-bin/
 
 ## 핵심 모듈 상세
 
-### neo-repli.js — 진입점
+### bin/replication.js — 진입점
 
 ```bash
-../machbase-neo/machbase-neo jsh cgi-bin/neo-repli.js cgi-bin/conf.d/{name}.json
+../machbase-neo/machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/{name}.json
 ```
 
 - conf.d/{name}.json 읽기 -> `initLogger(config.logging)` -> `new Replicator(config, shutdownFlag).start()`
-- `process.addShutdownHook`: Ctrl+C -> `replicator.shutdown()` -> `process.exit(0)`
+- `process.addShutdownHook`: Ctrl+C -> PID 파일 삭제 -> `replicator.shutdown()` -> `process.exit(0)`
+- PID 파일: `{ROOT}/../run/{configName}.pid` (ROOT = `path.resolve(path.dirname(process.argv[1]))`)
 - ROOT: `path.resolve(path.dirname(process.argv[1]))` (`__dirname` 미제공)
 
 ### src/replication/replicator.js — Replicator
@@ -85,21 +88,25 @@ cgi-bin/
    - rows 없음 -> `sleepOrShutdown(pollIntervalMs)`
    - 체크포인트 경로: `/work/data/{config.id}/{dataTable}.json`
 
-### src/admin/cgi_util.js — CGI 유틸
+### src/cgi/cgi_util.js — CGI 유틸 (CGI class)
 
 ```js
-listConfigs()              // conf.d/*.json 목록 (server.json 제외)
-readConfig(name)           // conf.d/{name}.json, 없으면 null
-writeConfig(name, config)  // atomic write (tmp -> rename)
-deleteConfig(name)
-parseQuery()               // process.env.get('QUERY_STRING') 파싱
-readBody()                 // /dev/stdin JSON
-reply(status, data)        // CGI 응답 (Status: / Content-Type: / Content-Length: + body)
+CGI.listConfigs()              // conf.d/*.json 목록 (server.json 제외)
+CGI.readConfig(name)           // conf.d/{name}.json, 없으면 null
+CGI.writeConfig(name, config)  // atomic write (tmp -> rename)
+CGI.deleteConfig(name)
+CGI.parseQuery()               // process.env.get('QUERY_STRING') 파싱
+CGI.readBody()                 // CONTENT_LENGTH 기반 stdin JSON 파싱
+CGI.reply(data)                // CGI 응답 (Content-Type: application/json + body)
+CGI.isRunning(name)            // run/{name}.pid 파일 존재 여부
+CGI.readCheckpoints(configId)  // data/{configId}/*.json -> { [dataTable]: lastSuccessRid }
 ```
 
-- `CONF_DIR`: `path.join(process.cwd(), 'cgi-bin', 'conf.d')`
+- 경로 기반: `process.env.get('PWD')` (CGI 컨텍스트에서 cgi-bin 상위 디렉토리)
+- `CONF_DIR`: `path.join(PWD, 'cgi-bin', 'conf.d')`
+- `RUN_DIR`: `path.join(PWD, 'cgi-bin', 'run')`
+- `DATA_DIR`: `path.join(PWD, 'cgi-bin', 'data')`
 - 환경변수: `process.env.get('KEY')` (jsh에서 `process.env.KEY` 불가)
-- byte 길이: `unescape(encodeURIComponent(body)).length` (jsh에 Buffer 없음)
 
 ### src/db/client.js — MachbaseClient
 
@@ -262,12 +269,12 @@ ntf testsuite/package/replication/replication.ts
 
 ```bash
 # replicator 실행
-../machbase-neo/machbase-neo jsh cgi-bin/neo-repli.js cgi-bin/conf.d/repli-a.json
+../machbase-neo/machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/repli-a.json
 
 # CGI 테스트 (-e 플래그는 스크립트 파일 앞에 위치)
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/replicators.js
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/replicator-start.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/api/rc/start.js
 ```
 
 ## jsh 환경 제약사항

@@ -1,0 +1,21 @@
+/**
+ * POST /cgi-bin/api/rc/stop?name=xxx  -- replicator 종료 (데몬 연동 예정)
+ */
+
+const path = require('path');
+const process = require('process');
+const ROOT = path.join(process.env.get('PWD'), 'cgi-bin');
+const CGI = require(path.join(ROOT, 'src', 'cgi', 'cgi_util.js'));
+
+const { name } = CGI.parseQuery();
+
+function POST() {
+  if (!name) return CGI.reply({ ok: false, reason: 'name is required' });
+  if (!CGI.readConfig(name)) return CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
+  // TODO: jsh 비동기 exec 지원 시 PID 파일 기반 SIGTERM으로 구현 예정
+  CGI.reply({ ok: false, reason: `daemon not supported yet. stop manually: kill $(cat cgi-bin/run/${name}.pid)` });
+}
+
+const handlers = { POST };
+const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
+(handlers[method] || (() => CGI.reply({ ok: false, reason: 'method not allowed' })))();

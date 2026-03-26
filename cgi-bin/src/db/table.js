@@ -93,18 +93,18 @@ function _buildWhereClause(filter, columnNamesUpper, schema) {
   const schemaColMap = schema
     ? new Map(schema.columns.map(c => [c.name, c]))
     : new Map();
-  const NUMERIC_TYPES = new Set(['short', 'ushort', 'integer', 'uinteger', 'long', 'ulong', 'float', 'double']);
-  const STRING_TYPES  = new Set(['varchar', 'text']);
+  const NUMERIC_TYPES = new Set([ColumnType.SHORT, ColumnType.USHORT, ColumnType.INTEGER, ColumnType.UINTEGER, ColumnType.LONG, ColumnType.ULONG, ColumnType.FLOAT, ColumnType.DOUBLE]);
+  const STRING_TYPES  = new Set([ColumnType.VARCHAR, ColumnType.TEXT]);
   const parts  = [];
   const params = [];
   for (const f of filter) {
     if (!columnNamesUpper.includes(f.column)) continue;
     const schemaCol = schemaColMap.get(f.column);
     if (!schemaCol) continue;
-    const colType = schemaCol.columnType.type;
+    const colType = schemaCol.columnType;
     if (NUMERIC_TYPES.has(colType)) {
-      if (f.min !== undefined) parts.push(`${f.column} >= ${f.min}`);
-      if (f.max !== undefined) parts.push(`${f.column} <= ${f.max}`);
+      if (f.min !== undefined && Number.isFinite(f.min)) parts.push(`${f.column} >= ${f.min}`);
+      if (f.max !== undefined && Number.isFinite(f.max)) parts.push(`${f.column} <= ${f.max}`);
     }
     if (STRING_TYPES.has(colType)) {
       if (f.in !== undefined && f.in.length > 0) {
@@ -641,7 +641,8 @@ class TagDataTable {
     const endRid = startRid + BigInt(rangeSize);
 
     const colList = ['_RID', ...colNames].join(', ');
-    const { clause: whereExtra, params: whereParams } = _buildWhereClause(filter, colNames, this.schema);
+    // NAME 컬럼은 파티션에 INT64(tag ID)로 저장되므로 SQL WHERE에서 제외, post-fetch(aliasCache 이후)에서 처리
+    const { clause: whereExtra, params: whereParams } = _buildWhereClause(filter, colNames.filter(n => n !== 'NAME'), this.schema);
     const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE _RID >= ${startRid}${whereExtra} LIMIT ${limit}`;
     try {
       const rows = this.client.query(sql, whereParams.length > 0 ? whereParams : undefined);

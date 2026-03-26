@@ -21,18 +21,21 @@ Machbase TAG / LOG 테이블 간 데이터 복제(replication) 도구.
 ```
 repli/
 ├── cgi-bin/
-│   ├── neo-repli.js              # replicator 진입점
-│   ├── replicators.js            # CGI: GET(목록) / POST(등록)
-│   ├── replicator.js             # CGI: GET/PUT/DELETE ?name=xxx
-│   ├── replicator-start.js       # CGI: POST ?name=xxx -- 시작 (503, 데몬 연동 예정)
-│   ├── replicator-stop.js        # CGI: POST ?name=xxx -- 종료 (503, 데몬 연동 예정)
+│   ├── bin/
+│   │   └── replication.js        # replicator 진입점 (PID 파일 관리)
+│   ├── api/
+│   │   ├── rc.js                 # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
+│   │   └── rc/
+│   │       ├── list.js           # CGI: GET 목록 조회
+│   │       ├── start.js          # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
+│   │       └── stop.js           # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
 │   ├── conf.d/
 │   │   └── {name}.json           # replicator별 설정 파일
 │   ├── src/
 │   │   ├── replication/
 │   │   │   ├── replicator.js     # Replicator 클래스
 │   │   │   └── worker.js         # Worker 상태 머신
-│   │   ├── admin/
+│   │   ├── cgi/
 │   │   │   └── cgi_util.js       # CGI 유틸 (conf.d CRUD, reply)
 │   │   ├── db/
 │   │   │   ├── client.js         # MachbaseClient
@@ -48,8 +51,6 @@ repli/
 │   └── docs/
 │       ├── PROJECT.md            # 상세 설계 문서
 │       └── API.md                # CGI REST API 명세
-├── data/                         # 체크포인트 파일 저장 (/work/data/{id}/)
-└── logs/                         # 로그 파일 (/work/logs/)
 ```
 
 ---
@@ -60,7 +61,7 @@ repli/
 # 실행 위치: /home/machbase/repli
 
 # replicator 실행 (conf.d/{name}.json 하나를 읽어 실행)
-../machbase-neo/machbase-neo jsh cgi-bin/neo-repli.js cgi-bin/conf.d/repli-a.json
+../machbase-neo/machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/repli-a.json
 ```
 
 종료는 `Ctrl+C` (`process.addShutdownHook` 기반 graceful shutdown). 현재 처리 중인 배치를 완료한 뒤 체크포인트를 저장하고 종료한다.
@@ -144,13 +145,13 @@ machbase-neo 웹 서버를 통해 replicator 설정을 관리한다. CGI 파일�
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| GET | `/cgi-bin/replicators` | 전체 목록 조회 |
-| POST | `/cgi-bin/replicators` | 새 replicator 등록 |
-| GET | `/cgi-bin/replicator?name=xxx` | 단건 조회 |
-| PUT | `/cgi-bin/replicator?name=xxx` | 설정 수정 |
-| DELETE | `/cgi-bin/replicator?name=xxx` | 삭제 |
-| POST | `/cgi-bin/replicator-start?name=xxx` | 시작 (503, 데몬 연동 예정) |
-| POST | `/cgi-bin/replicator-stop?name=xxx` | 종료 (503, 데몬 연동 예정) |
+| GET | `/cgi-bin/api/rc/list` | 전체 목록 조회 (실행 상태 + 체크포인트 포함) |
+| POST | `/cgi-bin/api/rc` | 새 replicator 등록 |
+| GET | `/cgi-bin/api/rc?name=xxx` | 단건 조회 |
+| PUT | `/cgi-bin/api/rc?name=xxx` | 설정 수정 |
+| DELETE | `/cgi-bin/api/rc?name=xxx` | 삭제 |
+| POST | `/cgi-bin/api/rc/start?name=xxx` | 시작 (데몬 연동 예정) |
+| POST | `/cgi-bin/api/rc/stop?name=xxx` | 종료 (데몬 연동 예정) |
 
 자세한 명세는 [cgi-bin/docs/API.md](cgi-bin/docs/API.md) 참고.
 

@@ -5,7 +5,7 @@
 CGI 파일을 machbase-neo jsh로 직접 실행한다.
 각 CGI 파일은 `conf.d/` 디렉토리를 직접 읽고 쓴다.
 
-요청 본문은 `process.stdin.read()`로 읽는다 (`/dev/stdin` 미지원).
+요청 본문은 `CONTENT_LENGTH` 환경변수로 크기를 확인 후 `process.stdin.read(len)`으로 읽는다 (`/dev/stdin` 미지원).
 
 ### jsh 직접 실행 (테스트용)
 
@@ -14,37 +14,37 @@ CGI 파일을 machbase-neo jsh로 직접 실행한다.
 # 주의: -e 플래그는 반드시 스크립트 파일 앞에 위치해야 함
 
 # GET 목록
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/replicators.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js
 
 # GET 단건
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
 
 # POST 등록
 echo '{"name":"repli-b","config":{...}}' | \
-  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST cgi-bin/replicators.js
+  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST cgi-bin/api/rc.js
 
 # PUT 수정
 echo '{...config...}' | \
-  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
 
 # DELETE 삭제
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
 
-# POST 시작 (현재 503 반환 — 수동 실행 안내)
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/replicator-start.js
+# POST 시작 (현재 미구현 — 수동 실행 안내)
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/api/rc/start.js
 
-# POST 종료 (현재 503 반환 — 수동 종료 안내)
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/replicator-stop.js
+# POST 종료 (현재 미구현 — 수동 종료 안내)
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/api/rc/stop.js
 ```
 
 ### CGI 파일 목록
 
 | CGI 파일 | 메서드 | 설명 |
 |----------|--------|------|
-| `replicators.js` | GET, POST | 목록 조회 / 등록 |
-| `replicator.js?name=xxx` | GET, PUT, DELETE | 단건 조회 / 수정 / 제거 |
-| `replicator-start.js?name=xxx` | POST | 시작 (데몬 연동 예정) |
-| `replicator-stop.js?name=xxx` | POST | 종료 (데몬 연동 예정) |
+| `api/rc/list.js` | GET | 목록 조회 |
+| `api/rc.js` | POST, GET, PUT, DELETE | 등록 / 단건 조회 / 수정 / 제거 |
+| `api/rc/start.js?name=xxx` | POST | 시작 (데몬 연동 예정) |
+| `api/rc/stop.js?name=xxx` | POST | 종료 (데몬 연동 예정) |
 
 ---
 
@@ -63,18 +63,6 @@ echo '{...config...}' | \
 | `ok` | `true` (성공) / `false` (실패) |
 | `reason` | 실패 시 오류 메시지, 성공 시 생략 |
 | `data` | 성공 시 응답 데이터, 없으면 생략 |
-
----
-
-## 공통 오류 코드
-
-| HTTP 상태 | 원인 |
-|-----------|------|
-| 400 | 필수 파라미터 누락 |
-| 404 | 리소스가 존재하지 않음 |
-| 405 | 허용되지 않는 HTTP 메서드 |
-| 409 | 이미 존재하는 name |
-| 503 | 미구현 (start/stop 데몬 연동 전) |
 
 ---
 
@@ -131,43 +119,36 @@ echo '{...config...}' | \
 
 ## 엔드포인트
 
-### GET /cgi-bin/replicators
+### GET /cgi-bin/api/rc/list
 
-등록된 replicator 전체 목록과 config 조회.
+등록된 replicator 전체 목록 조회.
 
-**응답 200**
+**응답**
 ```json
 {
   "ok": true,
   "data": [
-    { "name": "repli-a", "config": { ... } },
-    { "name": "repli-b", "config": { ... } }
+    {
+      "name": "repli-a",
+      "running": false,
+      "checkpoints": {
+        "_TAG_DATA_0": "12345",
+        "_TAG_DATA_1": "6789"
+      }
+    }
   ]
 }
 ```
 
----
-
-### GET /cgi-bin/replicator?name=xxx
-
-특정 replicator config 조회.
-
-**응답 200**
-```json
-{
-  "ok": true,
-  "data": { "name": "repli-a", "config": { ... } }
-}
-```
-
-**응답 404**
-```json
-{ "ok": false, "reason": "replicator 'xxx' not found" }
-```
+| 필드 | 설명 |
+|------|------|
+| `name` | replicator 이름 |
+| `running` | PID 파일 존재 여부 (실행 중 여부) |
+| `checkpoints` | 파티션별 마지막 복제 RID. 미시작 시 `{}` |
 
 ---
 
-### POST /cgi-bin/replicators
+### POST /cgi-bin/api/rc
 
 새 replicator 등록. `conf.d/{name}.json` 파일로 저장된다.
 
@@ -185,63 +166,81 @@ echo '{...config...}' | \
 }
 ```
 
-**응답 201**
+**응답**
 ```json
 { "ok": true, "data": { "name": "repli-a" } }
 ```
 
-**응답 409** — 이미 존재하는 name
+**실패**
+```json
+{ "ok": false, "reason": "replicator 'repli-a' already exists" }
+```
 
 ---
 
-### PUT /cgi-bin/replicator?name=xxx
+### GET /cgi-bin/api/rc?name=xxx
+
+특정 replicator config 조회.
+
+**응답**
+```json
+{
+  "ok": true,
+  "data": { "name": "repli-a", "config": { ... } }
+}
+```
+
+**실패**
+```json
+{ "ok": false, "reason": "replicator 'xxx' not found" }
+```
+
+---
+
+### PUT /cgi-bin/api/rc?name=xxx
 
 replicator config 수정. `conf.d/{name}.json` 파일이 갱신된다.
 
 **요청 본문**: ReplicatorConfig 형식
 
-**응답 200**
+**응답**
 ```json
 { "ok": true, "data": { "name": "repli-a" } }
 ```
 
 ---
 
-### DELETE /cgi-bin/replicator?name=xxx
+### DELETE /cgi-bin/api/rc?name=xxx
 
 replicator 제거. `conf.d/{name}.json` 파일도 삭제된다.
 
-**응답 200**
+**응답**
 ```json
 { "ok": true }
 ```
 
 ---
 
-### POST /cgi-bin/replicator-start?name=xxx
+### POST /cgi-bin/api/rc/start?name=xxx
 
 replicator 시작. jsh 비동기 exec 지원 시 구현 예정.
 
-현재는 503을 반환하며, 수동 실행 명령을 안내한다.
+현재는 미구현이며, 수동 실행 명령을 안내한다.
 
-**응답 503**
+**응답**
 ```json
-{ "ok": false, "reason": "daemon not supported yet. run manually: machbase-neo jsh cgi-bin/neo-repli.js cgi-bin/conf.d/{name}.json" }
+{ "ok": false, "reason": "daemon not supported yet. run manually: machbase-neo jsh cgi-bin/bin/replication.js cgi-bin/conf.d/{name}.json" }
 ```
-
-**응답 404** — name이 존재하지 않음
 
 ---
 
-### POST /cgi-bin/replicator-stop?name=xxx
+### POST /cgi-bin/api/rc/stop?name=xxx
 
 replicator 종료. jsh 비동기 exec 지원 시 PID 파일 기반 SIGTERM으로 구현 예정.
 
-현재는 503을 반환하며, 수동 종료 방법을 안내한다.
+현재는 미구현이며, 수동 종료 방법을 안내한다.
 
-**응답 503**
+**응답**
 ```json
 { "ok": false, "reason": "daemon not supported yet. stop manually: kill $(cat cgi-bin/run/{name}.pid)" }
 ```
-
-**응답 404** — name이 존재하지 않음
