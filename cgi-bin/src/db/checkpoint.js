@@ -130,6 +130,7 @@ class CheckpointStore {
         rowsWritten:   stats?.rowsWritten   ?? 0,
         droppedNoMeta: stats?.droppedNoMeta ?? 0,
         skippedExists: stats?.skippedExists ?? 0,
+        ______filepath: this._filePath(dataTable),
       });
       return null;
     } catch (err) {
