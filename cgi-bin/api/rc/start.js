@@ -4,7 +4,8 @@
 
 const path = require('path');
 const process = require('process');
-const ROOT = path.join(process.env.get('PWD'), 'cgi-bin');
+const _sn = process.env.get('SCRIPT_NAME');
+const ROOT = _sn.slice(0, _sn.indexOf('/cgi-bin/') + '/cgi-bin'.length);
 const CGI = require(path.join(ROOT, 'src', 'cgi', 'cgi_util.js'));
 
 const { name } = CGI.parseQuery();

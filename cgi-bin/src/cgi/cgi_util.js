@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const process = require('process');
 
-const ROOT     = path.join(process.env.get('PWD'), 'cgi-bin');
+const _argv = process.argv[1];
+const ROOT = _argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
 const CONF_DIR = path.join(ROOT, 'conf.d');
 const RUN_DIR  = path.join(ROOT, 'run');
 const DATA_DIR = path.join(ROOT, 'data');
