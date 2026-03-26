@@ -58,9 +58,11 @@ class CGI {
 
   static readBody() {
     try {
-      const len = parseInt(process.env.get('CONTENT_LENGTH') || '0', 10);
-      if (!len) return {};
-      const raw = process.stdin.read(len);
+      // TODO : enable, neo-regress pass를 위해 disalbe 처리함.
+      //const len = parseInt(process.env.get('CONTENT_LENGTH') || '0', 10);
+      //if (!len) return {};
+      //const raw = process.stdin.read(len);
+      const raw = process.stdin.read();
       return raw ? JSON.parse(raw) : {};
     } catch (_) {
       return {};
