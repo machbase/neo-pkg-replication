@@ -31,7 +31,7 @@ class Replicator {
     this.onSaveFailure    = config.onSaveFailure    ?? 'continue';
     this.shutdownTimeoutMs = config.shutdownTimeoutMs ?? 30000;
     this.integrity        = config.integrity        ?? null;
-    this.metaSync         = config.metaSync         ?? true;
+    this.metaSync         = config.metaSync         ?? false;
     this.retry            = config.retry            ?? null;
     this.logCtx = {
       source: `${this.source.host}:${this.source.port}/${this.source.table}`,
