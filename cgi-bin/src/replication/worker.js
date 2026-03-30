@@ -17,14 +17,6 @@ const INTEGRITY_BATCH_LIMIT = 500;
 
 // ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
 
-/**
- * rows 배열에서 최대 RID 반환 (BigInt)
- * @param {Array<{ rid: BigInt }>} rows
- * @returns {BigInt}
- */
-function maxRid(rows) {
-  return rows.reduce((acc, row) => row.rid > acc ? row.rid : acc, 0n);
-}
 
 /**
  * transform[] 적용: (value + add) * multiply, prefix/suffix
@@ -175,14 +167,14 @@ class Worker {
     const transform = this.config.source.transform ?? null;
     const nameRule  = transform?.find(t => t.column === 'NAME') ?? null;
     const retry = new RetryHandler(this.config.retry ?? {});
-    const checkpointStore = new CheckpointStore(path.join(CHECKPOINT_DIRECTORY, this.config.id));
+    const checkpointStore = new CheckpointStore(path.join(CHECKPOINT_DIRECTORY, this.config.id), this.dataTable);
     const logCtx = { job_id: this.config.id, partition: this.dataTable };
 
     // ═══════════════════════════════════════════════════════════
     // RESOLVE_START — 시작 RID 결정
     // ═══════════════════════════════════════════════════════════
 
-    const { cp, exists: cpExists } = checkpointStore.load(this.dataTable);
+    const { cp, exists: cpExists } = checkpointStore.load();
     let startRid;
 
     if (cpExists && cp) {
@@ -251,19 +243,29 @@ class Worker {
       } else {
         readResult = srcTable.read(startRid, batchSize, ridRangeSize, filter);
       }
-      const { rows, err: readErr } = readResult;
+      const { rows, rangeMaxRid, err: readErr } = readResult;
       if (readErr) {
         getLogger().error('worker', { ...logCtx, phase: 'STEADY', msg: `read failed: ${readErr.message}` });
         return;
       }
 
       if (rows.length === 0) {
+        if (rangeMaxRid > 0n) {
+          // 배치 내 모든 행이 필터로 차단됨 — checkpoint만 진행
+          checkpointStore.save({
+            lastSuccessRid: rangeMaxRid,
+            sourceHost:   this.config.source.host,
+            sourceTable:    this.config.source.table,
+          }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 },
+          { onSaveFailure: this.config.onSaveFailure });
+          startRid = rangeMaxRid + 1n;
+          continue;
+        }
         const signal = await retry.sleepOrShutdown(pollIntervalMs, shutdownFlag);
         if (signal === 'shutdown') return;
         continue;
       }
 
-      const maxRidInBatch = maxRid(rows);
       const outRows = _applyTransform(
         rows.map(row => row.data),
         transform
@@ -283,13 +285,13 @@ class Worker {
         droppedNoMeta,
         skippedExists: 0,
       };
-      checkpointStore.save(this.dataTable, {
-        lastSuccessRid: maxRidInBatch,
+      checkpointStore.save({
+        lastSuccessRid: rangeMaxRid,
         sourceHost:   this.config.source.host,
         sourceTable:    this.config.source.table,
       }, batchStats, { onSaveFailure: this.config.onSaveFailure });
 
-      startRid = maxRidInBatch + 1n;
+      startRid = rangeMaxRid + 1n;
     }
   }
 
@@ -322,19 +324,29 @@ class Worker {
       try {
         intConn.connect();
 
-        const { rows, err: readErr } = srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, nameRule, sourceColumns, filter);
+        const { rows, rangeMaxRid: batchRangeMaxRid, err: readErr } = srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, nameRule, sourceColumns, filter);
         if (readErr) {
           getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readErr.message}` });
           outcome = 'return'; break;
         }
 
         if (rows.length === 0) {
-          startRid = integrityRid;
-          getLogger().debug('worker', { ...logCtx, toRid: String(integrityRid), msg: 'integrity check: all rows confirmed' });
-          outcome = 'break'; break;
+          if (batchRangeMaxRid > 0n) {
+            // 모든 행이 필터로 차단됨 — checkpoint 진행 후 계속
+            checkpointStore.save({
+              lastSuccessRid: batchRangeMaxRid,
+              sourceHost:     this.config.source.host,
+              sourceTable:    this.config.source.table,
+            }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 },
+            { onSaveFailure: this.config.onSaveFailure });
+            integrityRid = batchRangeMaxRid + 1n;
+          } else {
+            startRid = integrityRid;
+            getLogger().debug('worker', { ...logCtx, toRid: String(integrityRid), msg: 'integrity check: all rows confirmed' });
+            outcome = 'break';
+          }
+          break;
         }
-
-        const maxRidInBatch = maxRid(rows);
         const resolved = rows.map(row => ({ rid: row.rid, canonical: row.data.NAME, time: row.data.TIME }));
 
         if (shutdownFlag.value) { outcome = 'return'; break; }
@@ -368,7 +380,7 @@ class Worker {
 
         if (firstMissRid !== null) {
           const safeCpRid = firstMissRid > 0n ? firstMissRid - 1n : 0n;
-          checkpointStore.save(this.dataTable, {
+          checkpointStore.save({
             lastSuccessRid: safeCpRid,
             sourceHost:     this.config.source.host,
             sourceTable:    this.config.source.table,
@@ -378,12 +390,12 @@ class Worker {
           outcome = 'break'; break;
         }
 
-        checkpointStore.save(this.dataTable, {
-          lastSuccessRid: maxRidInBatch,
+        checkpointStore.save({
+          lastSuccessRid: batchRangeMaxRid,
           sourceHost:   this.config.source.host,
           sourceTable:    this.config.source.table,
         }, batchStats, { onSaveFailure: this.config.onSaveFailure });
-        integrityRid = maxRidInBatch + 1n;
+        integrityRid = batchRangeMaxRid + 1n;
         getLogger().debug('worker', { ...logCtx, nextRid: String(integrityRid), msg: 'integrity check: batch confirmed' });
       } finally {
         try { intConn.close(); } catch (_) {}
