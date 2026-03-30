@@ -75,51 +75,51 @@ function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
 }
 
 
+const _NUMERIC_TYPES = new Set([
+  ColumnType.SHORT, ColumnType.USHORT,
+  ColumnType.INTEGER, ColumnType.UINTEGER,
+  ColumnType.LONG, ColumnType.ULONG,
+  ColumnType.FLOAT, ColumnType.DOUBLE,
+]);
+const _STRING_TYPES = new Set([ColumnType.VARCHAR, ColumnType.TEXT]);
+
 /**
- * filter[] → WHERE 절 추가 부분과 바인딩 파라미터 반환
+ * 행 데이터가 VALUE filter 조건을 통과하는지 검사
+ * NAME 컬럼은 aliasCache 해석 후 별도 처리하므로 여기서는 건너뜀
  *
- * - min/max: 숫자형 컬럼만 적용, 값을 직접 SQL에 삽입 (Number.isFinite로 안전 검증됨)
- * - in: VARCHAR/TEXT 컬럼에 IN (?, ...) 적용, 파라미터 바인딩 사용
- * - like: VARCHAR/TEXT 컬럼에 LIKE ? 적용, 파라미터 바인딩 사용
- * - NAME 컬럼은 TAG 파티션에 존재하지 않으므로 columnNamesUpper 체크에서 자동 제외됨
- *
- * @param {Array|null} filter - ColumnFilterConfig[]
- * @param {string[]} columnNamesUpper - 실제 읽는 컬럼 목록 (UPPERCASE)
+ * @param {object} data
+ * @param {string[]} colNames - 실제 읽는 컬럼 목록 (NAME 제외)
+ * @param {Array|null} filter
  * @param {import('./types.js').TableSchema|null} schema
- * @returns {{ clause: string, params: Array }}
+ * @returns {boolean}
  */
-function _buildWhereClause(filter, columnNamesUpper, schema) {
-  if (!filter || filter.length === 0) return { clause: '', params: [] };
+function _passesValueFilter(data, colNames, filter, schema) {
+  if (!filter || filter.length === 0) return true;
   const schemaColMap = schema
     ? new Map(schema.columns.map(c => [c.name, c]))
     : new Map();
-  const NUMERIC_TYPES = new Set([ColumnType.SHORT, ColumnType.USHORT, ColumnType.INTEGER, ColumnType.UINTEGER, ColumnType.LONG, ColumnType.ULONG, ColumnType.FLOAT, ColumnType.DOUBLE]);
-  const STRING_TYPES  = new Set([ColumnType.VARCHAR, ColumnType.TEXT]);
-  const parts  = [];
-  const params = [];
   for (const f of filter) {
-    if (!columnNamesUpper.includes(f.column)) continue;
+    if (f.column === 'NAME') continue;
+    if (!colNames.includes(f.column)) continue;
     const schemaCol = schemaColMap.get(f.column);
     if (!schemaCol) continue;
     const colType = schemaCol.columnType;
-    if (NUMERIC_TYPES.has(colType)) {
-      if (f.min !== undefined && Number.isFinite(f.min)) parts.push(`${f.column} >= ${f.min}`);
-      if (f.max !== undefined && Number.isFinite(f.max)) parts.push(`${f.column} <= ${f.max}`);
+    const val = data[f.column];
+    if (_NUMERIC_TYPES.has(colType)) {
+      if (f.min !== undefined && Number.isFinite(f.min) && typeof val === 'number' && val < f.min) return false;
+      if (f.max !== undefined && Number.isFinite(f.max) && typeof val === 'number' && val > f.max) return false;
     }
-    if (STRING_TYPES.has(colType)) {
-      if (f.in !== undefined && f.in.length > 0) {
-        parts.push(`${f.column} IN (${f.in.map(() => '?').join(', ')})`);
-        params.push(...f.in);
-      }
+    if (_STRING_TYPES.has(colType)) {
+      if (f.in !== undefined && f.in.length > 0 && !f.in.includes(val)) return false;
       if (f.like !== undefined) {
-        parts.push(`${f.column} LIKE ?`);
-        params.push(f.like);
+        const pattern = new RegExp(
+          `^${f.like.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.')}$`, 'i'
+        );
+        if (!pattern.test(String(val ?? ''))) return false;
       }
     }
   }
-  return parts.length > 0
-    ? { clause: ' AND ' + parts.join(' AND '), params }
-    : { clause: '', params: [] };
+  return true;
 }
 
 /**
@@ -222,34 +222,33 @@ class LogTable {
    * @param {number} [limit=1000]
    * @param {number} [rangeSize=50000]
    * @param {Array|null} [filter=null]
-   * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
+   * @returns {{ rows: Array<{ rid: bigint, data: object }>, rangeMaxRid: bigint, err: Error|null }}
    */
   read(startRid, limit = 1000, rangeSize = 50000, filter = null) {
     const colNames = this.schema.columns.map(c => c.name);
-
     const endRid = startRid + BigInt(rangeSize);
-
     const colList = ['_RID', ...colNames].join(', ');
-    const { clause: whereExtra, params: whereParams } = _buildWhereClause(filter, colNames, this.schema);
-    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.logicalTable} WHERE _RID >= ${startRid}${whereExtra} LIMIT ${limit}`;
+    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.logicalTable} WHERE _RID >= ${startRid} LIMIT ${limit}`;
     try {
-      const rows = this.client.query(sql, whereParams.length > 0 ? whereParams : undefined);
+      const sqlRows = this.client.query(sql) || [];
+      let rangeMaxRid = 0n;
       const result = [];
-      for (const row of (rows || [])) {
+      for (const row of sqlRows) {
         if (row._RID == null) {
           getLogger().warn('table', { msg: `row with null _RID skipped in ${this.logicalTable}` });
           continue;
         }
+        const rid = BigInt(row._RID);
+        if (rid > rangeMaxRid) rangeMaxRid = rid;
         const data = {};
-        for (const col of colNames) {
-          data[col] = row[col];
-        }
-        result.push({ rid: BigInt(row._RID), data });
+        for (const col of colNames) data[col] = row[col];
+        if (!_passesValueFilter(data, colNames, filter, this.schema)) continue;
+        result.push({ rid, data });
       }
-      return { rows: result, err: null };
+      return { rows: result, rangeMaxRid, err: null };
     } catch (err) {
       getLogger().error('table', { table: this.logicalTable, msg: err.message });
-      return { rows: [], err };
+      return { rows: [], rangeMaxRid: 0n, err };
     }
   }
 
@@ -629,7 +628,7 @@ class TagDataTable {
    * @param {{ prefix?: string, suffix?: string }|null} [nameRule=null]
    * @param {string[]|null} [sourceColumns=null]
    * @param {Array|null} [filter=null]
-   * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
+   * @returns {{ rows: Array<{ rid: bigint, data: object }>, rangeMaxRid: bigint, err: Error|null }}
    */
   read(startRid, limit = 1000, rangeSize = 50000, nameRule = null, sourceColumns = null, filter = null) {
     const cols = this.schema.columns.filter(c => !(c.flag & FLAG_METADATA));
@@ -637,25 +636,29 @@ class TagDataTable {
       ? cols.filter(c => sourceColumns.includes(c.name))
       : cols;
     const colNames = filtered.map(c => c.name);
+    const valueColNames = colNames.filter(n => n !== 'NAME');
 
     const endRid = startRid + BigInt(rangeSize);
 
     const colList = ['_RID', ...colNames].join(', ');
-    // NAME 컬럼은 파티션에 INT64(tag ID)로 저장되므로 SQL WHERE에서 제외, post-fetch(aliasCache 이후)에서 처리
-    const { clause: whereExtra, params: whereParams } = _buildWhereClause(filter, colNames.filter(n => n !== 'NAME'), this.schema);
-    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE _RID >= ${startRid}${whereExtra} LIMIT ${limit}`;
+    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE _RID >= ${startRid} LIMIT ${limit}`;
     try {
-      const rows = this.client.query(sql, whereParams.length > 0 ? whereParams : undefined);
+      const sqlRows = this.client.query(sql) || [];
+      let rangeMaxRid = 0n;
       const result = [];
-      for (const row of (rows || [])) {
+      for (const row of sqlRows) {
         if (row._RID == null) {
           getLogger().warn('table', { msg: `row with null _RID skipped in ${this.dataTable}` });
           continue;
         }
+        const rid = BigInt(row._RID);
+        if (rid > rangeMaxRid) rangeMaxRid = rid;
+
         const data = {};
-        for (const col of colNames) {
-          data[col] = row[col];
-        }
+        for (const col of colNames) data[col] = row[col];
+
+        // VALUE filter (post-processing)
+        if (!_passesValueFilter(data, valueColNames, filter, this.schema)) continue;
 
         if (this.aliasCache) {
           const tagId = data.NAME;
@@ -675,13 +678,13 @@ class TagDataTable {
           data.NAME = canonical;
           Object.assign(data, meta);
         }
-        result.push({ rid: BigInt(row._RID), data });
+        result.push({ rid, data });
       }
 
-      return { rows: result, err: null };
+      return { rows: result, rangeMaxRid, err: null };
     } catch (err) {
       getLogger().error('table', { table: this.dataTable, msg: err.message });
-      return { rows: [], err };
+      return { rows: [], rangeMaxRid: 0n, err };
     }
   }
 }
