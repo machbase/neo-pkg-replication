@@ -1,10 +1,17 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Icon from '../common/Icon'
 
-const inputClass = 'w-full px-4 py-2.5 bg-surface-container-lowest border border-outline-variant/30 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30'
+const inputClass = 'w-full'
 
 export default function ServerForm({ server, onSave, onClose }) {
   const isEdit = Boolean(server)
+
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
   const [form, setForm] = useState({
     name: server?.name || '',
     host: server?.host || '',
@@ -19,18 +26,20 @@ export default function ServerForm({ server, onSave, onClose }) {
     onSave(data)
   }
 
+  const labelClass = 'block text-on-surface-secondary mb-2'
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="text-lg font-bold text-on-surface">{isEdit ? 'Edit Server' : 'Add Server'}</h3>
-          <button onClick={onClose} className="p-1 hover:bg-surface-container-high rounded-lg">
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-md font-semibold text-on-surface">{isEdit ? 'Edit Server' : 'Add Server'}</h3>
+          <button onClick={onClose} className="p-1 hover:bg-surface-hover rounded-base">
             <Icon name="close" />
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-1 tracking-widest">Name</label>
+            <label className={labelClass}>Name</label>
             <input
               type="text"
               required
@@ -43,7 +52,7 @@ export default function ServerForm({ server, onSave, onClose }) {
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="col-span-2">
-              <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-1 tracking-widest">Host</label>
+              <label className={labelClass}>Host</label>
               <input
                 type="text"
                 required
@@ -54,7 +63,7 @@ export default function ServerForm({ server, onSave, onClose }) {
               />
             </div>
             <div>
-              <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-1 tracking-widest">Port</label>
+              <label className={labelClass}>Port</label>
               <input
                 type="number"
                 required
@@ -66,7 +75,7 @@ export default function ServerForm({ server, onSave, onClose }) {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-1 tracking-widest">User</label>
+              <label className={labelClass}>User</label>
               <input
                 type="text"
                 required
@@ -76,7 +85,7 @@ export default function ServerForm({ server, onSave, onClose }) {
               />
             </div>
             <div>
-              <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-1 tracking-widest">Password</label>
+              <label className={labelClass}>Password</label>
               <input
                 type="password"
                 required
@@ -87,17 +96,17 @@ export default function ServerForm({ server, onSave, onClose }) {
               />
             </div>
           </div>
-          <div className="flex justify-end gap-3 pt-2">
+          <div className="flex justify-end gap-2 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm font-semibold text-on-surface-variant hover:bg-surface-container-high rounded-lg"
+              className="btn btn-content btn-ghost"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 text-sm font-semibold text-on-primary bg-primary rounded-lg"
+              className="btn btn-content btn-primary"
             >
               {isEdit ? 'Update' : 'Create'}
             </button>

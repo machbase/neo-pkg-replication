@@ -1,12 +1,23 @@
+const variants = {
+  running: {
+    dot: 'bg-success',
+    badge: 'border-success/30 bg-success-muted text-success',
+    label: 'Running',
+    showDot: true,
+  },
+  stopped: {
+    badge: 'border-border bg-surface-elevated text-on-surface-disabled',
+    label: 'Stopped',
+    showDot: false,
+  },
+}
+
 export default function StatusBadge({ status }) {
-  const isRunning = status === 'running'
+  const v = variants[status] || variants.stopped
   return (
-    <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${
-      isRunning
-        ? 'bg-green-100 text-green-700'
-        : 'bg-slate-100 text-slate-500'
-    }`}>
-      {isRunning ? 'Live Sync' : 'Stopped'}
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-base border text-sm font-medium uppercase tracking-wide select-none ${v.badge}`}>
+      {v.showDot && <span className={`block w-1.5 h-1.5 rounded-full shrink-0 ${v.dot}`} />}
+      {v.label}
     </span>
   )
 }

@@ -43,71 +43,69 @@ export default function ServerSettingsPage({ servers, loading, onAdd, onEdit, on
   }
 
   return (
-    <div className="p-10">
-      <div className="flex justify-between items-center mb-8">
-        <h2 className="text-3xl font-extrabold tracking-tight text-on-surface">Server Settings</h2>
+    <div className="p-5">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="page-title">Server Settings</h2>
         <button
           onClick={() => { setEditingServer(null); setShowForm(true) }}
-          className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-on-primary bg-gradient-to-br from-primary to-primary-container rounded-lg shadow-sm"
+          className="btn btn-content btn-primary"
         >
-          <Icon name="add" className="text-xl" />
+          <Icon name="add"  />
           Add Server
         </button>
       </div>
 
       {loading ? (
-        <p className="text-on-surface-variant">Loading...</p>
+        <p className="text-on-surface-tertiary text-base">Loading...</p>
       ) : servers.length === 0 ? (
-        <div className="text-center py-16 text-on-surface-variant">
-          <Icon name="dns" className="text-6xl mb-4 opacity-30" />
-          <p className="text-lg font-medium">No servers configured</p>
-          <p className="text-sm mt-2 opacity-60">Add a server to get started</p>
+        <div className="text-center py-8 text-on-surface-tertiary">
+          <Icon name="dns" className="text-4xl mb-2 opacity-30" />
+          <p className="text-md font-medium">No servers configured</p>
+          <p className="text-sm mt-1 opacity-60">Add a server to get started</p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-1">
           {servers.map(srv => (
-            <div key={srv.name} className="bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/15 flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-primary-container/10 flex items-center justify-center text-primary">
-                <Icon name="dns" />
+            <div key={srv.name} className="bg-surface-alt py-2 px-4 rounded-base border border-border flex items-center gap-3">
+              <Icon name="dns" className="text-primary shrink-0" />
+              <div className="flex-1 min-w-0">
+                <h4 className="text-base font-semibold text-on-surface">{srv.name}</h4>
+                <p className="text-sm text-on-surface-tertiary">{srv.host}:{srv.port} &middot; {srv.user}</p>
               </div>
-              <div className="flex-1">
-                <h4 className="font-bold text-on-surface">{srv.name}</h4>
-                <p className="text-sm text-on-surface-variant">{srv.host}:{srv.port} &middot; {srv.user}</p>
-              </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
                 {healthResults[srv.name] === 'checking' && (
-                  <span className="text-xs text-on-surface-variant">Checking...</span>
+                  <span className="text-sm text-on-surface-tertiary">Checking...</span>
                 )}
                 {healthResults[srv.name] === 'healthy' && (
-                  <span className="text-xs text-green-600 font-semibold flex items-center gap-1">
-                    <Icon name="check_circle" className="text-sm" /> Connected
+                  <span className="text-sm text-success font-medium flex items-center gap-1">
+                    <Icon name="check_circle" className="icon-sm" /> OK
                   </span>
                 )}
                 {healthResults[srv.name] === 'unhealthy' && (
-                  <span className="text-xs text-error font-semibold flex items-center gap-1">
-                    <Icon name="error" className="text-sm" /> Failed
+                  <span className="text-sm text-error font-medium flex items-center gap-1">
+                    <Icon name="error" className="icon-sm" /> Fail
                   </span>
                 )}
                 <button
                   onClick={() => handleHealthCheck(srv.name)}
-                  className="p-2 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-colors"
+                  className="p-1 text-on-surface-tertiary hover:bg-surface-hover rounded-base transition-colors"
                   title="Check health"
                 >
-                  <Icon name="monitor_heart" className="text-xl" />
+                  <Icon name="monitor_heart"  />
                 </button>
                 <button
                   onClick={() => { setEditingServer(srv); setShowForm(true) }}
-                  className="p-2 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-colors"
+                  className="p-1 text-on-surface-tertiary hover:bg-surface-hover rounded-base transition-colors"
                   title="Edit"
                 >
-                  <Icon name="edit" className="text-xl" />
+                  <Icon name="edit"  />
                 </button>
                 <button
                   onClick={() => setConfirmDelete(srv.name)}
-                  className="p-2 text-error hover:bg-error-container/20 rounded-lg transition-colors"
+                  className="p-1 text-error hover:bg-error-muted rounded-base transition-colors"
                   title="Delete"
                 >
-                  <Icon name="delete" className="text-xl" />
+                  <Icon name="delete"  />
                 </button>
               </div>
             </div>

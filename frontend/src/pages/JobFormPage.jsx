@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { useApp } from '../context/AppContext'
 import * as jobsApi from '../api/jobs'
-import useTableSchema from '../hooks/useTableSchema'
 import Icon from '../components/common/Icon'
 import SourceSection from '../components/jobs/SourceSection'
 import TargetSection from '../components/jobs/TargetSection'
@@ -11,8 +10,8 @@ import AdvancedSection from '../components/jobs/AdvancedSection'
 
 const DEFAULTS = {
   id: '',
-  source: { server: '', table: '', columns: null, tagIdentifier: { mode: 'none', value: '' } },
-  target: { server: '', table: '', autoCreate: false },
+  source: { host: '', port: 5656, user: 'SYS', password: '', table: '', columns: null, filter: null, transform: null },
+  target: { host: '', port: 5656, user: 'SYS', password: '', table: '', autoCreate: false },
   startMode: 'full',
   ridAfter: '',
   queryLimit: 5000,
@@ -20,13 +19,14 @@ const DEFAULTS = {
   pollIntervalMs: 1000,
   shutdownTimeoutMs: 30000,
   onSaveFailure: 'continue',
-  integrity: { enabled: true },
+  integrity: null,
   retry: { maxAttempts: 5, baseDelayMs: 100, maxDelayMs: 30000 },
+  logging: { level: 'info', stdout: true, file: { enabled: false, directory: '/work/logs' } },
 }
 
-const inputClass = 'w-full px-4 py-3 bg-surface-container-lowest border border-outline-variant/30 rounded-lg text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30'
+const inputClass = 'w-full'
 
-export default function JobFormPage({ servers, onRefresh }) {
+export default function JobFormPage({ onRefresh }) {
   const { id } = useParams()
   const navigate = useNavigate()
   const { notify } = useApp()
@@ -34,17 +34,18 @@ export default function JobFormPage({ servers, onRefresh }) {
 
   const [form, setForm] = useState(DEFAULTS)
   const [saving, setSaving] = useState(false)
-  const { tables: srcTables, columns: srcColumns, fetchTables: fetchSrcTables, fetchColumns: fetchSrcColumns } = useTableSchema()
+
   useEffect(() => {
     if (isEdit) {
       jobsApi.getJob(id).then(data => {
         setForm({
           ...DEFAULTS,
           ...data,
+          id: data.name || data.id || id,
           source: { ...DEFAULTS.source, ...data.source },
           target: { ...DEFAULTS.target, ...data.target },
-          integrity: data.integrity || DEFAULTS.integrity,
           retry: data.retry || DEFAULTS.retry,
+          logging: data.logging ? { ...DEFAULTS.logging, ...data.logging, file: { ...DEFAULTS.logging.file, ...data.logging?.file } } : DEFAULTS.logging,
         })
       }).catch(e => {
         notify(e.reason || e.message, 'error')
@@ -52,16 +53,6 @@ export default function JobFormPage({ servers, onRefresh }) {
       })
     }
   }, [id, isEdit, navigate, notify])
-
-  useEffect(() => {
-    if (form.source.server) fetchSrcTables(form.source.server)
-  }, [form.source.server, fetchSrcTables])
-
-  useEffect(() => {
-    if (form.source.server && form.source.table) {
-      fetchSrcColumns(form.source.server, form.source.table)
-    }
-  }, [form.source.server, form.source.table, fetchSrcColumns])
 
   const update = (path, value) => {
     setForm(prev => {
@@ -81,36 +72,45 @@ export default function JobFormPage({ servers, onRefresh }) {
     e.preventDefault()
     setSaving(true)
     try {
-      const { status, ...formData } = form
-      const payload = {
-        ...formData,
+      const name = form.id || null
+      const config = {
+        id: name,
+        source: {
+          ...form.source,
+          port: Number(form.source.port),
+          columns: form.source.columns?.length ? form.source.columns : null,
+        },
+        target: {
+          ...form.target,
+          port: Number(form.target.port),
+        },
+        startMode: form.startMode,
         queryLimit: Number(form.queryLimit),
         ridRangeSize: Number(form.ridRangeSize),
         pollIntervalMs: Number(form.pollIntervalMs),
         shutdownTimeoutMs: Number(form.shutdownTimeoutMs),
-        source: {
-          ...form.source,
-          columns: form.source.columns?.length ? form.source.columns : null,
-        },
-        retry: {
+        onSaveFailure: form.onSaveFailure,
+        integrity: form.integrity,
+        retry: form.retry ? {
           ...form.retry,
           maxAttempts: Number(form.retry.maxAttempts),
           baseDelayMs: Number(form.retry.baseDelayMs),
           maxDelayMs: Number(form.retry.maxDelayMs),
-        },
+        } : null,
+        logging: form.logging,
       }
-      if (payload.startMode === 'ridAfter') {
-        payload.ridAfter = String(form.ridAfter).trim()
-      } else {
-        delete payload.ridAfter
+      if (form.startMode === 'ridAfter') {
+        config.ridAfter = Number(form.ridAfter)
       }
 
+      const payload = { name, config }
+
       if (isEdit) {
-        await jobsApi.updateJob(id, payload)
+        await jobsApi.updateJob(id, config)
         notify(`Job '${id}' updated`, 'success')
       } else {
-        await jobsApi.createJob(payload)
-        notify(`Job '${payload.id}' created`, 'success')
+        await jobsApi.createJob({ name, config })
+        notify(`Job created`, 'success')
       }
       if (onRefresh) await onRefresh()
       navigate('/')
@@ -122,50 +122,48 @@ export default function JobFormPage({ servers, onRefresh }) {
   }
 
   return (
-    <div className="p-10">
-      <div className="flex items-center gap-3 mb-8">
-        <button onClick={() => navigate('/')} className="p-2 hover:bg-surface-container-high rounded-lg transition-colors">
+    <div className="p-5">
+      <div className="flex items-center gap-2 mb-6">
+        <button onClick={() => navigate('/')} className="p-1 hover:bg-surface-hover rounded-base transition-colors">
           <Icon name="arrow_back" />
         </button>
-        <h2 className="text-3xl font-extrabold tracking-tight text-on-surface">
+        <h2 className="page-title">
           {isEdit ? 'Edit Job' : 'New Job'}
         </h2>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-8">
+      <form onSubmit={handleSubmit} className="space-y-5">
         {/* Job ID */}
-        {!isEdit && (
-          <div>
-            <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-2 tracking-widest">Job ID</label>
-            <input
-              type="text"
-              required
-              value={form.id}
-              onChange={e => update('id', e.target.value)}
-              className={inputClass}
-              placeholder="e.g., tag-replication-1"
-            />
-          </div>
-        )}
+        <div>
+          <label className="block text-on-surface-secondary mb-2">Job ID (optional)</label>
+          <input
+            type="text"
+            disabled={isEdit}
+            value={form.id}
+            onChange={e => update('id', e.target.value)}
+            className={`${inputClass} disabled:opacity-50`}
+            placeholder="Auto-generated from table names if empty"
+          />
+        </div>
 
-        <SourceSection form={form} update={update} servers={servers} srcTables={srcTables} srcColumns={srcColumns} inputClass={inputClass} />
-        <TargetSection form={form} update={update} servers={servers} inputClass={inputClass} />
+        <SourceSection form={form} update={update} inputClass={inputClass} />
+        <TargetSection form={form} update={update} inputClass={inputClass} />
         <ExecutionSection form={form} update={update} inputClass={inputClass} />
         <AdvancedSection form={form} update={update} inputClass={inputClass} />
 
         {/* Submit */}
-        <div className="flex justify-end gap-3">
+        <div className="flex justify-end gap-3 pt-2">
           <button
             type="button"
             onClick={() => navigate('/')}
-            className="px-6 py-3 text-sm font-semibold text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-colors"
+            className="btn btn-content btn-ghost"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={saving}
-            className="px-6 py-3 text-sm font-semibold text-on-primary bg-gradient-to-br from-primary to-primary-container rounded-lg shadow-sm hover:shadow-md transition-all disabled:opacity-50"
+            className="btn btn-content btn-primary"
           >
             {saving ? 'Saving...' : (isEdit ? 'Update Job' : 'Create Job')}
           </button>

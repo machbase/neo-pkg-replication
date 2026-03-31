@@ -1,18 +1,21 @@
+import { useState } from 'react'
 import Icon from '../common/Icon'
 
-export default function SourceSection({ form, update, servers, srcTables, srcColumns, inputClass }) {
-  // Column selection: null = all, array = specific columns
+export default function SourceSection({ form, update, inputClass }) {
+  const [columnInput, setColumnInput] = useState('')
   const selectedColumns = form.source.columns || []
   const isAllSelected = !form.source.columns
 
-  const addColumn = (colName) => {
+  const addColumn = () => {
+    const name = columnInput.trim().toUpperCase()
+    if (!name) return
+    if (!isAllSelected && selectedColumns.includes(name)) return
     if (isAllSelected) {
-      // all -> first pick: select only that column
-      update('source.columns', [colName])
+      update('source.columns', [name])
     } else {
-      const cols = [...selectedColumns, colName]
-      update('source.columns', cols)
+      update('source.columns', [...selectedColumns, name])
     }
+    setColumnInput('')
   }
 
   const removeColumn = (colName) => {
@@ -20,119 +23,82 @@ export default function SourceSection({ form, update, servers, srcTables, srcCol
     update('source.columns', cols.length ? cols : null)
   }
 
+  const labelClass = 'block text-on-surface-secondary mb-2'
+
   return (
-    <section className="bg-surface-container-lowest p-6 rounded-xl border border-outline-variant/15">
-      <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-        <Icon name="database" className="text-primary" />
+    <section className="bg-surface-alt p-5 rounded-base border border-border">
+      <h3 className="card-title">
+        <Icon name="database" className="text-primary " />
         Source
       </h3>
-      <div className="grid grid-cols-2 gap-6">
-        <div>
-          <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-2 tracking-widest">Server</label>
-          <select
-            required
-            value={form.source.server}
-            onChange={e => { update('source.server', e.target.value); update('source.table', ''); update('source.columns', null) }}
-            className={inputClass}
-          >
-            <option value="">Select server...</option>
-            {servers.map(s => <option key={s.name} value={s.name}>{s.name} ({s.host}:{s.port})</option>)}
-          </select>
+
+      {/* Connection */}
+      <div className="grid grid-cols-4 gap-3 mb-3">
+        <div className="col-span-2">
+          <label className={labelClass}>Host</label>
+          <input type="text" required value={form.source.host} onChange={e => update('source.host', e.target.value)} className={inputClass} placeholder="127.0.0.1" />
         </div>
         <div>
-          <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-2 tracking-widest">Table</label>
-          <select
-            required
-            value={form.source.table}
-            onChange={e => { update('source.table', e.target.value); update('source.columns', null) }}
-            className={inputClass}
-          >
-            <option value="">Select table...</option>
-            {srcTables.map(t => <option key={t.name} value={t.name}>{t.name} ({t.type})</option>)}
-          </select>
+          <label className={labelClass}>Port</label>
+          <input type="number" required value={form.source.port} onChange={e => update('source.port', e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className={labelClass}>Table</label>
+          <input type="text" required value={form.source.table} onChange={e => update('source.table', e.target.value)} className={inputClass} placeholder="TAG" />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label className={labelClass}>User</label>
+          <input type="text" required value={form.source.user} onChange={e => update('source.user', e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className={labelClass}>Password</label>
+          <input type="password" required value={form.source.password} onChange={e => update('source.password', e.target.value)} className={inputClass} />
         </div>
       </div>
 
-      {/* Columns -- select dropdown + tags */}
-      <div className="mt-6">
-        <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-2 tracking-widest">Columns</label>
-        <select
-          value=""
-          disabled={form.target.autoCreate}
-          onChange={e => { if (e.target.value) addColumn(e.target.value) }}
-          className={`${inputClass} disabled:opacity-50`}
-        >
-          <option value="">Select column</option>
-          {srcColumns
-            .filter(col => !selectedColumns.includes(col.name))
-            .map(col => (
-              <option key={col.name} value={col.name}>{col.name} ({col.type})</option>
-            ))}
-        </select>
+      {/* Columns */}
+      <div className="mb-3">
+        <label className={labelClass}>Columns (empty = all)</label>
+        <div className="flex gap-2">
+          <input
+            type="text" value={columnInput} disabled={form.target.autoCreate}
+            onChange={e => setColumnInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addColumn() } }}
+            className={`${inputClass} disabled:opacity-50`}
+            placeholder="Type column name and press Enter"
+          />
+          <button type="button" disabled={form.target.autoCreate} onClick={addColumn}
+            className="btn btn-content btn-ghost border border-border text-primary-light disabled:opacity-50">
+            Add
+          </button>
+        </div>
         {!form.target.autoCreate && !isAllSelected && selectedColumns.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-3">
+          <div className="flex flex-wrap gap-1.5 mt-3">
             {selectedColumns.map(name => (
-              <span key={name} className="inline-flex items-center gap-1 px-3 py-1 bg-primary-fixed/10 border border-primary/30 rounded text-sm font-medium text-on-surface">
+              <span key={name} className="badge gap-1">
                 {name}
                 <button type="button" onClick={() => removeColumn(name)} className="hover:text-error">
-                  <Icon name="close" className="text-xs" />
+                  <Icon name="close" className="icon-sm" />
                 </button>
               </span>
             ))}
-            <button
-              type="button"
-              onClick={() => update('source.columns', null)}
-              className="px-3 py-1 text-sm text-on-surface-variant hover:text-primary transition-colors"
-            >
+            <button type="button" onClick={() => update('source.columns', null)}
+              className="btn btn-ghost btn-sm">
               Reset all
             </button>
           </div>
         )}
       </div>
 
-      {/* Auto Create — 체크 시 전체 컬럼 복제, 컬럼 선택 비활성화 */}
-      <div className="mt-4">
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.target.autoCreate || false}
-            onChange={e => {
-              update('target.autoCreate', e.target.checked)
-              if (e.target.checked) update('source.columns', null)
-            }}
-            className="w-4 h-4 rounded border-outline-variant text-primary focus:ring-primary/30"
-          />
-          <span className="text-sm font-medium text-on-surface">Auto Create</span>
-        </label>
-      </div>
-
-      {/* Tag Identifier */}
-      <div className="mt-6 grid grid-cols-2 gap-6">
-        <div>
-          <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-2 tracking-widest">Tag Identifier Mode</label>
-          <select
-            value={form.source.tagIdentifier?.mode || 'none'}
-            onChange={e => update('source.tagIdentifier', { ...form.source.tagIdentifier, mode: e.target.value })}
-            className={inputClass}
-          >
-            <option value="none">None</option>
-            <option value="prefix">Prefix</option>
-            <option value="suffix">Suffix</option>
-          </select>
-        </div>
-        {form.source.tagIdentifier?.mode !== 'none' && (
-          <div>
-            <label className="block text-[10px] uppercase font-bold text-on-surface-variant mb-2 tracking-widest">Tag Identifier Value</label>
-            <input
-              type="text"
-              value={form.source.tagIdentifier?.value || ''}
-              onChange={e => update('source.tagIdentifier', { ...form.source.tagIdentifier, value: e.target.value })}
-              className={inputClass}
-              placeholder="e.g., site1/"
-            />
-          </div>
-        )}
-      </div>
+      {/* Auto Create */}
+      <label className="checkbox-label">
+        <input type="checkbox" checked={form.target.autoCreate || false}
+          onChange={e => { update('target.autoCreate', e.target.checked); if (e.target.checked) update('source.columns', null) }}
+        />
+        Auto Create Target Table
+      </label>
     </section>
   )
 }

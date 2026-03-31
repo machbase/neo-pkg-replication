@@ -1,0 +1,10 @@
+node_modules/
+frontend/node_modules/
+frontend/dist/
+data/
+logs/
+*.tmp
+.DS_Store
+.env
+.env.local
+.env.production.local

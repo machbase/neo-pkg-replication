@@ -22,7 +22,7 @@ export default function JobDetailHeader({ job, onDelete }) {
           onClick={() => navigate(`/jobs/${encodeURIComponent(job.id)}/edit`)}
           className="flex items-center gap-2 px-4 py-2 text-on-secondary-container font-semibold hover:bg-surface-container-highest transition-all rounded-lg disabled:opacity-40 disabled:pointer-events-none"
         >
-          <Icon name="edit" className="text-xl" />
+          <Icon name="edit"  />
           <span>Edit</span>
         </button>
         <button
@@ -30,7 +30,7 @@ export default function JobDetailHeader({ job, onDelete }) {
           onClick={onDelete}
           className="flex items-center gap-2 px-4 py-2 text-error font-semibold hover:bg-error-container/20 transition-all rounded-lg disabled:opacity-40 disabled:pointer-events-none"
         >
-          <Icon name="delete" className="text-xl" />
+          <Icon name="delete"  />
           <span>Delete</span>
         </button>
       </div>

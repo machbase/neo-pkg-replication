@@ -1,22 +1,36 @@
 import { request } from './client'
 
-export const listJobs = () =>
-  request('GET', '/api/jobs')
+const RC = '/cgi-bin/api/rc'
 
-export const getJob = (id) =>
-  request('GET', `/api/jobs/${encodeURIComponent(id)}`)
+// list 응답: [{ name, running, checkpoints }]
+function mapListItem(j) {
+  return { ...j, id: j.name, status: j.running ? 'running' : 'stopped' }
+}
 
+export const listJobs = async () => {
+  const data = await request('GET', `${RC}/list`)
+  return data.map(mapListItem)
+}
+
+// 단건 응답: { name, config: { ... } }
+export const getJob = async (name) => {
+  const data = await request('GET', `${RC}?name=${encodeURIComponent(name)}`)
+  return { name: data.name, ...data.config }
+}
+
+// 생성: { name, config }
 export const createJob = (data) =>
-  request('POST', '/api/jobs', data)
+  request('POST', RC, data)
 
-export const updateJob = (id, data) =>
-  request('PUT', `/api/jobs/${encodeURIComponent(id)}`, data)
+// 수정: ReplicatorConfig 본문
+export const updateJob = (name, config) =>
+  request('PUT', `${RC}?name=${encodeURIComponent(name)}`, config)
 
-export const deleteJob = (id) =>
-  request('DELETE', `/api/jobs/${encodeURIComponent(id)}`)
+export const deleteJob = (name) =>
+  request('DELETE', `${RC}?name=${encodeURIComponent(name)}`)
 
-export const startJob = (id) =>
-  request('POST', `/api/jobs/${encodeURIComponent(id)}/start`)
+export const startJob = (name) =>
+  request('POST', `${RC}/start?name=${encodeURIComponent(name)}`)
 
-export const stopJob = (id) =>
-  request('POST', `/api/jobs/${encodeURIComponent(id)}/stop`)
+export const stopJob = (name) =>
+  request('POST', `${RC}/stop?name=${encodeURIComponent(name)}`)

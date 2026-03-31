@@ -1,20 +1,22 @@
+import { useEffect } from 'react'
+
 export default function ConfirmDialog({ title, message, onConfirm, onCancel }) {
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onCancel])
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onCancel}>
-      <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4" onClick={e => e.stopPropagation()}>
-        <h3 className="text-lg font-bold text-on-surface mb-2">{title}</h3>
-        <p className="text-sm text-on-surface-variant mb-6">{message}</p>
-        <div className="flex justify-end gap-3">
-          <button
-            onClick={onCancel}
-            className="px-4 py-2 text-sm font-semibold text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-colors"
-          >
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-title">{title}</div>
+        <div className="modal-body">{message}</div>
+        <div className="modal-footer">
+          <button onClick={onCancel} className="btn btn-content btn-ghost">
             Cancel
           </button>
-          <button
-            onClick={onConfirm}
-            className="px-4 py-2 text-sm font-semibold text-on-error bg-error hover:bg-error/90 rounded-lg transition-colors"
-          >
+          <button onClick={onConfirm} className="btn btn-content btn-danger">
             Delete
           </button>
         </div>
