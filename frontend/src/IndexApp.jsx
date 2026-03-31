@@ -10,9 +10,9 @@ export default function IndexApp() {
 
   return (
     <>
-      <div className="flex overflow-hidden bg-surface-alt text-on-surface antialiased">
+      <div className="flex flex-col lg:flex-row overflow-hidden bg-surface-alt text-on-surface antialiased">
         <Sidebar jobs={jobs} onToggleJob={toggleJob} />
-        <main className="ml-52 flex-1 h-screen overflow-y-auto bg-surface-alt">
+        <main className="flex-1 h-screen overflow-y-auto bg-surface-alt lg:ml-64">
           <Routes>
             <Route path="/" element={
               <DashboardPage jobs={jobs} onDelete={removeJob} />

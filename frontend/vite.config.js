@@ -25,7 +25,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8080'
+      '/public/neo-pkg-replication': 'http://localhost:5654'
     }
   }
 })

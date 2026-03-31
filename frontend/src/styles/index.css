@@ -2,158 +2,7 @@
 
 /* ══════════════════════════════════════════════════════════════════════════════
    Neo Design System — Tailwind CSS v4 Base
-   ══════════════════════════════════════════════════════════════════════════════
-
-   이 파일 하나를 복사하면 어떤 Tailwind v4 프로젝트에서도
-   neo-web 디자인 시스템과 동일한 스타일링을 적용할 수 있습니다.
-
-   ── 요구사항 ──────────────────────────────────────────────────────────────────
-   - Tailwind CSS v4 + @tailwindcss/vite (or postcss)
-   - 폰트: Pretendard (본문), D2Coding (코드) — Google Fonts 또는 로컬
-   - 아이콘: Material Symbols Outlined — Google Fonts (선택)
-
-   ── 구조 ──────────────────────────────────────────────────────────────────────
-   1. @theme        — 디자인 토큰 (색상, 간격, 타이포, radius, shadow, 사이즈)
-   2. Global Base   — body, input, select, checkbox 등 태그 레벨 자동 적용
-   3. Components    — 클래스 기반 UI 컴포넌트
-
-   ── 컴포넌트 사용법 ──────────────────────────────────────────────────────────
-
-   ▸ Button (사이드/헤더용 — 25px height, 12px font)
-     <button class="btn btn-primary">Save</button>
-     <button class="btn btn-danger">Delete</button>
-     <button class="btn btn-ghost">Cancel</button>
-
-   ▸ Button (콘텐츠 영역용 — 32px height = input과 동일, 13px font)
-     <button class="btn btn-content btn-primary">Create Job</button>
-     <button class="btn btn-content btn-ghost">Cancel</button>
-     <button class="btn btn-content btn-danger">Delete</button>
-
-   ▸ Button (작은 인라인 — 26px height)
-     <button class="btn btn-sm btn-ghost">Reset all</button>
-
-   ▸ Input (32px height — 글로벌 <input> 태그에 자동 적용됨)
-     <input type="text" class="w-full" placeholder="Enter value" />
-     <select class="w-full"><option>Option</option></select>
-     ※ 별도 .input 클래스 없이도 <input>, <select> 태그만으로 스타일 적용
-     ※ .input 클래스는 비-input 요소에 input 스타일을 줄 때 사용
-
-   ▸ Label
-     <label class="label">Field Name</label>
-     → block, 13px, medium weight, secondary color, mb 8px
-
-   ▸ Checkbox + Label
-     <label class="checkbox-label">
-       <input type="checkbox" /> Enable option
-     </label>
-     → inline-flex, 가운데 정렬, gap 8px, pointer cursor
-
-   ▸ Badge
-     <span class="badge">Default</span>
-     <span class="badge badge-success">Running</span>
-     <span class="badge badge-error">Failed</span>
-     <span class="badge badge-warning">Warning</span>
-     <span class="badge badge-primary">Info</span>
-     <span class="badge badge-muted">Stopped</span>
-     → 12px, border + 배경색, rounded 4px, padding 4px 8px
-
-   ▸ Titles (크기 계층)
-     <h1 class="page-title">Page Title</h1>       → 17px semibold
-     <h2 class="card-title">Card Title</h2>        → 15px semibold, flex+gap (아이콘 포함 가능)
-     <h3 class="section-title">Sub Title</h3>      → 13px semibold
-
-   ▸ Card (섹션 컨테이너)
-     <div class="card">
-       <div class="card-title">
-         <span class="material-symbols-outlined">database</span>
-         Source
-       </div>
-       <label class="label">Host</label>
-       <input type="text" class="w-full" />
-     </div>
-     → bg surface-alt, border, rounded 4px, padding 20px
-
-   ▸ Modal
-     <div class="modal-overlay">
-       <div class="modal">
-         <div class="modal-title">Confirm</div>
-         <div class="modal-body">Are you sure?</div>
-         <div class="modal-footer">
-           <button class="btn btn-content btn-ghost">Cancel</button>
-           <button class="btn btn-content btn-danger">Delete</button>
-         </div>
-       </div>
-     </div>
-
-   ▸ Toast
-     <div class="toast toast-success">
-       <span class="material-symbols-outlined">check_circle</span>
-       <span>Saved successfully</span>
-     </div>
-     <div class="toast toast-error">...</div>
-     → 300px min-width, shadow-xl, padding 12px 16px
-
-   ▸ Switch (토글)
-     <div class="switch"><div class="switch-thumb"></div></div>           → OFF
-     <div class="switch active"><div class="switch-thumb"></div></div>    → ON
-     → 28x13px, hover 시 배경+thumb 색상 변화, active 시 파란색
-
-   ▸ Side Panel (사이드바)
-     <aside class="side">
-       <div class="side-header">
-         <span class="material-symbols-outlined text-primary">apps</span>
-         <span>App Name</span>
-       </div>
-       <div class="px-3 py-3">
-         <button class="btn btn-primary w-full">+ New Item</button>
-       </div>
-       <div class="side-section-title">Section</div>
-       <nav class="flex-1 overflow-y-auto px-3 py-1.5">
-         <div class="side-item">Item 1</div>
-         <div class="side-item active">Item 2 (selected)</div>
-         <div class="side-item">Item 3</div>
-       </nav>
-     </aside>
-     → side-header: 41px, side-section-title: 22px, side-item: 28px
-     → Standalone 사용 시 aside에 border-r border-border 추가
-     → Embedded (neo-web 내부) 사용 시 border 없이 사용
-
-   ▸ 콘텐츠 페이지 레이아웃
-     <div class="bg-surface-alt h-screen overflow-y-auto">
-       <div class="p-5">
-         <div class="flex items-center gap-2 mb-6">
-           <button class="btn btn-ghost p-1"><span class="material-symbols-outlined">arrow_back</span></button>
-           <h1 class="page-title">Edit Job</h1>
-         </div>
-         <div class="space-y-5">
-           <div class="card">...</div>
-           <div class="card">...</div>
-         </div>
-       </div>
-     </div>
-     → 콘텐츠 배경은 bg-surface-alt (#252525), 사이드는 bg-surface (#1e1e1e)
-
-   ── 아이콘 사이즈 ─────────────────────────────────────────────────────────────
-   기본 (18px):  <span class="material-symbols-outlined">edit</span>
-   작은 (14px):  <span class="material-symbols-outlined icon-sm">close</span>
-   큰 (22px):    <span class="material-symbols-outlined icon-lg">inbox</span>
-
-   ── 사이즈 레퍼런스 ───────────────────────────────────────────────────────────
-   font-size-xs:   10px    font-size-sm:   12px    font-size-base: 13px
-   font-size-md:   15px    font-size-lg:   17px    font-size-xl:   30px
-   button:         25px    button-content: 32px    button-sm:      26px
-   input/select:   32px    checkbox:       16px    switch:         28×13px
-   side-header:    41px    side-section:   22px    side-item:      28px
-   radius-base:    4px     spacing grid:   4px 단위
-
-   Token source: neo-web/src/design-system/tokens/
    ══════════════════════════════════════════════════════════════════════════════ */
-
-
-/* ┌─────────────────────────────────────────────────────────────────────────┐
-   │  1. DESIGN TOKENS (@theme)                                             │
-   │  Tailwind 유틸리티로 사용 가능: bg-surface, text-on-surface, ...       │
-   └─────────────────────────────────────────────────────────────────────────┘ */
 
 @theme {
 
@@ -269,12 +118,12 @@
   --font-family-default: 'Pretendard', sans-serif;
   --font-family-mono: 'D2Coding', monospace;
 
-  --font-size-xs: 10px;    /* badge-sm, hints */
-  --font-size-sm: 12px;    /* buttons, badges, side-header */
-  --font-size-base: 13px;  /* body, labels, inputs, side-items */
-  --font-size-md: 15px;    /* card-title */
-  --font-size-lg: 17px;    /* page-title, modal-title */
-  --font-size-xl: 30px;    /* hero */
+  --font-size-xs: 10px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 15px;
+  --font-size-lg: 17px;
+  --font-size-xl: 30px;
 
   --font-weight-normal: 400;
   --font-weight-medium: 500;
@@ -310,9 +159,9 @@
 
 
   /* ─── Component Sizes ─── */
-  --size-button-height: 25px;       /* .btn default */
-  --size-button-height-sm: 26px;    /* .btn-sm */
-  --size-input-height: 32px;        /* input, select, .btn-content */
+  --size-button-height: 25px;
+  --size-button-height-sm: 26px;
+  --size-input-height: 32px;
   --size-checkbox: 16px;
   --size-switch-width: 28px;
   --size-switch-height: 13px;
@@ -337,10 +186,7 @@
 }
 
 
-/* ┌─────────────────────────────────────────────────────────────────────────┐
-   │  2. GLOBAL BASE STYLES                                                 │
-   │  <html> 태그에 자동 적용. 별도 클래스 불필요.                          │
-   └─────────────────────────────────────────────────────────────────────────┘ */
+/* ─── GLOBAL BASE STYLES ─── */
 
 *, *::before, *::after {
   font-family: 'Pretendard', sans-serif;
@@ -362,7 +208,6 @@ body {
   color: var(--color-on-surface);
 }
 
-/* Element resets */
 button, input, select, textarea, label, span, a {
   font-size: inherit;
   font-family: inherit;
@@ -374,7 +219,6 @@ button, [role="button"] {
   line-height: 1;
 }
 
-/* Input / Select / Textarea — 글로벌 기본 */
 input, select, textarea {
   height: var(--size-input-height);
   padding: 0 var(--spacing-12);
@@ -384,12 +228,14 @@ input, select, textarea {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-base);
   color: inherit;
-  transition: border-color 0.2s ease;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
 }
 
+input:hover, select:hover, textarea:hover { border-color: var(--color-on-surface-disabled); }
 input::placeholder, textarea::placeholder { color: var(--color-on-surface-muted); }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--color-border-focus); }
 input:disabled, select:disabled, textarea:disabled { opacity: 0.5; }
+input:disabled:hover, select:disabled:hover, textarea:disabled:hover { border-color: var(--color-border); }
 
 textarea {
   height: auto;
@@ -407,7 +253,6 @@ input[type="checkbox"] {
   border-radius: var(--radius-sm);
 }
 
-/* Select custom arrow */
 select {
   padding-right: 2.5rem;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23a3a3a3' viewBox='0 0 16 16'%3E%3Cpath d='M4.646 5.646a.5.5 0 0 1 .708 0L8 8.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z'/%3E%3C/svg%3E");
@@ -419,17 +264,18 @@ select {
   appearance: none;
 }
 
-/* Monospace */
-code, pre, .monaco-editor, .xterm {
+code, pre {
   font-family: var(--font-family-mono);
 }
 
-/* Material Symbols */
 .material-symbols-outlined {
   font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
   font-size: var(--size-icon-base);
   line-height: 1;
   vertical-align: middle;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .material-symbols-outlined.icon-sm {
   font-size: var(--size-icon-sm);
@@ -437,13 +283,11 @@ code, pre, .monaco-editor, .xterm {
 }
 .material-symbols-outlined.icon-lg { font-size: 22px; }
 
-/* Scrollbar */
 ::-webkit-scrollbar { width: var(--size-scrollbar); height: var(--size-scrollbar); }
 ::-webkit-scrollbar-track { background: var(--color-scrollbar-track); }
 ::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-scrollbar-thumb-hover); }
 
-/* Animations */
 @keyframes slide-in {
   from { transform: translateX(100%); opacity: 0; }
   to   { transform: translateX(0); opacity: 1; }
@@ -456,33 +300,9 @@ code, pre, .monaco-editor, .xterm {
 .animate-fade-in  { animation: fade-in var(--transition-duration-fast) ease; }
 
 
-/* ┌─────────────────────────────────────────────────────────────────────────┐
-   │  3. COMPONENT CLASSES                                                  │
-   │  이 클래스만 사용하면 어떤 프로젝트에서도 동일한 UI가 나옵니다.       │
-   │                                                                         │
-   │  Button:    .btn .btn-content .btn-primary .btn-danger .btn-ghost .btn-sm│
-   │  Input:     .input .input-full                                          │
-   │  Label:     .label .checkbox-label                                      │
-   │  Badge:     .badge .badge-success .badge-error .badge-warning           │
-   │             .badge-primary .badge-muted                                 │
-   │  Title:     .page-title .card-title .section-title                      │
-   │  Card:      .card                                                       │
-   │  Modal:     .modal-overlay .modal .modal-title .modal-body .modal-footer│
-   │  Toast:     .toast .toast-success .toast-error                          │
-   │  Switch:    .switch .switch.active .switch-thumb                        │
-   │  Side:      .side .side-header .side-section-title .side-item           │
-   └─────────────────────────────────────────────────────────────────────────┘ */
+/* ─── COMPONENT CLASSES ─── */
 
-
-/* ─── Button ───
-   .btn              사이드/헤더용 (25px, 12px font)
-   .btn-content      콘텐츠 영역용 (32px = input height, 13px font)
-   .btn-primary      파란색 배경
-   .btn-danger       빨간색 배경
-   .btn-ghost        투명 배경, 호버 시 surface-hover
-   .btn-sm           작은 인라인 (26px)
-*/
-
+/* Button */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -514,17 +334,22 @@ code, pre, .monaco-editor, .xterm {
 .btn-primary      { background-color: var(--color-primary); color: var(--color-on-primary); }
 .btn-primary:hover { background-color: var(--color-primary-hover); }
 
-.btn-danger       { background-color: var(--color-danger); color: var(--color-on-error); }
+.btn-primary-outline      { background-color: var(--color-primary); color: var(--color-on-surface); }
+.btn-primary-outline:hover { background-color: var(--color-primary-hover); }
+
+.btn-danger       { background-color: var(--color-danger); color: var(--color-on-surface); }
 .btn-danger:hover  { background-color: var(--color-error-light); }
 
+.btn-success      { background: transparent; color: var(--color-success); border: 1px solid var(--color-success); }
+.btn-success:hover { background-color: var(--color-success-muted); }
+
 .btn-ghost        { color: var(--color-on-surface-tertiary); background: transparent; border: 1px solid var(--color-border); }
-.btn-ghost:hover   { background-color: var(--color-surface-hover); border-color: var(--color-border-medium); }
+.btn-ghost:hover   { background-color: var(--color-surface-hover); border-color: var(--color-on-surface-disabled); }
 
 .btn-sm { height: var(--size-button-height-sm); font-size: var(--font-size-sm); padding: 0 var(--spacing-8); }
 
 
-/* ─── Input ─── */
-
+/* Input */
 .input {
   height: var(--size-input-height);
   padding: 0 var(--spacing-12);
@@ -536,14 +361,15 @@ code, pre, .monaco-editor, .xterm {
   color: var(--color-on-surface);
   transition: border-color 0.2s ease;
 }
+.input:hover       { border-color: var(--color-on-surface-disabled); }
 .input:focus       { outline: none; border-color: var(--color-border-focus); }
 .input::placeholder { color: var(--color-on-surface-muted); }
 .input:disabled    { opacity: 0.5; }
+.input:disabled:hover { border-color: var(--color-border); }
 .input-full        { width: 100%; }
 
 
-/* ─── Label ─── */
-
+/* Label */
 .label {
   display: block;
   font-size: var(--font-size-base);
@@ -564,8 +390,7 @@ code, pre, .monaco-editor, .xterm {
 }
 
 
-/* ─── Badge ─── */
-
+/* Badge */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -585,12 +410,11 @@ code, pre, .monaco-editor, .xterm {
 .badge-success { border-color: rgba(113, 224, 113, 0.3); background-color: var(--color-success-muted); color: var(--color-success); }
 .badge-error   { border-color: rgba(255, 83, 83, 0.3);   background-color: var(--color-error-muted);   color: var(--color-error); }
 .badge-warning { border-color: rgba(255, 152, 0, 0.3);   background-color: var(--color-warning-muted); color: var(--color-warning); }
-.badge-primary { border-color: rgba(0, 95, 184, 0.3);    background-color: rgba(0, 95, 184, 0.15);    color: var(--color-primary); }
+.badge-primary { border-color: rgba(0, 108, 210, 0.4);   background-color: rgba(0, 108, 210, 0.2);   color: var(--color-on-surface); }
 .badge-muted   { border-color: rgba(128, 128, 128, 0.2); background-color: rgba(128, 128, 128, 0.1);  color: var(--color-on-surface-disabled); }
 
 
-/* ─── Titles ─── */
-
+/* Titles */
 .page-title {
   font-size: var(--font-size-lg);
   font-weight: 600;
@@ -616,19 +440,85 @@ code, pre, .monaco-editor, .xterm {
   line-height: 1;
 }
 
-
-/* ─── Card ─── */
-
+/* Card */
 .card {
   background-color: var(--color-surface-alt);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-base);
   padding: var(--spacing-20);
+  transition: border-color 0.2s ease;
+}
+
+.dash-field-box {
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  padding: var(--spacing-8) var(--spacing-12);
+  font-size: var(--font-size-base);
+  word-break: break-all;
+  line-height: var(--line-height-normal);
 }
 
 
-/* ─── Modal ─── */
+/* Collapsible card (details > summary) */
+details.card {
+  padding: 0;
+}
 
+details.card > summary {
+  transition: background-color 0.2s ease;
+  padding: var(--spacing-20);
+  border-radius: var(--radius-base);
+  cursor: pointer;
+}
+
+details.card > summary:hover {
+  background-color: var(--color-surface-hover-block);
+}
+
+details.card[open] > summary {
+  border-radius: var(--radius-base) var(--radius-base) 0 0;
+}
+
+
+/* Form card — darker bg for form sections */
+.form-card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  padding: var(--spacing-32);
+}
+
+.form-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-8);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-on-surface-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--spacing-20);
+  line-height: 1;
+}
+
+.form-label {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-on-surface-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--spacing-8);
+  line-height: 1;
+}
+
+details.card > :not(summary) {
+  padding: 0 var(--spacing-20) var(--spacing-20);
+}
+
+
+/* Modal */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -654,8 +544,7 @@ code, pre, .monaco-editor, .xterm {
 .modal-footer { display: flex; justify-content: flex-end; gap: var(--spacing-8); }
 
 
-/* ─── Toast ─── */
-
+/* Toast */
 .toast {
   display: flex;
   align-items: center;
@@ -674,8 +563,7 @@ code, pre, .monaco-editor, .xterm {
 .toast-error   { border-color: rgba(255, 83, 83, 0.3);   color: var(--color-error); }
 
 
-/* ─── Switch ─── */
-
+/* Switch */
 .switch {
   position: relative;
   width: var(--size-switch-width);
@@ -713,8 +601,7 @@ code, pre, .monaco-editor, .xterm {
 }
 
 
-/* ─── Side Panel ─── */
-
+/* Side Panel */
 .side {
   display: flex;
   flex-direction: column;

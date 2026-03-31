@@ -9,7 +9,7 @@ export default function Sidebar({ jobs, onToggleJob }) {
     const { selectedJobId, setSelectedJobId } = useApp();
 
     return (
-        <aside className="side fixed left-0 top-0 w-52 z-40 border-r border-border">
+        <aside className="side w-full shrink-0 lg:fixed lg:left-0 lg:top-0 lg:w-64 lg:h-screen z-40 border-b lg:border-b-0 lg:border-r border-border">
             <div className="side-header">
                 <Icon name="rebase_edit" className="text-primary shrink-0" />
                 <span className="truncate flex-1">Replication</span>
@@ -24,7 +24,8 @@ export default function Sidebar({ jobs, onToggleJob }) {
 
             <div className="side-body">
                 <div className="side-section-title">Jobs</div>
-                <nav className="flex-1 overflow-y-auto px-3 py-1.5">
+                {/* Desktop: vertical list, Mobile: horizontal scroll */}
+                <nav className="flex lg:flex-col flex-row overflow-x-auto lg:overflow-x-hidden lg:overflow-y-auto flex-1 px-3 py-1.5 gap-1">
                     {jobs.map((job) => (
                         <JobListItem
                             key={job.id}
@@ -37,7 +38,7 @@ export default function Sidebar({ jobs, onToggleJob }) {
                             onToggle={() => onToggleJob(job)}
                         />
                     ))}
-                    {jobs.length === 0 && <p className="px-2 py-3 text-on-surface-disabled text-sm">No jobs</p>}
+                    {jobs.length === 0 && <p className="px-2 py-3 text-on-surface-disabled text-sm whitespace-nowrap">No jobs</p>}
                 </nav>
             </div>
         </aside>

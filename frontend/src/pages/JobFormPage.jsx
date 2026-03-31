@@ -24,8 +24,6 @@ const DEFAULTS = {
   logging: { level: 'info', stdout: true, file: { enabled: false, directory: '/work/logs' } },
 }
 
-const inputClass = 'w-full'
-
 export default function JobFormPage({ onRefresh }) {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -103,8 +101,6 @@ export default function JobFormPage({ onRefresh }) {
         config.ridAfter = Number(form.ridAfter)
       }
 
-      const payload = { name, config }
-
       if (isEdit) {
         await jobsApi.updateJob(id, config)
         notify(`Job '${id}' updated`, 'success')
@@ -122,37 +118,23 @@ export default function JobFormPage({ onRefresh }) {
   }
 
   return (
-    <div className="p-5">
-      <div className="flex items-center gap-2 mb-6">
-        <button onClick={() => navigate('/')} className="p-1 hover:bg-surface-hover rounded-base transition-colors">
-          <Icon name="arrow_back" />
-        </button>
-        <h2 className="page-title">
-          {isEdit ? 'Edit Job' : 'New Job'}
-        </h2>
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-5">
-        {/* Job ID */}
-        <div>
-          <label className="block text-on-surface-secondary mb-2">Job ID (optional)</label>
-          <input
-            type="text"
-            disabled={isEdit}
-            value={form.id}
-            onChange={e => update('id', e.target.value)}
-            className={`${inputClass} disabled:opacity-50`}
-            placeholder="Auto-generated from table names if empty"
-          />
+    <div className="p-24 pb-10">
+      {/* Header */}
+      <div className="flex justify-between items-start mb-6 gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <button onClick={() => navigate('/')} className="p-1 hover:bg-surface-hover rounded-base transition-colors shrink-0">
+              <Icon name="arrow_back" />
+            </button>
+            <h2 className="page-title truncate">
+              {isEdit ? 'Edit Job' : 'New Replication Job'}
+            </h2>
+          </div>
+          <p className="text-sm text-on-surface-disabled ml-8">
+            Configure source-to-target data replication parameters.
+          </p>
         </div>
-
-        <SourceSection form={form} update={update} inputClass={inputClass} />
-        <TargetSection form={form} update={update} inputClass={inputClass} />
-        <ExecutionSection form={form} update={update} inputClass={inputClass} />
-        <AdvancedSection form={form} update={update} inputClass={inputClass} />
-
-        {/* Submit */}
-        <div className="flex justify-end gap-3 pt-2">
+        <div className="flex gap-2 shrink-0">
           <button
             type="button"
             onClick={() => navigate('/')}
@@ -162,11 +144,47 @@ export default function JobFormPage({ onRefresh }) {
           </button>
           <button
             type="submit"
+            form="job-form"
             disabled={saving}
             className="btn btn-content btn-primary"
           >
             {saving ? 'Saving...' : (isEdit ? 'Update Job' : 'Create Job')}
           </button>
+        </div>
+      </div>
+
+      <form id="job-form" onSubmit={handleSubmit}>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Left column */}
+          <div className="space-y-4">
+            {/* Job Identity */}
+            <div className="form-card">
+              <div className="form-card-header">
+                <Icon name="badge" className="text-primary" />
+                Job Identity
+              </div>
+              <div>
+                <label className="form-label">Job ID (optional)</label>
+                <input
+                  type="text"
+                  disabled={isEdit}
+                  value={form.id}
+                  onChange={e => update('id', e.target.value)}
+                  className="w-full disabled:opacity-50"
+                  placeholder="Auto-generated from table names if empty"
+                />
+              </div>
+            </div>
+
+            <SourceSection form={form} update={update} />
+          </div>
+
+          {/* Right column */}
+          <div className="space-y-4">
+            <TargetSection form={form} update={update} />
+            <ExecutionSection form={form} update={update} />
+            <AdvancedSection form={form} update={update} />
+          </div>
         </div>
       </form>
     </div>
