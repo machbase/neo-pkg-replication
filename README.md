@@ -21,8 +21,7 @@ Machbase TAG / LOG 테이블 간 데이터 복제(replication) 도구.
 ```
 repli/
 ├── cgi-bin/
-│   ├── bin/
-│   │   └── replication.js        # replicator 진입점 (PID 파일 관리)
+│   ├── replication.js            # replicator 진입점 (PID 파일 관리)
 │   ├── api/
 │   │   ├── rc.js                 # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
 │   │   └── rc/
@@ -31,6 +30,8 @@ repli/
 │   │       └── stop.js           # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
 │   ├── conf.d/
 │   │   └── {name}.json           # replicator별 설정 파일
+│   ├── data/                     # 런타임 생성 -- 파티션별 체크포인트 파일
+│   ├── run/                      # 런타임 생성 -- PID 파일
 │   ├── src/
 │   │   ├── replication/
 │   │   │   ├── replicator.js     # Replicator 클래스
@@ -46,11 +47,13 @@ repli/
 │   │   └── lib/
 │   │       ├── logger.js
 │   │       ├── retry.js
+│   │       ├── signal.js
 │   │       └── json_file.js
 │   ├── tests/                    # jsh 통합 테스트
 │   └── docs/
 │       ├── PROJECT.md            # 상세 설계 문서
-│       └── API.md                # CGI REST API 명세
+│       ├── API.md                # CGI REST API 명세
+│       └── JSH_REFERENCE.md      # jsh 런타임 API 참조
 ```
 
 ---
@@ -94,6 +97,7 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
   },
   "startMode": "now",
   "ridAfter": null,
+  "metaSync": false,
   "pollIntervalMs": 1000,
   "queryLimit": 5000,
   "ridRangeSize": 50000,
@@ -110,6 +114,7 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
 |------|--------|------|
 | `id` | 자동 생성 | 미설정 시 `{source.table}_{target.table}` |
 | `startMode` | `"full"` | `"full"` (RID 0부터) \| `"now"` (현재 이후) \| `"ridAfter"` |
+| `metaSync` | `false` | TAG META 동기화 활성화 여부. `false`=비활성화 |
 | `integrity` | `null` | TAG 재시작 시 정합성 검사. `false`=비활성화 |
 | `target.autoCreate` | `false` | 대상 테이블 없을 때 src 스키마로 자동 CREATE |
 | `source.columns` | `null` | 복제할 컬럼 목록. TAG 테이블은 NAME/TIME 필수 포함 |
@@ -121,21 +126,21 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
 
 ```
 소스 DB                              대상 DB
-_TAG_DATA_0  ──┐
-_TAG_DATA_1  ──┤  Worker (cooperative)  ──▶  Append Stream
-_TAG_DATA_2  ──┤
-_TAG_DATA_3  ──┘
+_TAG_DATA_0  --+
+_TAG_DATA_1  --+  Worker (cooperative)  -->  Append Stream
+_TAG_DATA_2  --+
+_TAG_DATA_3  --+
 ```
 
 각 데이터 파티션(`_TAG_DATA_N`)마다 독립 Worker가 실행된다 (`Promise.all`). Worker는 독립된 소스/대상 DB 연결을 보유한다.
 
 **Worker 상태 전이:**
 
-1. **RESOLVE_START** — 체크포인트를 읽어 시작 RID 결정.
-2. **STARTUP_INTEGRITY** — TAG 테이블 재시작 시, 대상 DB 기록 확인 후 안전한 재개 지점 산출.
-3. **STEADY_REPLICATION** — `read → append → checkpoint → sleep` 루프 반복.
+1. **RESOLVE_START** - 체크포인트를 읽어 시작 RID 결정.
+2. **STARTUP_INTEGRITY** - TAG 테이블 재시작 시, 대상 DB 기록 확인 후 안전한 재개 지점 산출.
+3. **STEADY_REPLICATION** - `read -> append -> checkpoint -> sleep` 루프 반복.
 
-체크포인트 파일: `data/{id}/{dataTable}.json`
+체크포인트 파일: `cgi-bin/data/{id}/{dataTable}.json`
 
 ---
 

@@ -2,7 +2,7 @@
 
 **프로젝트**: Machbase TAG / Log 테이블 복제 도구
 **런타임**: machbase-neo jsh (goja 기반 JavaScript 런타임)
-**최종 수정**: 2026-03-24 (CGI-direct 아키텍처 전환. neo-admin.js/manager.js/http_server.js 제거. CGI 파일이 conf.d 직접 접근. neo-repli.js가 단일 replicator 실행. Column.dataType() -> sqlType() 수정. 통합 테스트 jsh 환경으로 재작성.)
+**최종 수정**: 2026-03-31
 
 ---
 
@@ -59,7 +59,7 @@
 | Worker | data_table 1개당 생성되는 독립 복제 실행 단위 |
 | STARTUP_INTEGRITY | 재시작 직후 수행하는 중복 skip 및 시작 위치 보정 단계 (Tag 전용) |
 | STEADY_REPLICATION | 정상 복제 루프 |
-| maxRidInBatch | STEADY에서 checkpoint advance 기준이 되는 `_rid` 값 -- 배치 내 최대 RID |
+| rangeMaxRid | read() 결과에서 쿼리 범위 내 실제 최대 RID. 필터 전량 차단 시에도 > 0n이면 checkpoint 진행 |
 
 ---
 
@@ -69,19 +69,23 @@
 
 ```
 cgi-bin/
-├── neo-repli.js                  # replicator 진입점 -- conf.d/{name}.json 하나를 읽어 Replicator 실행
-├── replicators.js                # CGI: GET(목록 조회) / POST(등록)
-├── replicator.js                 # CGI: GET/PUT/DELETE ?name=xxx
-├── replicator-start.js           # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
-├── replicator-stop.js            # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+├── replication.js                # replicator 진입점 -- conf.d/{name}.json 하나를 읽어 Replicator 실행
+├── api/
+│   ├── rc.js                     # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
+│   └── rc/
+│       ├── list.js               # CGI: GET 목록 조회 (실행 상태 + 체크포인트 포함)
+│       ├── start.js              # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
+│       └── stop.js               # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
 ├── conf.d/
 │   └── {name}.json               # replicator별 설정 파일 (ReplicatorConfig 형식)
+├── data/                         # 런타임 생성 -- replicator별 파티션 cp 파일
+├── run/                          # 런타임 생성 -- PID 파일
 ├── src/
 │   ├── replication/
 │   │   ├── replicator.js         # Replicator -- discover -> syncMeta -> Workers 루프
 │   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
-│   ├── admin/
-│   │   └── cgi_util.js           # CGI 유틸 -- conf.d CRUD + parseQuery + readBody + reply
+│   ├── cgi/
+│   │   └── cgi_util.js           # CGI 유틸 (CGI class) -- conf.d CRUD + parseQuery + readBody + reply
 │   ├── db/
 │   │   ├── client.js             # MachbaseClient -- DB 연결/쿼리 (machcli 래퍼)
 │   │   ├── stream.js             # MachbaseStream -- append 스트림 래퍼
@@ -92,25 +96,25 @@ cgi-bin/
 │       ├── logger.js             # Logger -- 날짜 로테이션, stdout/file 출력
 │       ├── retry.js              # RetryHandler
 │       ├── json_file.js          # JsonFile -- atomic read/write
-│       └── signal.js             # (미사용) 구 signal 모듈
-├── data/                         # 런타임 생성 -- replicator별 파티션 cp 파일 저장 (/work/data/ 고정)
+│       └── signal.js             # registerSignals -- SIGTERM/SIGINT 핸들러
 └── docs/
     ├── PROJECT.md                # 본 문서
-    └── API.md                    # CGI REST API 명세
+    ├── API.md                    # CGI REST API 명세
+    └── JSH_REFERENCE.md          # jsh 런타임 API 참조
 ```
 
 ### 2.2 컴포넌트 구성
 
 ```
 machbase-neo HTTP 서버
-  └─ CGI 요청 -> replicators.js / replicator.js / replicator-start.js / replicator-stop.js
-                   └─ cgi_util.js: conf.d 직접 CRUD (listConfigs / readConfig / writeConfig / deleteConfig)
+  └─ CGI 요청 -> api/rc.js / api/rc/list.js / api/rc/start.js / api/rc/stop.js
+                   └─ cgi_util.js (CGI class): conf.d 직접 CRUD
 
 사용자 (jsh 직접 실행)
-  └─ neo-repli.js <conf.d/{name}.json>
+  └─ replication.js <conf.d/{name}.json>
        └─ Replicator
            ├─ discover() -- 소스/대상 스키마 수집, 파티션 목록 조회
-           ├─ syncMeta() -- TAG 메타 동기화 (TAG 전용)
+           ├─ syncMeta() -- TAG META 동기화 (metaSync !== false 시에만 실행)
            └─ runWorkers()
                └─ Worker x N  (Promise.all -- cooperative multitasking)
                    ├─ TagDataTable/LogTable -- 소스 DB 읽기 (machcli 동기)
@@ -160,9 +164,9 @@ machcli DB 쿼리는 동기(blocking)이므로 진정한 병렬 실행이 아니
 
 **Replicator 레벨**
 ```
-neo-repli.js <config> -> Replicator.start()
+replication.js <config> -> Replicator.start()
   while(!shutdown):
-    discover() -> syncMeta(TAG only) -> runWorkers()
+    discover() -> syncMeta(TAG only, metaSync !== false) -> runWorkers()
       (에러 -> AbortController 전체 취소) -> 재시작
   -> process.exit(0)
 ```
@@ -200,6 +204,7 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 | `target.autoCreate` | boolean | | false | 대상 테이블 미존재 시 src 스키마로 자동 생성 |
 | `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
 | `ridAfter` | number\|null | | null | `startMode: "ridAfter"` 시 기준 RID |
+| `metaSync` | boolean\|null | | false | TAG META 동기화 여부. `false`=비활성화 |
 | `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |
 | `queryLimit` | number | | 5000 | 배치당 최대 레코드 수 |
 | `ridRangeSize` | number | | 50000 | RID 범위 힌트 크기 |
@@ -249,6 +254,7 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
   },
   "startMode": "now",
   "ridAfter": null,
+  "metaSync": false,
   "pollIntervalMs": 1000,
   "queryLimit": 5000,
   "ridRangeSize": 50000,
@@ -261,61 +267,74 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 
 ### 3.5 체크포인트 파일 포맷
 
-**저장 경로**: `/work/data/{replicatorId}/{dataTable}.json`
+**저장 경로**: `cgi-bin/data/{replicatorId}/{dataTable}.json`
 
 ```json
 {
-  "lastSuccessRid": "12345678",
-  "sourceHost": "192.168.1.183",
-  "sourceTable": "TAG"
+  "version": 1,
+  "source": {
+    "server": "192.168.1.183",
+    "table": "TAG",
+    "dataTable": "_TAG_DATA_0"
+  },
+  "checkpoint": {
+    "lastSuccessRid": "12345678",
+    "updatedAt": "2026-03-31T12:00:00.000Z"
+  }
 }
 ```
 
 - `lastSuccessRid`: BigInt를 string으로 직렬화
-- 경로 고정 (`/work/data/` = `/home/machbase/repli/data/`), 설정 불필요
+- `source.dataTable` 불일치 시 손상으로 처리하고 무효화
+- atomic write (`.tmp` -> `renameSync`)
 
 ---
 
 ## 4. 모듈 명세
 
-### M1. neo-repli.js -- 진입점
+### M1. replication.js -- 진입점
 
 ```bash
-../machbase-neo/machbase-neo jsh neo-repli.js <conf.d/{name}.json>
+../machbase-neo/machbase-neo jsh cgi-bin/replication.js <conf.d/{name}.json>
 ```
 
 - conf.d/{name}.json을 읽어 `Replicator` 생성 및 실행
-- `process.addShutdownHook`: Ctrl+C -> `replicator.shutdown()` -> `process.exit(0)`
+- PID 파일: `cgi-bin/run/{configName}.pid`
+- `process.addShutdownHook`: Ctrl+C -> PID 파일 삭제 -> `replicator.shutdown()` -> `process.exit(0)`
 - ROOT 경로: `path.resolve(path.dirname(process.argv[1]))` (jsh에서 `__dirname` 미제공)
 
-### M2. CGI 파일 (replicators.js, replicator.js, replicator-start.js, replicator-stop.js)
+### M2. CGI 파일 (api/rc.js, api/rc/list.js, api/rc/start.js, api/rc/stop.js)
 
-- 모두 `cgi_util.js`의 `{ listConfigs, readConfig, writeConfig, deleteConfig, parseQuery, readBody, reply }` 사용
+- 모두 `cgi_util.js`의 `CGI` class 사용
 - `'use strict'` 없음 (jsh에서 top-level `return` 사용 시 silent 실패)
 - 조건 분기는 `if/else` (top-level `return` 금지)
 - API 상세는 `docs/API.md` 참조
 
-### M3. cgi_util.js -- CGI 유틸
+### M3. cgi_util.js -- CGI 유틸 (CGI class)
 
 ```js
-listConfigs()              // conf.d/*.json 파일명 목록 (server.json 제외)
-readConfig(name)           // conf.d/{name}.json 읽기, 없으면 null
-writeConfig(name, config)  // conf.d/{name}.json atomic write (tmp -> rename)
-deleteConfig(name)         // conf.d/{name}.json 삭제
-parseQuery()               // process.env.get('QUERY_STRING') 파싱 -> { key: value }
-readBody()                 // /dev/stdin 에서 JSON body 읽기
-reply(status, data)        // CGI 응답 출력 (Status: / Content-Type: / Content-Length: + body)
+CGI.listConfigs()              // conf.d/*.json 파일명 목록 (server.json 제외)
+CGI.readConfig(name)           // conf.d/{name}.json 읽기, 없으면 null
+CGI.writeConfig(name, config)  // conf.d/{name}.json atomic write (tmp -> rename)
+CGI.deleteConfig(name)         // conf.d/{name}.json 삭제
+CGI.parseQuery()               // process.env.get('QUERY_STRING') 파싱 -> { key: value }
+CGI.readBody()                 // process.stdin.read() 에서 JSON body 읽기
+CGI.reply(data)                // CGI 응답 출력 (Content-Type: application/json + body)
+CGI.isRunning(name)            // run/{name}.pid 파일 존재 여부
+CGI.readCheckpoints(configId)  // data/{configId}/*.json -> { [dataTable]: lastSuccessRid }
 ```
 
-- `CONF_DIR`: `path.join(process.cwd(), 'cgi-bin', 'conf.d')` (process.cwd() = `/work`)
+- ROOT: `_argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length)`
+- `CONF_DIR`: `path.join(ROOT, 'conf.d')`
+- `RUN_DIR`: `path.join(ROOT, 'run')`
+- `DATA_DIR`: `path.join(ROOT, 'data')`
 - 환경변수: `process.env.get('QUERY_STRING')` (jsh에서 `process.env.KEY` 접근 불가)
-- byte 길이: `unescape(encodeURIComponent(body)).length` (jsh에 Buffer 없음)
 
 ### M4. Replicator (`src/replication/replicator.js`)
 
 ```js
 const replicator = new Replicator(config, shutdownFlag);
-replicator.start()   // async, 메인 루프 실행
+replicator.start()     // async, 메인 루프 실행
 replicator.shutdown()  // shutdownFlag.value = true
 ```
 
@@ -323,7 +342,7 @@ replicator.shutdown()  // shutdownFlag.value = true
 ```
 while(!shutdown):
   1. discover()   -- 소스/대상 타입/스키마/파티션 조회
-  2. syncMeta()   -- TAG 전용: 태그 메타 동기화 (name, metadata 컬럼)
+  2. syncMeta()   -- TAG 전용, metaSync !== false 시에만 실행
   3. runWorkers() -- Worker x N 병렬 실행 (Promise.all)
   -> 에러 시 5초 대기 후 재시작
 ```
@@ -336,6 +355,7 @@ while(!shutdown):
 - source.columns에 NAME/TIME 누락 (TAG) -> null 반환, job skip
 
 **syncMeta()**: 소스의 TAG META 값을 대상에 동기화 (NAME rename, metadata 컬럼 값 일치)
+- `metaSync` 설정이 `false`(기본값)이면 실행하지 않음
 
 ### M5. Worker (`src/replication/worker.js`)
 
@@ -348,7 +368,7 @@ worker.run(signal)  // async
 
 ```
 RESOLVE_START:
-  - CheckpointStore.load(dataTable)
+  - CheckpointStore.load()
   - cp 존재 -> startRid = lastSuccessRid + 1n
   - cp 없음 -> startMode 기준 (full=0n, now=srcMaxRid+1n, ridAfter=BigInt(ridAfter))
   - TAG: srcTable.cacheTagMetaAll()
@@ -358,14 +378,19 @@ STARTUP_INTEGRITY (TAG + cp 존재 + integrity !== false):
   - dstTable.findFirstMissRow() 로 대상 DB 존재 확인
   - firstMiss 발견 -> safeCpRid 저장 후 STEADY 진입
   - 모든 행 확인 완료 -> STEADY 진입
+  - 필터 전량 차단 배치 -> checkpoint 진행 후 계속
 
 STEADY_REPLICATION:
   while(!shutdown):
     srcTable.read(startRid, batchSize, ridRangeSize, ...)
-    rows 없음 -> sleepOrShutdown(pollIntervalMs) -> continue
-    rows 있음 -> _applyTransform() -> dstTable.append() -> checkpointStore.save()
-    startRid = maxRidInBatch + 1n
+    -> { rows, rangeMaxRid, err }
+    rows 없음 + rangeMaxRid > 0n -> checkpoint(rangeMaxRid) -> continue (sleep 없음)
+    rows 없음 + rangeMaxRid == 0n -> sleepOrShutdown(pollIntervalMs)
+    rows 있음 -> _applyTransform() -> dstTable.append() -> checkpoint(rangeMaxRid)
+    startRid = rangeMaxRid + 1n
 ```
+
+**체크포인트 경로**: `cgi-bin/data/{config.id}/{dataTable}.json`
 
 ### M6. MachbaseClient (`src/db/client.js`)
 
@@ -374,33 +399,42 @@ STEADY_REPLICATION:
 ```js
 client.connect()
 client.close()
-client.selectTableType(tableName)      // { type: "TAG"|"LOG"|"UNSUPPORTED" }
-client.selectTagDataTables(table)      // [{ data_table, table_id }]
+client.selectTableType(tableName)                    // { type: "TAG"|"LOG"|"UNSUPPORTED" }
+client.selectTagDataTables(table)                    // [{ data_table }]
+client.selectAllTables()                             // [{ NAME, TYPE }] TAG/LOG 목록
 client.selectColumnsByTableName(name)
-client.selectColumnsByTableId(id)
-client.selectMaxRid(tableName)         // BigInt
-client.selectTagMeta(table, cols, nameFilter?)  // [{ _ID, name, ...metaCols }]
-client.updateTagMeta(table, oldName, sets)
+client.selectMaxRid(tableName)                       // BigInt
+client.selectTagNames(logicalTable)                  // [{ _ID, name }]
+client.selectTagMeta(logicalTable, metaColNames)     // [{ _ID, name, ...metaCols }]
+client.selectTagMetaById(logicalTable, tagId, cols)  // { _ID, name, ...} | null
+client.updateTagMeta(logicalTable, oldName, sets)
 client.createTagTable(tableName, schema)
 client.createLogTable(tableName, schema)
+client.openAppender(table, columns)                  // Appender
+client.execute(sql, ...values)
 ```
 
 ### M7. CheckpointStore (`src/db/checkpoint.js`)
 
 ```js
-checkpointStore.load(dataTable)   // { cp, exists }
-checkpointStore.save(dataTable, cp, stats, opts)
+new CheckpointStore(directory, dataTable)  // dataTable을 생성자에서 고정
+store.load()                               // { cp, exists, err }
+store.save(cp, stats, opts)
 ```
 
 - 파일 경로: `{directory}/{dataTable}.json`
+- `cp` 구조: `{ lastSuccessRid: BigInt, sourceServer?: string, sourceTable?: string }`
 - atomic write (`.tmp` -> `renameSync`)
 - BigInt(lastSuccessRid) <-> string 변환 내장
+- 파일 내 `source.dataTable` 불일치 시 손상으로 처리하고 `{ cp: null, exists: false, err }` 반환
 
 ### M8. TagMetaCache / LogTable / TagTable / TagDataTable (`src/db/table.js`)
 
-- `TagDataTable.read(startRid, limit, rangeSize, nameRule, sourceColumns, filter)`: RID_RANGE 힌트 쿼리, filter WHERE절 적용, canonical name resolve
-- `TagTable.findFirstMissRow(rows, client, dataTable)`: VOLATILE TABLE + JOIN으로 첫 miss row 탐색 (STARTUP_INTEGRITY 전용)
-- `LogTable.read(startRid, limit, rangeSize, filter)`: RID_RANGE 힌트 쿼리, filter WHERE절 적용
+- `TagDataTable.read(startRid, limit, rangeSize, nameRule, sourceColumns, filter)`:
+  - RID_RANGE 힌트 쿼리, filter WHERE절 적용, canonical name resolve
+  - 반환: `{ rows, rangeMaxRid, err }` -- `rangeMaxRid`는 범위 내 실제 최대 RID
+- `TagTable.findFirstMissRow(resolved, client, suffix)`: VOLATILE TABLE + JOIN으로 첫 miss row 탐색 (STARTUP_INTEGRITY 전용)
+- `LogTable.read(startRid, limit, rangeSize, filter)`: RID_RANGE 힌트 쿼리, `{ rows, rangeMaxRid, err }` 반환
 
 ### M9. RetryHandler (`src/lib/retry.js`)
 
@@ -411,6 +445,15 @@ retry.isExhausted(attempt)               // bool
 retry.shouldRetry(err)                   // bool
 ```
 
+### M10. registerSignals (`src/lib/signal.js`)
+
+```js
+const { registerSignals } = require('./signal.js');
+registerSignals(shutdownFlag, timeoutMs);
+// SIGTERM / SIGINT 수신 -> shutdownFlag.value = true
+// timeoutMs 초과 시 process.exit(1) 강제 종료
+```
+
 ---
 
 ## 5. 핵심 동작 흐름
@@ -418,20 +461,20 @@ retry.shouldRetry(err)                   // bool
 ### 5.1 신규 replicator 등록 및 실행
 
 ```
-1. CGI POST /cgi-bin/replicators  { name, config }
-   -> cgi_util.writeConfig(name, config)
+1. CGI POST /cgi-bin/api/rc  { name, config }
+   -> CGI.writeConfig(name, config)
    -> conf.d/{name}.json 생성
 
 2. 수동 실행:
-   ../machbase-neo/machbase-neo jsh cgi-bin/neo-repli.js cgi-bin/conf.d/{name}.json
+   ../machbase-neo/machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/{name}.json
 ```
 
 ### 5.2 최초 실행 (startMode: "now")
 
 ```
-neo-repli.js -> Replicator.start()
+replication.js -> Replicator.start()
   discover(): TAG 타입 확인, 파티션 목록, 스키마 수집
-  syncMeta(): 태그 이름/메타 동기화
+  syncMeta(): metaSync !== false 시에만 실행
   runWorkers():
     Worker (파티션별):
       RESOLVE_START: cp 없음 -> startRid = srcMaxRid + 1n
@@ -454,6 +497,7 @@ Worker:
 
 ```
 process.addShutdownHook:
+  PID 파일 삭제
   replicator.shutdown() -> shutdownFlag.value = true
   Worker들: sleepOrShutdown() -> "shutdown" 반환 -> return
   Promise.all 완료 -> replicator.start() 루프 종료
@@ -473,8 +517,9 @@ process.addShutdownHook:
 | read 실패 (DB 에러) | Worker 종료 -> AbortController -> replicator 루프 재시작 |
 | append 실패 | RetryHandler 백오프 후 재시도, 한도 초과 시 Worker 종료 |
 | checkpoint 저장 실패 (onSaveFailure=continue) | 오류 로그 후 계속 (메모리 기준 rid 유지) |
-| RID 범위 내 데이터 없음 | sleep(pollIntervalMs) 후 재시도 |
-| 빈 배치 반복 (catchUpRid 패턴) | startRid < catchUpRid 이면 sleep 없이 전진 |
+| RID 범위 내 데이터 없음 (rangeMaxRid=0) | sleep(pollIntervalMs) 후 재시도 |
+| 필터 전량 차단 (rows=0, rangeMaxRid>0) | checkpoint(rangeMaxRid) 진행 후 sleep 없이 continue |
+| checkpoint dataTable 불일치 | 손상 처리 -> cp=null, exists=false -> startMode 기준으로 시작 |
 
 ---
 
@@ -496,7 +541,7 @@ process.addShutdownHook:
 | 항목 | TAG 테이블 | LOG 테이블 |
 |------|-----------|-----------|
 | 데이터 파티션 | `_TAG_DATA_0` ~ `_TAG_DATA_N` (N개 Worker) | 단일 테이블 (1개 Worker) |
-| 메타 동기화 | `syncMeta()` 실행 (name, metadata 컬럼) | 없음 |
+| 메타 동기화 | `syncMeta()` 실행 (metaSync !== false 시) | 없음 |
 | STARTUP_INTEGRITY | 실행 (cp 존재 + integrity != false) | 없음 |
 | read() | RID_RANGE 힌트 + tag_id -> canonical name 변환 | RID_RANGE 힌트 |
 | append() | TagTable (논리 테이블에 append) | LogTable |
@@ -515,16 +560,18 @@ process.addShutdownHook:
 | B-01 | Worker별 독립 machcli 연결 | 단일 연결에서 동시 query + append 시 충돌 오류 |
 | B-02 | VOLATILE TABLE + JOIN으로 miss row 탐색 | TAG 테이블 JOIN 드라이빙 불가, PK 없음 |
 | B-03 | TIME 값은 `?` 파라미터 바인딩으로 전달 | BigInt 리터럴 SQL 삽입 시 정밀도 손실 |
-| B-04 | catchUpRid 패턴 | ridRangeSize 단위 빈 배치마다 sleep 발생 시 catch-up 지연 방지 |
-| B-05 | `c.sqlType()` 사용 (구 `c.dataType()` 제거) | Column 클래스에 dataType() 미존재. sqlType()이 동일 역할 수행 |
+| B-04 | 필터 전량 차단 시 sleep 없이 checkpoint 진행 | ridRangeSize 단위 빈 배치마다 sleep 발생 시 catch-up 지연 방지 |
+| B-05 | `c.sqlType()` 사용 | Column 클래스에 dataType() 미존재. sqlType()이 동일 역할 수행 |
+| B-06 | CheckpointStore 생성자에 dataTable 포함 | load/save 인자 누락 방지, 파일 내 source.dataTable 검증 가능 |
 | C-01 | 로그 메시지 ASCII만 사용 | jsh fs.write 유니코드 특수문자 출력 문제 |
 
 ---
 
 ## 10. 미결 사항 및 향후 과제
 
-1. **replicator-start/stop CGI**: 현재 503 반환 (수동 실행 안내). 데몬 연동 구현 예정.
+1. **replicator start/stop CGI**: 현재 503 반환 (수동 실행 안내). 데몬 연동 구현 예정.
 2. **onSaveFailure="abort"**: checkpoint 저장 실패 시 abort 동작 미구현 (continue와 동일).
+3. **readBody CONTENT_LENGTH**: 현재 `process.stdin.read()` 전체 읽기 사용 중 (TODO 주석). neo-regress 통과 후 `process.stdin.read(len)` 방식으로 전환 필요.
 
 ---
 
@@ -546,26 +593,26 @@ process.addShutdownHook:
 # 실행 위치: /home/machbase/repli
 
 # GET 목록
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/replicators.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js
 
 # GET 단건
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
 
 # POST 등록
 echo '{"name":"repli-b","config":{...}}' | \
-  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST cgi-bin/replicators.js
+  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST cgi-bin/api/rc.js
 
 # PUT 수정
 echo '{...config...}' | \
-  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
 
 # DELETE 삭제
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a cgi-bin/replicator.js
+../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
 ```
 
 ### replicator 실행
 
 ```bash
 # 실행 위치: /home/machbase/repli
-../machbase-neo/machbase-neo jsh cgi-bin/neo-repli.js cgi-bin/conf.d/repli-a.json
+../machbase-neo/machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/repli-a.json
 ```
