@@ -1,0 +1,775 @@
+@import "tailwindcss";
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Neo Design System — Tailwind CSS v4 Base
+   ══════════════════════════════════════════════════════════════════════════════
+
+   이 파일 하나를 복사하면 어떤 Tailwind v4 프로젝트에서도
+   neo-web 디자인 시스템과 동일한 스타일링을 적용할 수 있습니다.
+
+   ── 요구사항 ──────────────────────────────────────────────────────────────────
+   - Tailwind CSS v4 + @tailwindcss/vite (or postcss)
+   - 폰트: Pretendard (본문), D2Coding (코드) — Google Fonts 또는 로컬
+   - 아이콘: Material Symbols Outlined — Google Fonts (선택)
+
+   ── 구조 ──────────────────────────────────────────────────────────────────────
+   1. @theme        — 디자인 토큰 (색상, 간격, 타이포, radius, shadow, 사이즈)
+   2. Global Base   — body, input, select, checkbox 등 태그 레벨 자동 적용
+   3. Components    — 클래스 기반 UI 컴포넌트
+
+   ── 컴포넌트 사용법 ──────────────────────────────────────────────────────────
+
+   ▸ Button (사이드/헤더용 — 25px height, 12px font)
+     <button class="btn btn-primary">Save</button>
+     <button class="btn btn-danger">Delete</button>
+     <button class="btn btn-ghost">Cancel</button>
+
+   ▸ Button (콘텐츠 영역용 — 32px height = input과 동일, 13px font)
+     <button class="btn btn-content btn-primary">Create Job</button>
+     <button class="btn btn-content btn-ghost">Cancel</button>
+     <button class="btn btn-content btn-danger">Delete</button>
+
+   ▸ Button (작은 인라인 — 26px height)
+     <button class="btn btn-sm btn-ghost">Reset all</button>
+
+   ▸ Input (32px height — 글로벌 <input> 태그에 자동 적용됨)
+     <input type="text" class="w-full" placeholder="Enter value" />
+     <select class="w-full"><option>Option</option></select>
+     ※ 별도 .input 클래스 없이도 <input>, <select> 태그만으로 스타일 적용
+     ※ .input 클래스는 비-input 요소에 input 스타일을 줄 때 사용
+
+   ▸ Label
+     <label class="label">Field Name</label>
+     → block, 13px, medium weight, secondary color, mb 8px
+
+   ▸ Checkbox + Label
+     <label class="checkbox-label">
+       <input type="checkbox" /> Enable option
+     </label>
+     → inline-flex, 가운데 정렬, gap 8px, pointer cursor
+
+   ▸ Badge
+     <span class="badge">Default</span>
+     <span class="badge badge-success">Running</span>
+     <span class="badge badge-error">Failed</span>
+     <span class="badge badge-warning">Warning</span>
+     <span class="badge badge-primary">Info</span>
+     <span class="badge badge-muted">Stopped</span>
+     → 12px, border + 배경색, rounded 4px, padding 4px 8px
+
+   ▸ Titles (크기 계층)
+     <h1 class="page-title">Page Title</h1>       → 17px semibold
+     <h2 class="card-title">Card Title</h2>        → 15px semibold, flex+gap (아이콘 포함 가능)
+     <h3 class="section-title">Sub Title</h3>      → 13px semibold
+
+   ▸ Card (섹션 컨테이너)
+     <div class="card">
+       <div class="card-title">
+         <span class="material-symbols-outlined">database</span>
+         Source
+       </div>
+       <label class="label">Host</label>
+       <input type="text" class="w-full" />
+     </div>
+     → bg surface-alt, border, rounded 4px, padding 20px
+
+   ▸ Modal
+     <div class="modal-overlay">
+       <div class="modal">
+         <div class="modal-title">Confirm</div>
+         <div class="modal-body">Are you sure?</div>
+         <div class="modal-footer">
+           <button class="btn btn-content btn-ghost">Cancel</button>
+           <button class="btn btn-content btn-danger">Delete</button>
+         </div>
+       </div>
+     </div>
+
+   ▸ Toast
+     <div class="toast toast-success">
+       <span class="material-symbols-outlined">check_circle</span>
+       <span>Saved successfully</span>
+     </div>
+     <div class="toast toast-error">...</div>
+     → 300px min-width, shadow-xl, padding 12px 16px
+
+   ▸ Switch (토글)
+     <div class="switch"><div class="switch-thumb"></div></div>           → OFF
+     <div class="switch active"><div class="switch-thumb"></div></div>    → ON
+     → 28x13px, hover 시 배경+thumb 색상 변화, active 시 파란색
+
+   ▸ Side Panel (사이드바)
+     <aside class="side">
+       <div class="side-header">
+         <span class="material-symbols-outlined text-primary">apps</span>
+         <span>App Name</span>
+       </div>
+       <div class="px-3 py-3">
+         <button class="btn btn-primary w-full">+ New Item</button>
+       </div>
+       <div class="side-section-title">Section</div>
+       <nav class="flex-1 overflow-y-auto px-3 py-1.5">
+         <div class="side-item">Item 1</div>
+         <div class="side-item active">Item 2 (selected)</div>
+         <div class="side-item">Item 3</div>
+       </nav>
+     </aside>
+     → side-header: 41px, side-section-title: 22px, side-item: 28px
+     → Standalone 사용 시 aside에 border-r border-border 추가
+     → Embedded (neo-web 내부) 사용 시 border 없이 사용
+
+   ▸ 콘텐츠 페이지 레이아웃
+     <div class="bg-surface-alt h-screen overflow-y-auto">
+       <div class="p-5">
+         <div class="flex items-center gap-2 mb-6">
+           <button class="btn btn-ghost p-1"><span class="material-symbols-outlined">arrow_back</span></button>
+           <h1 class="page-title">Edit Job</h1>
+         </div>
+         <div class="space-y-5">
+           <div class="card">...</div>
+           <div class="card">...</div>
+         </div>
+       </div>
+     </div>
+     → 콘텐츠 배경은 bg-surface-alt (#252525), 사이드는 bg-surface (#1e1e1e)
+
+   ── 아이콘 사이즈 ─────────────────────────────────────────────────────────────
+   기본 (18px):  <span class="material-symbols-outlined">edit</span>
+   작은 (14px):  <span class="material-symbols-outlined icon-sm">close</span>
+   큰 (22px):    <span class="material-symbols-outlined icon-lg">inbox</span>
+
+   ── 사이즈 레퍼런스 ───────────────────────────────────────────────────────────
+   font-size-xs:   10px    font-size-sm:   12px    font-size-base: 13px
+   font-size-md:   15px    font-size-lg:   17px    font-size-xl:   30px
+   button:         25px    button-content: 32px    button-sm:      26px
+   input/select:   32px    checkbox:       16px    switch:         28×13px
+   side-header:    41px    side-section:   22px    side-item:      28px
+   radius-base:    4px     spacing grid:   4px 단위
+
+   Token source: neo-web/src/design-system/tokens/
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+
+/* ┌─────────────────────────────────────────────────────────────────────────┐
+   │  1. DESIGN TOKENS (@theme)                                             │
+   │  Tailwind 유틸리티로 사용 가능: bg-surface, text-on-surface, ...       │
+   └─────────────────────────────────────────────────────────────────────────┘ */
+
+@theme {
+
+  /* ─── Surface / Background ─── */
+  --color-surface: #1e1e1e;
+  --color-surface-alt: #252525;
+  --color-surface-elevated: #2c2c2c;
+  --color-surface-panel: #252525;
+  --color-surface-input: #353535;
+  --color-surface-hover: rgba(255, 255, 255, 0.08);
+  --color-surface-hover-light: rgb(75, 75, 75);
+  --color-surface-hover-block: rgba(255, 255, 255, 0.13);
+  --color-surface-active: rgb(0, 83, 160);
+  --color-surface-active-hover: rgb(0, 108, 210);
+  --color-surface-tab-active: #252525;
+  --color-surface-tab-hover: rgba(255, 255, 255, 0.08);
+  --color-surface-sub-tab-active: #2e2e2e;
+
+  /* ─── Text ─── */
+  --color-on-surface: #f1f1f1;
+  --color-on-surface-secondary: #c4c4c4;
+  --color-on-surface-tertiary: #a3a3a3;
+  --color-on-surface-disabled: #818181;
+  --color-on-surface-muted: #727272;
+  --color-on-surface-hint: #aaaaaa;
+  --color-on-surface-active: rgb(243, 243, 243);
+  --color-on-primary: #f1f1f1;
+  --color-on-success: #1e1e1e;
+  --color-on-error: #1e1e1e;
+  --color-on-warning: #1e1e1e;
+
+  /* ─── Border ─── */
+  --color-border: rgba(255, 255, 255, 0.13);
+  --color-border-light: #f1f1f125;
+  --color-border-medium: #626263;
+  --color-border-focus: rgb(0, 108, 210);
+  --color-border-active: #005fb8;
+
+  /* ─── Primary ─── */
+  --color-primary: #005fb8;
+  --color-primary-hover: #0075e2;
+  --color-primary-light: rgb(0, 108, 210);
+  --color-primary-dark: rgb(0, 83, 160);
+
+  /* ─── Semantic ─── */
+  --color-success: #71e071;
+  --color-success-light: #9df486;
+  --color-success-muted: rgba(113, 224, 113, 0.15);
+  --color-error: rgb(255, 83, 83);
+  --color-error-light: #fa6464;
+  --color-error-muted: rgba(255, 83, 83, 0.15);
+  --color-warning: #ff9800;
+  --color-warning-muted: rgba(255, 152, 0, 0.15);
+  --color-info: #005fb8;
+  --color-danger: #ff4747;
+
+  /* ─── Status ─── */
+  --color-status-true: #9df486;
+  --color-status-false: #fa6464;
+  --color-status-none: #717171;
+
+  /* ─── Switch ─── */
+  --color-switch-off: rgba(255, 255, 255, 0.13);
+  --color-switch-on: #005fb8;
+  --color-switch-on-hover: #0075e2;
+  --color-switch-thumb: rgba(255, 255, 255, 0.3);
+  --color-switch-thumb-active: #f1f1f1;
+  --color-switch-border: rgba(255, 255, 255, 0.13);
+  --color-switch-border-active: #0075e2;
+
+  /* ─── Dropdown / Menu ─── */
+  --color-dropdown: #2d2d2d;
+  --color-dropdown-border: rgba(255, 255, 255, 0.13);
+  --color-dropdown-option-hover: #3d3d3d;
+  --color-menu: #2d2d2d;
+  --color-menu-item-hover: #3d3d3d;
+  --color-menu-item-text: #e8e8e8;
+
+  /* ─── Scrollbar ─── */
+  --color-scrollbar-thumb: #686868;
+  --color-scrollbar-thumb-hover: #5c5c5c;
+  --color-scrollbar-track: transparent;
+
+  /* ─── Common ─── */
+  --color-black: #000000;
+  --color-white: #ffffff;
+  --color-transparent: transparent;
+
+
+  /* ─── Spacing (4px grid) ─── */
+  --spacing-0: 0;
+  --spacing-1: 1px;
+  --spacing-2: 2px;
+  --spacing-4: 4px;
+  --spacing-6: 6px;
+  --spacing-8: 8px;
+  --spacing-10: 10px;
+  --spacing-12: 12px;
+  --spacing-16: 16px;
+  --spacing-20: 20px;
+  --spacing-24: 24px;
+  --spacing-25: 25px;
+  --spacing-26: 26px;
+  --spacing-32: 32px;
+  --spacing-36: 36px;
+  --spacing-40: 40px;
+  --spacing-48: 48px;
+  --spacing-50: 50px;
+  --spacing-80: 80px;
+
+
+  /* ─── Typography ─── */
+  --font-family-default: 'Pretendard', sans-serif;
+  --font-family-mono: 'D2Coding', monospace;
+
+  --font-size-xs: 10px;    /* badge-sm, hints */
+  --font-size-sm: 12px;    /* buttons, badges, side-header */
+  --font-size-base: 13px;  /* body, labels, inputs, side-items */
+  --font-size-md: 15px;    /* card-title */
+  --font-size-lg: 17px;    /* page-title, modal-title */
+  --font-size-xl: 30px;    /* hero */
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+
+  /* ─── Border Radius ─── */
+  --radius-none: 0;
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-base: 4px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-circle: 50%;
+  --radius-round: 20px;
+
+
+  /* ─── Shadows ─── */
+  --shadow-none: none;
+  --shadow-switch: 1px 2px 3px #00000020;
+  --shadow-sm: 0 2px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 4px 4px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 8px 8px rgba(0, 0, 0, 0.25);
+  --shadow-xl: 0 10px 25px rgba(0, 0, 0, 0.5);
+  --shadow-dropdown: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-overlay: 0 2px 8px rgba(0, 0, 0, 0.5);
+
+
+  /* ─── Component Sizes ─── */
+  --size-button-height: 25px;       /* .btn default */
+  --size-button-height-sm: 26px;    /* .btn-sm */
+  --size-input-height: 32px;        /* input, select, .btn-content */
+  --size-checkbox: 16px;
+  --size-switch-width: 28px;
+  --size-switch-height: 13px;
+  --size-switch-button: 10px;
+  --size-header-height: 40px;
+  --size-scrollbar: 5px;
+  --size-icon-sm: 14px;
+  --size-icon-base: 18px;
+
+
+  /* ─── Z-Index ─── */
+  --z-index-dropdown: 10;
+  --z-index-floating: 50;
+  --z-index-modal: 100;
+  --z-index-drawer: 200;
+  --z-index-tooltip: 1000;
+
+
+  /* ─── Transitions ─── */
+  --transition-duration-fast: 0.2s;
+  --transition-duration-normal: 0.3s;
+}
+
+
+/* ┌─────────────────────────────────────────────────────────────────────────┐
+   │  2. GLOBAL BASE STYLES                                                 │
+   │  <html> 태그에 자동 적용. 별도 클래스 불필요.                          │
+   └─────────────────────────────────────────────────────────────────────────┘ */
+
+*, *::before, *::after {
+  font-family: 'Pretendard', sans-serif;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Pretendard', sans-serif;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--color-surface);
+  color: var(--color-on-surface);
+}
+
+/* Element resets */
+button, input, select, textarea, label, span, a {
+  font-size: inherit;
+  font-family: inherit;
+  color: inherit;
+}
+
+button, [role="button"] {
+  cursor: pointer;
+  line-height: 1;
+}
+
+/* Input / Select / Textarea — 글로벌 기본 */
+input, select, textarea {
+  height: var(--size-input-height);
+  padding: 0 var(--spacing-12);
+  font-size: var(--font-size-base);
+  line-height: 1;
+  background-color: var(--color-surface-input);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  color: inherit;
+  transition: border-color 0.2s ease;
+}
+
+input::placeholder, textarea::placeholder { color: var(--color-on-surface-muted); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--color-border-focus); }
+input:disabled, select:disabled, textarea:disabled { opacity: 0.5; }
+
+textarea {
+  height: auto;
+  padding: var(--spacing-8) var(--spacing-12);
+  line-height: var(--line-height-normal);
+}
+
+input[type="checkbox"] {
+  width: var(--size-checkbox);
+  height: var(--size-checkbox);
+  padding: 0;
+  vertical-align: middle;
+  margin: 0;
+  accent-color: var(--color-primary);
+  border-radius: var(--radius-sm);
+}
+
+/* Select custom arrow */
+select {
+  padding-right: 2.5rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23a3a3a3' viewBox='0 0 16 16'%3E%3Cpath d='M4.646 5.646a.5.5 0 0 1 .708 0L8 8.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1rem;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+/* Monospace */
+code, pre, .monaco-editor, .xterm {
+  font-family: var(--font-family-mono);
+}
+
+/* Material Symbols */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+  font-size: var(--size-icon-base);
+  line-height: 1;
+  vertical-align: middle;
+}
+.material-symbols-outlined.icon-sm {
+  font-size: var(--size-icon-sm);
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 14;
+}
+.material-symbols-outlined.icon-lg { font-size: 22px; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: var(--size-scrollbar); height: var(--size-scrollbar); }
+::-webkit-scrollbar-track { background: var(--color-scrollbar-track); }
+::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-scrollbar-thumb-hover); }
+
+/* Animations */
+@keyframes slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate-slide-in { animation: slide-in var(--transition-duration-normal) ease-out; }
+.animate-fade-in  { animation: fade-in var(--transition-duration-fast) ease; }
+
+
+/* ┌─────────────────────────────────────────────────────────────────────────┐
+   │  3. COMPONENT CLASSES                                                  │
+   │  이 클래스만 사용하면 어떤 프로젝트에서도 동일한 UI가 나옵니다.       │
+   │                                                                         │
+   │  Button:    .btn .btn-content .btn-primary .btn-danger .btn-ghost .btn-sm│
+   │  Input:     .input .input-full                                          │
+   │  Label:     .label .checkbox-label                                      │
+   │  Badge:     .badge .badge-success .badge-error .badge-warning           │
+   │             .badge-primary .badge-muted                                 │
+   │  Title:     .page-title .card-title .section-title                      │
+   │  Card:      .card                                                       │
+   │  Modal:     .modal-overlay .modal .modal-title .modal-body .modal-footer│
+   │  Toast:     .toast .toast-success .toast-error                          │
+   │  Switch:    .switch .switch.active .switch-thumb                        │
+   │  Side:      .side .side-header .side-section-title .side-item           │
+   └─────────────────────────────────────────────────────────────────────────┘ */
+
+
+/* ─── Button ───
+   .btn              사이드/헤더용 (25px, 12px font)
+   .btn-content      콘텐츠 영역용 (32px = input height, 13px font)
+   .btn-primary      파란색 배경
+   .btn-danger       빨간색 배경
+   .btn-ghost        투명 배경, 호버 시 surface-hover
+   .btn-sm           작은 인라인 (26px)
+*/
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-4);
+  height: var(--size-button-height);
+  padding: 0 var(--spacing-16);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  line-height: 1;
+  border: none;
+  border-radius: var(--radius-base);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all 0.2s ease;
+  color: var(--color-on-surface);
+  background-color: transparent;
+}
+
+.btn:hover    { background-color: var(--color-surface-hover); }
+.btn:disabled { opacity: 0.4; pointer-events: none; }
+
+.btn-content {
+  height: var(--size-input-height);
+  font-size: var(--font-size-base);
+}
+
+.btn-primary      { background-color: var(--color-primary); color: var(--color-on-primary); }
+.btn-primary:hover { background-color: var(--color-primary-hover); }
+
+.btn-danger       { background-color: var(--color-danger); color: var(--color-on-error); }
+.btn-danger:hover  { background-color: var(--color-error-light); }
+
+.btn-ghost        { color: var(--color-on-surface-tertiary); background: transparent; border: 1px solid var(--color-border); }
+.btn-ghost:hover   { background-color: var(--color-surface-hover); border-color: var(--color-border-medium); }
+
+.btn-sm { height: var(--size-button-height-sm); font-size: var(--font-size-sm); padding: 0 var(--spacing-8); }
+
+
+/* ─── Input ─── */
+
+.input {
+  height: var(--size-input-height);
+  padding: 0 var(--spacing-12);
+  font-size: var(--font-size-base);
+  line-height: 1;
+  background-color: var(--color-surface-input);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  color: var(--color-on-surface);
+  transition: border-color 0.2s ease;
+}
+.input:focus       { outline: none; border-color: var(--color-border-focus); }
+.input::placeholder { color: var(--color-on-surface-muted); }
+.input:disabled    { opacity: 0.5; }
+.input-full        { width: 100%; }
+
+
+/* ─── Label ─── */
+
+.label {
+  display: block;
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  color: var(--color-on-surface-secondary);
+  margin-bottom: var(--spacing-8);
+  line-height: 1;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-8);
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  line-height: 1;
+  color: var(--color-on-surface);
+}
+
+
+/* ─── Badge ─── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-6);
+  padding: var(--spacing-4) var(--spacing-8);
+  border-radius: var(--radius-base);
+  border: 1px solid var(--color-border);
+  background-color: var(--color-surface-elevated);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+  color: var(--color-on-surface-secondary);
+}
+
+.badge-success { border-color: rgba(113, 224, 113, 0.3); background-color: var(--color-success-muted); color: var(--color-success); }
+.badge-error   { border-color: rgba(255, 83, 83, 0.3);   background-color: var(--color-error-muted);   color: var(--color-error); }
+.badge-warning { border-color: rgba(255, 152, 0, 0.3);   background-color: var(--color-warning-muted); color: var(--color-warning); }
+.badge-primary { border-color: rgba(0, 95, 184, 0.3);    background-color: rgba(0, 95, 184, 0.15);    color: var(--color-primary); }
+.badge-muted   { border-color: rgba(128, 128, 128, 0.2); background-color: rgba(128, 128, 128, 0.1);  color: var(--color-on-surface-disabled); }
+
+
+/* ─── Titles ─── */
+
+.page-title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--color-on-surface);
+  line-height: 1;
+}
+
+.card-title {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--color-on-surface);
+  margin-bottom: var(--spacing-12);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-8);
+  line-height: 1;
+}
+
+.section-title {
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-on-surface);
+  line-height: 1;
+}
+
+
+/* ─── Card ─── */
+
+.card {
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  padding: var(--spacing-20);
+}
+
+
+/* ─── Modal ─── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-index-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal {
+  background-color: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  padding: var(--spacing-16);
+  box-shadow: var(--shadow-xl);
+  max-width: 400px;
+  width: 100%;
+}
+
+.modal-title  { font-size: var(--font-size-lg); font-weight: 600; color: var(--color-on-surface); margin-bottom: var(--spacing-8); }
+.modal-body   { font-size: var(--font-size-base); color: var(--color-on-surface-secondary); margin-bottom: var(--spacing-16); }
+.modal-footer { display: flex; justify-content: flex-end; gap: var(--spacing-8); }
+
+
+/* ─── Toast ─── */
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-8);
+  padding: var(--spacing-12) var(--spacing-16);
+  border-radius: var(--radius-base);
+  border: 1px solid var(--color-border);
+  background-color: var(--color-surface-elevated);
+  color: var(--color-on-surface);
+  font-size: var(--font-size-base);
+  min-width: 300px;
+  box-shadow: var(--shadow-xl);
+}
+
+.toast-success { border-color: rgba(113, 224, 113, 0.3); color: var(--color-success); }
+.toast-error   { border-color: rgba(255, 83, 83, 0.3);   color: var(--color-error); }
+
+
+/* ─── Switch ─── */
+
+.switch {
+  position: relative;
+  width: var(--size-switch-width);
+  height: var(--size-switch-height);
+  border-radius: 9999px;
+  background-color: var(--color-switch-off);
+  border: 1px solid var(--color-switch-border);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.switch:hover            { background-color: rgba(255, 255, 255, 0.25); }
+.switch.active           { background-color: var(--color-switch-on); border-color: var(--color-switch-border-active); }
+.switch.active:hover     { background-color: var(--color-switch-on-hover); }
+.switch:hover .switch-thumb        { background-color: var(--color-on-surface-tertiary); }
+.switch.active:hover .switch-thumb { background-color: #ffffff; }
+
+.switch-thumb {
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  width: var(--size-switch-button);
+  height: var(--size-switch-button);
+  border-radius: 9999px;
+  background-color: var(--color-switch-thumb);
+  transition: all 0.2s ease;
+  box-shadow: var(--shadow-switch);
+}
+
+.switch.active .switch-thumb {
+  left: auto;
+  right: 2px;
+  background-color: var(--color-switch-thumb-active);
+}
+
+
+/* ─── Side Panel ─── */
+
+.side {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--color-surface-alt);
+  font-size: var(--font-size-base);
+  line-height: 1;
+}
+
+.side-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-6);
+  height: 41px;
+  min-height: 41px;
+  padding: 0 var(--spacing-16);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-on-surface);
+  flex-shrink: 0;
+}
+
+.side-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-surface-alt);
+  min-height: 0;
+}
+
+.side-section-title {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--spacing-16);
+  border-bottom: 1px solid var(--color-border);
+  background-color: var(--color-surface);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-on-surface-secondary);
+  flex-shrink: 0;
+}
+
+.side-item {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--spacing-8);
+  border-radius: var(--radius-base);
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  color: var(--color-on-surface-secondary);
+  transition: background-color 0.15s ease;
+}
+
+.side-item:hover  { background-color: var(--color-surface-hover-block); }
+.side-item.active { background-color: var(--color-surface-active); color: var(--color-on-primary); font-weight: 600; }
