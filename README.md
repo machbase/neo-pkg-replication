@@ -24,10 +24,12 @@ repli/
 │   ├── replication.js            # replicator 진입점 (PID 파일 관리)
 │   ├── api/
 │   │   ├── rc.js                 # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
-│   │   └── rc/
-│   │       ├── list.js           # CGI: GET 목록 조회
-│   │       ├── start.js          # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
-│   │       └── stop.js           # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+│   │   ├── rc/
+│   │   │   ├── list.js           # CGI: GET 목록 조회
+│   │   │   ├── start.js          # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
+│   │   │   └── stop.js           # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+│   │   └── table/
+│   │       └── columns.js        # CGI: POST 테이블 컬럼 정보 조회
 │   ├── conf.d/
 │   │   └── {name}.json           # replicator별 설정 파일
 │   ├── data/                     # 런타임 생성 -- 파티션별 체크포인트 파일
@@ -150,13 +152,14 @@ machbase-neo 웹 서버를 통해 replicator 설정을 관리한다. CGI 파일�
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| GET | `/cgi-bin/api/rc/list` | 전체 목록 조회 (실행 상태 + 체크포인트 포함) |
+| GET | `/cgi-bin/api/rc/list` | 전체 목록 조회 (실행 상태) |
 | POST | `/cgi-bin/api/rc` | 새 replicator 등록 |
-| GET | `/cgi-bin/api/rc?name=xxx` | 단건 조회 |
+| GET | `/cgi-bin/api/rc?name=xxx` | 단건 조회 (설정 + 체크포인트) |
 | PUT | `/cgi-bin/api/rc?name=xxx` | 설정 수정 |
 | DELETE | `/cgi-bin/api/rc?name=xxx` | 삭제 |
 | POST | `/cgi-bin/api/rc/start?name=xxx` | 시작 (데몬 연동 예정) |
 | POST | `/cgi-bin/api/rc/stop?name=xxx` | 종료 (데몬 연동 예정) |
+| POST | `/cgi-bin/api/table/columns` | 테이블 컬럼 정보 조회 |
 
 자세한 명세는 [cgi-bin/docs/API.md](cgi-bin/docs/API.md) 참고.
 
