@@ -130,11 +130,7 @@ echo '{...config...}' | \
   "data": [
     {
       "name": "repli-a",
-      "running": false,
-      "checkpoints": {
-        "_TAG_DATA_0": "12345",
-        "_TAG_DATA_1": "6789"
-      }
+      "running": false
     }
   ]
 }
@@ -144,7 +140,6 @@ echo '{...config...}' | \
 |------|------|
 | `name` | replicator 이름 |
 | `running` | PID 파일 존재 여부 (실행 중 여부) |
-| `checkpoints` | 파티션별 마지막 복제 RID. 미시작 시 `{}` |
 
 ---
 
@@ -186,9 +181,22 @@ echo '{...config...}' | \
 ```json
 {
   "ok": true,
-  "data": { "name": "repli-a", "config": { ... } }
+  "data": {
+    "name": "repli-a",
+    "config": { "..." : "..." },
+    "checkpoints": {
+      "_TAG_DATA_0": "12345",
+      "_TAG_DATA_1": "6789"
+    }
+  }
 }
 ```
+
+| 필드 | 설명 |
+|------|------|
+| `name` | replicator 이름 |
+| `config` | ReplicatorConfig (password 필드 제외) |
+| `checkpoints` | 파티션별 마지막 복제 RID. 미시작 시 `{}` |
 
 **실패**
 ```json
