@@ -33,7 +33,12 @@ function GET() {
   if (!config) {
     CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
   } else {
-    CGI.reply({ ok: true, data: { name, config } });
+    const safeSource = { ...config.source };
+    delete safeSource.password;
+    const safeTarget = { ...config.target };
+    delete safeTarget.password;
+    const safeConfig = { ...config, source: safeSource, target: safeTarget };
+    CGI.reply({ ok: true, data: { name, config: safeConfig } });
   }
 }
 
