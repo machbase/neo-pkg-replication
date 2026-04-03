@@ -38,7 +38,9 @@ function GET() {
     const safeTarget = { ...config.target };
     delete safeTarget.password;
     const safeConfig = { ...config, source: safeSource, target: safeTarget };
-    CGI.reply({ ok: true, data: { name, config: safeConfig } });
+    const configId = config.id || `${config.source?.table}_${config.target?.table}`;
+    const checkpoints = CGI.readCheckpoints(configId);
+    CGI.reply({ ok: true, data: { name, config: safeConfig, checkpoints } });
   }
 }
 

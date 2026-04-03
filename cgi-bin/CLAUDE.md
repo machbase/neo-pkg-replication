@@ -15,10 +15,12 @@ cgi-bin/
 ├── replication.js                # replicator 진입점 -- conf.d/{name}.json 하나를 읽어 Replicator 실행, PID 파일 관리
 ├── api/
 │   ├── rc.js                     # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
-│   └── rc/
-│       ├── list.js               # CGI: GET 목록 조회 (실행 상태 + 체크포인트 포함)
-│       ├── start.js              # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
-│       └── stop.js               # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+│   ├── rc/
+│   │   ├── list.js               # CGI: GET 목록 조회 (실행 상태)
+│   │   ├── start.js              # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
+│   │   └── stop.js               # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+│   └── table/
+│       └── columns.js            # CGI: POST 테이블 컬럼 정보 조회
 ├── conf.d/
 │   └── {name}.json               # replicator별 설정 파일 (ReplicatorConfig 형식)
 ├── data/                         # 런타임 생성 -- replicator별 파티션 cp 파일 저장
@@ -104,6 +106,7 @@ CGI.readBody()                 // process.stdin.read() 로 JSON 파싱
 CGI.reply(data)                // CGI 응답 (Content-Type: application/json + body)
 CGI.isRunning(name)            // run/{name}.pid 파일 존재 여부
 CGI.readCheckpoints(configId)  // data/{configId}/*.json -> { [dataTable]: lastSuccessRid }
+                               //   rc.js GET 단건 조회에서 사용
 ```
 
 - ROOT 경로: `_argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length)`

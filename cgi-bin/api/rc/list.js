@@ -10,15 +10,10 @@ const CGI = require(path.join(ROOT, 'src', 'cgi', 'cgi_util.js'));
 
 function GET() {
   const names = CGI.listConfigs();
-  const data = names.map(name => {
-    const config   = CGI.readConfig(name);
-    const configId = config?.id || `${config?.source?.table}_${config?.target?.table}`;
-    return {
-      name,
-      running: CGI.isRunning(name),
-      checkpoints: CGI.readCheckpoints(configId),
-    };
-  });
+  const data = names.map(name => ({
+    name,
+    running: CGI.isRunning(name),
+  }));
   CGI.reply({ ok: true, data });
 }
 
