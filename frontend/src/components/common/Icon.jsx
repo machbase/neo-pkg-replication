@@ -1,6 +1,6 @@
-export default function Icon({ name, className = '' }) {
+export default function Icon({ name, className = '', style }) {
   return (
-    <span className={`material-symbols-outlined ${className}`}>
+    <span className={`material-symbols-outlined ${className}`} style={style}>
       {name}
     </span>
   )

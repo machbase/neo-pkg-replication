@@ -8,14 +8,14 @@ const metrics = [
 
 export default function MetricsRow() {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-16">
       {metrics.map(m => (
-        <div key={m.label} className="bg-white/60 backdrop-blur-md p-6 rounded-xl border border-white flex items-center justify-between">
+        <div key={m.label} className="bg-surface-alt p-16 rounded-base border border-border flex items-center justify-between">
           <div>
-            <p className="text-[10px] uppercase font-bold text-on-surface-variant mb-1">{m.label}</p>
-            <h4 className="text-2xl font-bold">{m.value}</h4>
+            <p className="text-xs uppercase font-bold text-on-surface-tertiary mb-4">{m.label}</p>
+            <h4 className="text-lg font-bold text-on-surface">{m.value}</h4>
           </div>
-          <Icon name={m.icon} className="text-primary/40 text-4xl" />
+          <Icon name={m.icon} className="text-primary text-lg opacity-40" />
         </div>
       ))}
     </div>
