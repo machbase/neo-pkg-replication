@@ -112,13 +112,28 @@ export default function SourceSection({ form, update, isEdit }) {
     const updateFilter = (colName, field, value) => updateRule("filter", colName, field, value);
     const updateTransform = (colName, field, value) => updateRule("transform", colName, field, value);
 
-    const parseInValue = (str) => {
-        if (!str) return undefined;
-        const arr = str.split(",").map((s) => s.trim()).filter(Boolean);
-        return arr.length > 0 ? arr : undefined;
+    const [inDrafts, setInDrafts] = useState({});
+
+    const getInDisplay = (colName, rule) => {
+        if (colName in inDrafts) return inDrafts[colName];
+        return Array.isArray(rule?.in) ? rule.in.join(", ") : "";
     };
 
-    const formatInValue = (arr) => (Array.isArray(arr) ? arr.join(", ") : "");
+    const handleInChange = (colName, value) => {
+        setInDrafts((prev) => ({ ...prev, [colName]: value }));
+    };
+
+    const handleInBlur = (colName) => {
+        const raw = inDrafts[colName];
+        if (raw === undefined) return;
+        const arr = raw.split(",").map((s) => s.trim()).filter(Boolean);
+        updateFilter(colName, "in", arr.length > 0 ? arr : undefined);
+        setInDrafts((prev) => {
+            const next = { ...prev };
+            delete next[colName];
+            return next;
+        });
+    };
 
     const selectedCount = isAllSelected ? fetchedColumns?.length || 0 : selectedColumns.length;
 
@@ -158,7 +173,7 @@ export default function SourceSection({ form, update, isEdit }) {
         if (cat === "string") return (
             <div className="flex flex-col gap-4">
                 <input type="text" value={rule?.like || ""} onChange={(e) => updateFilter(col.name, "like", e.target.value || undefined)} className="w-full" placeholder="LIKE %" />
-                <input type="text" value={formatInValue(rule?.in)} onChange={(e) => updateFilter(col.name, "in", parseInValue(e.target.value))} className="w-full" placeholder="IN val1, val2" />
+                <input type="text" value={getInDisplay(col.name, rule)} onChange={(e) => handleInChange(col.name, e.target.value)} onBlur={() => handleInBlur(col.name)} className="w-full" placeholder="IN val1, val2" />
             </div>
         );
         if (cat === "numeric") return (
