@@ -90,9 +90,9 @@ export default function JobFormPage({ onRefresh }) {
                     user: form.source.user,
                     password: form.source.password,
                     table: form.source.table,
-                    columns: form.source.columns?.length ? form.source.columns : null,
-                    filter: form.source.filter?.length ? form.source.filter : null,
-                    transform: form.source.transform?.length ? form.source.transform : null,
+                    columns: form.target.autoCreate ? null : (form.source.columns?.length ? form.source.columns : null),
+                    filter: form.target.autoCreate ? null : (form.source.filter?.length ? form.source.filter : null),
+                    transform: form.target.autoCreate ? null : (form.source.transform?.length ? form.source.transform : null),
                 },
                 target: {
                     ...form.target,
