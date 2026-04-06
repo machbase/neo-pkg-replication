@@ -85,8 +85,8 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | `source.password` | string | ✓ | — | 소스 DB 비밀번호 |
 | `source.table` | string | ✓ | — | 원본 테이블명 |
 | `source.columns` | string[] \| null | | null | SELECT 컬럼 목록 (null=전체). TAG 테이블이면 NAME, TIME 필수 포함. |
-| `source.filter` | object[] \| null | | null | WHERE절 필터 목록 |
-| `source.transform` | object[] \| null | | null | read 후 값 변환 목록 |
+| `source.filter` | object[] \| null | | null | 복제 필터 목록 (FilterRule 참조) |
+| `source.transform` | object[] \| null | | null | read 후 값 변환 목록 (TransformRule 참조) |
 | `target` | object | ✓ | — | 대상 DB + 테이블 설정 |
 | `target.host` | string | ✓ | — | 대상 DB 호스트 |
 | `target.port` | number | ✓ | — | 대상 DB 포트 |
@@ -120,6 +120,53 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | `stdout` | boolean | true | 표준 출력 여부 |
 | `file.enabled` | boolean | false | 파일 출력 여부 |
 | `file.directory` | string | `"/work/logs"` | 로그 파일 디렉토리 (절대경로) |
+
+### FilterRule
+
+`source.filter` 배열의 각 항목. 조건을 모두 AND로 평가하며, 하나라도 불통과하면 해당 행은 복제하지 않는다.
+
+| 필드 | 타입 | 적용 대상 | 설명 |
+|------|------|-----------|------|
+| `column` | string | 모두 | 필터를 적용할 컬럼명 |
+| `in` | string[] | NAME, VARCHAR, TEXT | 허용할 값 목록. 목록에 없으면 해당 행 제외. |
+| `like` | string | NAME, VARCHAR, TEXT | SQL LIKE 패턴 (`%`=0개 이상 임의 문자, `_`=임의 1개 문자). 대소문자 무시. |
+| `min` | number | 숫자 컬럼 (SHORT/INTEGER/LONG/FLOAT/DOUBLE) | 이 값 미만이면 해당 행 제외 (inclusive: `value >= min`) |
+| `max` | number | 숫자 컬럼 (SHORT/INTEGER/LONG/FLOAT/DOUBLE) | 이 값 초과이면 해당 행 제외 (inclusive: `value <= max`) |
+
+> - 숫자 컬럼에는 `min` / `max` 만 적용된다. `in` / `like` 는 무시된다.
+> - `NAME` 컬럼에는 `in` / `like` 만 적용된다. `min` / `max` 는 무시된다.
+
+**예시**
+```json
+"filter": [
+  { "column": "NAME", "like": "sensor_%" },
+  { "column": "VALUE", "min": 0, "max": 100 },
+  { "column": "STATUS", "in": ["active", "idle"] }
+]
+```
+
+### TransformRule
+
+`source.transform` 배열의 각 항목. read 후 대상 DB에 쓰기 직전에 값을 변환한다.
+
+| 필드 | 타입 | 적용 대상 | 설명 |
+|------|------|-----------|------|
+| `column` | string | 모두 | 변환을 적용할 컬럼명 |
+| `add` | number | 숫자 컬럼 | 더할 값. 수식: `(value + add) * multiply` |
+| `multiply` | number | 숫자 컬럼 | 곱할 값. 수식: `(value + add) * multiply` |
+| `prefix` | string | NAME 컬럼 | tag name 앞에 붙일 문자열 |
+| `suffix` | string | NAME 컬럼 | tag name 뒤에 붙일 문자열 |
+
+> `add` / `multiply` 는 숫자 타입 컬럼에만 적용된다. `BigInt`, `null`, 문자열은 변환하지 않는다.  
+> `prefix` / `suffix` 는 TAG 테이블의 `NAME` 컬럼에만 적용된다.
+
+**예시**
+```json
+"transform": [
+  { "column": "VALUE", "add": 0, "multiply": 1.5 },
+  { "column": "NAME", "prefix": "copy_", "suffix": "" }
+]
+```
 
 ---
 
@@ -170,9 +217,15 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
       "user": "SYS",
       "password": "MANAGER",
       "table": "TAG",
-      "columns": null,
-      "filter": null,
-      "transform": null
+      "columns": ["NAME", "TIME", "VALUE"],
+      "filter": [
+        { "column": "NAME", "like": "sensor_%" },
+        { "column": "VALUE", "min": 0, "max": 100 }
+      ],
+      "transform": [
+        { "column": "VALUE", "add": 0, "multiply": 1.5 },
+        { "column": "NAME", "prefix": "copy_", "suffix": "" }
+      ]
     },
     "target": {
       "host": "192.168.1.20",
@@ -230,9 +283,15 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
         "port": 5656,
         "user": "SYS",
         "table": "TAG",
-        "columns": null,
-        "filter": null,
-        "transform": null
+        "columns": ["NAME", "TIME", "VALUE"],
+        "filter": [
+          { "column": "NAME", "like": "sensor_%" },
+          { "column": "VALUE", "min": 0, "max": 100 }
+        ],
+        "transform": [
+          { "column": "VALUE", "add": 0, "multiply": 1.5 },
+          { "column": "NAME", "prefix": "copy_", "suffix": "" }
+        ]
       },
       "target": {
         "host": "192.168.1.20",
@@ -292,9 +351,15 @@ replicator config 수정. `conf.d/{name}.json` 파일이 갱신된다.
     "user": "SYS",
     "password": "MANAGER",
     "table": "TAG",
-    "columns": null,
-    "filter": null,
-    "transform": null
+    "columns": ["NAME", "TIME", "VALUE"],
+    "filter": [
+      { "column": "NAME", "like": "sensor_%" },
+      { "column": "VALUE", "min": 0, "max": 100 }
+    ],
+    "transform": [
+      { "column": "VALUE", "add": 0, "multiply": 1.5 },
+      { "column": "NAME", "prefix": "copy_", "suffix": "" }
+    ]
   },
   "target": {
     "host": "192.168.1.20",
