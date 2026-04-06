@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import Icon from '../common/Icon'
+import { koToEn } from '../../utils/korean'
 
 const inputClass = 'w-full'
 
@@ -33,7 +34,7 @@ export default function ServerForm({ server, onSave, onClose }) {
       <div className="modal max-w-md" onClick={e => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-md font-semibold text-on-surface">{isEdit ? 'Edit Server' : 'Add Server'}</h3>
-          <button onClick={onClose} className="p-1 hover:bg-surface-hover rounded-base">
+          <button onClick={onClose} className="p-4 hover:bg-surface-hover rounded-base tooltip" data-tooltip="Close">
             <Icon name="close" />
           </button>
         </div>
@@ -90,7 +91,7 @@ export default function ServerForm({ server, onSave, onClose }) {
                 type="password"
                 required
                 value={form.password}
-                onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
+                onChange={e => setForm(p => ({ ...p, password: koToEn(e.target.value) }))}
                 className={inputClass}
                 placeholder="Password required"
               />

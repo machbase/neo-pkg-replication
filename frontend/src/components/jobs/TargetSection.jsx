@@ -1,4 +1,5 @@
 import Icon from '../common/Icon'
+import { koToEn } from '../../utils/korean'
 
 export default function TargetSection({ form, update }) {
   return (
@@ -8,13 +9,13 @@ export default function TargetSection({ form, update }) {
         Target Database
       </div>
 
-      <div className="space-y-6">
+      <div className="space-y-16">
         <div>
           <label className="form-label">Host Address</label>
           <input type="text" required value={form.target.host} onChange={e => update('target.host', e.target.value)} className="w-full" placeholder="127.0.0.1" />
         </div>
 
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-16">
           <div>
             <label className="form-label">Port</label>
             <input type="number" required value={form.target.port} onChange={e => update('target.port', e.target.value)} className="w-full" />
@@ -31,7 +32,7 @@ export default function TargetSection({ form, update }) {
 
         <div>
           <label className="form-label">Password</label>
-          <input type="password" required value={form.target.password} onChange={e => update('target.password', e.target.value)} className="w-full" />
+          <input type="text" autoComplete="off" required value={form.target.password} onChange={e => update('target.password', koToEn(e.target.value))} className="w-full input-masked" />
         </div>
       </div>
     </div>

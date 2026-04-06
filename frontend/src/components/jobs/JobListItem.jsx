@@ -12,7 +12,7 @@ export default function JobListItem({ job, selected, onSelect, onToggle }) {
                     e.stopPropagation();
                     onToggle();
                 }}
-                className={`switch shrink-0 ml-2 ${isRunning ? "active" : ""}`}
+                className={`switch shrink-0 ml-4 ${isRunning ? "active" : ""}`}
             >
                 <div className="switch-thumb" />
             </button>

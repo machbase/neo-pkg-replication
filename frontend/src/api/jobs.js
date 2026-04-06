@@ -2,9 +2,10 @@ import { request } from './client'
 
 const RC = '/cgi-bin/api/rc'
 
-// list 응답: [{ name, running, checkpoints }]
+// list 응답: [{ name, running }]
 function mapListItem(j) {
-  return { ...j, id: j.name, status: j.running ? 'running' : 'stopped' }
+  const { checkpoints, ...rest } = j
+  return { ...rest, id: j.name, status: j.running ? 'running' : 'stopped' }
 }
 
 export const listJobs = async () => {
@@ -34,3 +35,6 @@ export const startJob = (name) =>
 
 export const stopJob = (name) =>
   request('POST', `${RC}/stop?name=${encodeURIComponent(name)}`)
+
+export const fetchTableColumns = ({ host, port, user, password, table }) =>
+  request('POST', '/cgi-bin/api/table/columns', { host, port: Number(port), user, password, table })

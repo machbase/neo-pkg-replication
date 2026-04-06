@@ -10,14 +10,14 @@ export default function AdvancedSection({ form, update }) {
         Advanced Settings
       </div>
 
-      <div className="space-y-6">
+      <div className="space-y-16">
         {/* Shutdown & Integrity */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-16">
           <div>
             <label className="form-label">Shutdown Timeout (ms)</label>
             <input type="number" value={form.shutdownTimeoutMs} onChange={e => update('shutdownTimeoutMs', e.target.value)} className="w-full" />
           </div>
-          <div className="flex items-end pb-1">
+          <div className="flex items-end pb-4">
             <label className="checkbox-label">
               <input type="checkbox" checked={form.integrity !== false} onChange={e => update('integrity', e.target.checked ? null : false)} />
               <span>Integrity Check</span>
@@ -26,7 +26,7 @@ export default function AdvancedSection({ form, update }) {
         </div>
 
         {/* Retry */}
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-16">
           <div>
             <label className="form-label">Retry Max Attempts</label>
             <input type="number" value={form.retry?.maxAttempts ?? 5} onChange={e => update('retry.maxAttempts', e.target.value)} className="w-full" />
@@ -42,8 +42,8 @@ export default function AdvancedSection({ form, update }) {
         </div>
 
         {/* Logging */}
-        <div className="space-y-4 pt-3 border-t border-border">
-          <div className="grid grid-cols-3 gap-4">
+        <div className="space-y-16 pt-16 border-t border-border">
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-16">
             <div>
               <label className="form-label">Log Level</label>
               <select value={form.logging?.level ?? 'info'} onChange={e => update('logging.level', e.target.value)} className="w-full">
@@ -54,13 +54,13 @@ export default function AdvancedSection({ form, update }) {
                 <option value="error">Error</option>
               </select>
             </div>
-            <div className="flex items-end pb-1">
+            <div className="flex items-end pb-4">
               <label className="checkbox-label">
                 <input type="checkbox" checked={form.logging?.stdout ?? true} onChange={e => update('logging.stdout', e.target.checked)} />
                 <span>Stdout</span>
               </label>
             </div>
-            <div className="flex items-end pb-1">
+            <div className="flex items-end pb-4">
               <label className="checkbox-label">
                 <input type="checkbox" checked={form.logging?.file?.enabled ?? false} onChange={e => update('logging.file.enabled', e.target.checked)} />
                 <span>File Output</span>

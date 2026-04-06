@@ -27,7 +27,7 @@ export default function Toast() {
         >
           <Icon name={typeIcons[n.type] || typeIcons.info} />
           <span className="flex-1">{n.message}</span>
-          <button onClick={() => dismissNotification(n.id)} className="opacity-60 hover:opacity-100">
+          <button onClick={() => dismissNotification(n.id)} className="opacity-60 hover:opacity-100 tooltip" data-tooltip="Close">
             <Icon name="close" className="icon-sm" />
           </button>
         </div>

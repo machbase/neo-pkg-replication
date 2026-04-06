@@ -8,8 +8,8 @@ export default function ExecutionSection({ form, update }) {
         Execution Settings
       </div>
 
-      <div className="space-y-6">
-        <div className="grid grid-cols-2 gap-4">
+      <div className="space-y-16">
+        <div className="grid grid-cols-2 gap-16">
           <div>
             <label className="form-label">Start Mode</label>
             <select value={form.startMode} onChange={e => update('startMode', e.target.value)} className="w-full">
@@ -33,7 +33,7 @@ export default function ExecutionSection({ form, update }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-16">
           <div>
             <label className="form-label">Query Limit</label>
             <input type="number" value={form.queryLimit} onChange={e => update('queryLimit', e.target.value)} className="w-full" />

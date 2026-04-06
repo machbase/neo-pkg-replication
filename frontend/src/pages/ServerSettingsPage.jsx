@@ -43,17 +43,21 @@ export default function ServerSettingsPage({ servers, loading, onAdd, onEdit, on
   }
 
   return (
-    <div className="p-5">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="page-title">Server Settings</h2>
-        <button
-          onClick={() => { setEditingServer(null); setShowForm(true) }}
-          className="btn btn-content btn-primary"
-        >
-          <Icon name="add"  />
-          Add Server
-        </button>
-      </div>
+    <div className="page">
+      <header className="page-header">
+        <div className="page-header-inner">
+          <h2 className="page-title">Server Settings</h2>
+          <button
+            onClick={() => { setEditingServer(null); setShowForm(true) }}
+            className="btn btn-content btn-primary"
+          >
+            <Icon name="add" />
+            Add Server
+          </button>
+        </div>
+      </header>
+      <div className="page-body">
+      <div className="page-body-inner">
 
       {loading ? (
         <p className="text-on-surface-tertiary text-base">Loading...</p>
@@ -88,24 +92,24 @@ export default function ServerSettingsPage({ servers, loading, onAdd, onEdit, on
                 )}
                 <button
                   onClick={() => handleHealthCheck(srv.name)}
-                  className="p-1 text-on-surface-tertiary hover:bg-surface-hover rounded-base transition-colors"
-                  title="Check health"
+                  className="p-4 text-on-surface-tertiary hover:bg-surface-hover rounded-base transition-colors tooltip"
+                  data-tooltip="Health Check"
                 >
-                  <Icon name="monitor_heart"  />
+                  <Icon name="monitor_heart" />
                 </button>
                 <button
                   onClick={() => { setEditingServer(srv); setShowForm(true) }}
-                  className="p-1 text-on-surface-tertiary hover:bg-surface-hover rounded-base transition-colors"
-                  title="Edit"
+                  className="p-4 text-on-surface-tertiary hover:bg-surface-hover rounded-base transition-colors tooltip"
+                  data-tooltip="Edit"
                 >
-                  <Icon name="edit"  />
+                  <Icon name="edit" />
                 </button>
                 <button
                   onClick={() => setConfirmDelete(srv.name)}
-                  className="p-1 text-error hover:bg-error-muted rounded-base transition-colors"
-                  title="Delete"
+                  className="p-4 text-error hover:bg-error-muted rounded-base transition-colors tooltip"
+                  data-tooltip="Delete"
                 >
-                  <Icon name="delete"  />
+                  <Icon name="delete" />
                 </button>
               </div>
             </div>
@@ -129,6 +133,8 @@ export default function ServerSettingsPage({ servers, loading, onAdd, onEdit, on
           onCancel={() => setConfirmDelete(null)}
         />
       )}
+      </div>
+      </div>
     </div>
   )
 }
