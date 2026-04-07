@@ -114,7 +114,7 @@ CGI.uninstallService(name, cb) // service uninstall
 CGI.stopServiceIfRunning(name, cb)
 CGI.restartServiceIfRunning(name, cb)
 CGI.hasInstalledService(name)  // install된 service 정의 파일 존재 여부
-CGI.readCheckpoints(name, config)   // checkpoint 파일 취합 -> { [dataTable]: lastSuccessRid }
+CGI.readCheckpoints(name, config)   // checkpoint 파일 취합 -> { [dataTable]: { lastSuccessRid, hasMore } }
 CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
 ```
 
@@ -134,6 +134,7 @@ CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
   - service install
 - 수정은 `PUT /api/rc?name=...` 에서 처리한다.
   - config 저장
+  - `source.password`/`target.password`는 각각 키가 누락된 경우 기존 값 유지
   - service가 `RUNNING` 상태일 때만 `stop -> start`
 - 시작/종료는 `POST /api/rc/start`, `POST /api/rc/stop`
   - JSH `service` 모듈 사용
@@ -218,11 +219,12 @@ store.save(cp, stats, opts)
 {
   "version": 1,
   "source": { "server": "192.168.1.183", "table": "TAG", "dataTable": "_TAG_DATA_0" },
-  "checkpoint": { "lastSuccessRid": "12345678", "updatedAt": "2026-03-31T..." }
+  "checkpoint": { "lastSuccessRid": "12345678", "updatedAt": "2026-03-31T...", "hasMore": false }
 }
 ```
 
 - `lastSuccessRid`: BigInt <-> string 변환 내장
+- `hasMore`: `rowsRead === queryLimit` 기준으로 다음 작업이 남아있을 가능성 표시
 - atomic write (`.tmp` -> `renameSync`), `fs.mkdirSync({ recursive: true })` 내장
 - `source.dataTable` 불일치 시 손상으로 처리
 

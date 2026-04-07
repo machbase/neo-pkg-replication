@@ -366,10 +366,12 @@ class CGI {
           continue;
         }
         const updatedAt = d.checkpoint?.updatedAt || '';
+        const hasMore = d.checkpoint?.hasMore === true;
         const prev = records[dataTable];
         if (!prev || updatedAt >= prev.updatedAt) {
           records[dataTable] = {
             lastSuccessRid: String(lastSuccessRid),
+            hasMore,
             updatedAt,
           };
         }
@@ -419,23 +421,26 @@ class CGI {
   }
 
   /**
-   * checkpoint 디렉토리들을 훑어 파티션별 lastSuccessRid 반환
-   * checkpoint 파일이 없는 파티션도 빈 문자열로 포함한다.
+   * checkpoint 디렉토리들을 훑어 파티션별 checkpoint 상태를 반환한다.
+   * checkpoint 파일이 없는 파티션도 빈 값으로 포함한다.
    * @param {string} name - replicator name
    * @param {object} config - replicator config
-   * @returns {{ [dataTable: string]: string }}
+   * @returns {{ [dataTable: string]: { lastSuccessRid: string, hasMore: boolean } }}
    */
   static readCheckpoints(name, config) {
     const records = {};
     const result = {};
     for (const dataTable of CGI.listSourcePartitions(config)) {
-      result[dataTable] = '';
+      result[dataTable] = { lastSuccessRid: '', hasMore: false };
     }
     for (const dir of CGI.listCheckpointDirs(name, config)) {
       CGI.mergeCheckpointsFromDir(dir, records);
     }
     for (const dataTable in records) {
-      result[dataTable] = records[dataTable].lastSuccessRid;
+      result[dataTable] = {
+        lastSuccessRid: records[dataTable].lastSuccessRid,
+        hasMore: records[dataTable].hasMore === true,
+      };
     }
     return result;
   }

@@ -71,7 +71,7 @@ class CheckpointStore {
    * 체크포인트 저장 (atomic write)
    * @param {{ lastSuccessRid: bigint, sourceServer?: string, sourceTable?: string }} cp
    * @param {{ rowsRead: number, rowsWritten: number, droppedNoMeta: number, skippedExists: number }} stats
-   * @param {{ onSaveFailure?: 'continue'|'abort' }} [opts]
+   * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number }} [opts]
    * @returns {Error|null}
    */
   save(cp, stats, opts) {
@@ -80,12 +80,20 @@ class CheckpointStore {
     }
 
     const { filePath, dataTable } = this;
+    const rowsRead = stats?.rowsRead ?? 0;
+    const rowsWritten = stats?.rowsWritten ?? 0;
+    const droppedNoMeta = stats?.droppedNoMeta ?? 0;
+    const skippedExists = stats?.skippedExists ?? 0;
+    const queryLimit = opts?.queryLimit;
+    const hasMore = typeof queryLimit === 'number'
+      && queryLimit > 0
+      && rowsRead === queryLimit;
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       const content = JSON.stringify({
         version: 1,
         source:     { server: cp.sourceServer || '', table: cp.sourceTable || '', dataTable },
-        checkpoint: { lastSuccessRid: cp.lastSuccessRid, updatedAt: new Date().toISOString() },
+        checkpoint: { lastSuccessRid: cp.lastSuccessRid, updatedAt: new Date().toISOString(), hasMore },
       }, (_key, value) => (_isBigInt(value) ? value.toString() : value), 2);
 
       const tmpPath = `${filePath}.${Date.now()}.tmp`;
@@ -94,10 +102,11 @@ class CheckpointStore {
       getLogger().info('checkpoint_saved', {
         dataTable,
         lastSuccessRid: cp.lastSuccessRid.toString(),
-        rowsRead:      stats?.rowsRead      ?? 0,
-        rowsWritten:   stats?.rowsWritten   ?? 0,
-        droppedNoMeta: stats?.droppedNoMeta ?? 0,
-        skippedExists: stats?.skippedExists ?? 0,
+        rowsRead,
+        rowsWritten,
+        droppedNoMeta,
+        skippedExists,
+        hasMore,
       });
       return null;
     } catch (err) {

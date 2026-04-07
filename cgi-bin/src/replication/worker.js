@@ -257,7 +257,7 @@ class Worker {
             sourceHost:   this.config.source.host,
             sourceTable:    this.config.source.table,
           }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 },
-          { onSaveFailure: this.config.onSaveFailure });
+          { onSaveFailure: this.config.onSaveFailure, queryLimit: batchSize });
           startRid = rangeMaxRid + 1n;
           continue;
         }
@@ -289,7 +289,7 @@ class Worker {
         lastSuccessRid: rangeMaxRid,
         sourceHost:   this.config.source.host,
         sourceTable:    this.config.source.table,
-      }, batchStats, { onSaveFailure: this.config.onSaveFailure });
+      }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: batchSize });
 
       startRid = rangeMaxRid + 1n;
     }
@@ -338,7 +338,7 @@ class Worker {
               sourceHost:     this.config.source.host,
               sourceTable:    this.config.source.table,
             }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 },
-            { onSaveFailure: this.config.onSaveFailure });
+            { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
             integrityRid = batchRangeMaxRid + 1n;
           } else {
             startRid = integrityRid;
@@ -384,7 +384,7 @@ class Worker {
             lastSuccessRid: safeCpRid,
             sourceHost:     this.config.source.host,
             sourceTable:    this.config.source.table,
-          }, batchStats, { onSaveFailure: this.config.onSaveFailure });
+          }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
           startRid = firstMissRid;
           getLogger().info('worker', { ...logCtx, firstMissRid: String(firstMissRid), safeCpRid: String(safeCpRid), msg: 'integrity check: first missing row found' });
           outcome = 'break'; break;
@@ -394,7 +394,7 @@ class Worker {
           lastSuccessRid: batchRangeMaxRid,
           sourceHost:   this.config.source.host,
           sourceTable:    this.config.source.table,
-        }, batchStats, { onSaveFailure: this.config.onSaveFailure });
+        }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
         integrityRid = batchRangeMaxRid + 1n;
         getLogger().debug('worker', { ...logCtx, nextRid: String(integrityRid), msg: 'integrity check: batch confirmed' });
       } finally {

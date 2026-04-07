@@ -17,6 +17,29 @@ function errorMessage(err) {
   return err && err.message ? err.message : String(err);
 }
 
+function hasOwn(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function applyPasswordFallback(nextConfig, currentConfig) {
+  if (!nextConfig || typeof nextConfig !== 'object') return nextConfig;
+
+  const nextSource = nextConfig.source;
+  const nextTarget = nextConfig.target;
+  const validSource = !!nextSource && typeof nextSource === 'object';
+  const validTarget = !!nextTarget && typeof nextTarget === 'object';
+
+  if (validSource && !hasOwn(nextSource, 'password') && hasOwn(currentConfig?.source, 'password')) {
+    nextSource.password = currentConfig.source.password;
+  }
+
+  if (validTarget && !hasOwn(nextTarget, 'password') && hasOwn(currentConfig?.target, 'password')) {
+    nextTarget.password = currentConfig.target.password;
+  }
+
+  return nextConfig;
+}
+
 function POST() {
   const body = CGI.readBody();
   if (!body.name) {
@@ -56,10 +79,12 @@ function GET() {
 
 function PUT() {
   if (!name) return CGI.reply({ ok: false, reason: 'name is required' });
-  if (!CGI.readConfig(name)) {
+  const currentConfig = CGI.readConfig(name);
+  if (!currentConfig) {
     CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
   } else {
-    CGI.writeConfig(name, CGI.readBody());
+    const nextConfig = applyPasswordFallback(CGI.readBody(), currentConfig);
+    CGI.writeConfig(name, nextConfig);
     CGI.restartServiceIfRunning(name, (err) => {
       if (err) {
         CGI.reply({ ok: false, reason: errorMessage(err) });
