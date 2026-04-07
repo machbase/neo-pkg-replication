@@ -227,7 +227,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                 if (data) {
                     setLastUpdated(new Date());
                     const cp = data.checkpoints || {};
-                    prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+                    prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
                 }
             });
         }
@@ -239,7 +239,7 @@ export default function DashboardPage({ jobs, onDelete }) {
             if (!data) return;
             setLastUpdated(new Date());
             const cp = data.checkpoints || {};
-            const currentTotal = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+            const currentTotal = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
             if (prevTotalRowsRef.current !== null) {
                 const diff = currentTotal - prevTotalRowsRef.current;
                 const rate = Math.max(0, diff / 5);
@@ -286,6 +286,7 @@ export default function DashboardPage({ jobs, onDelete }) {
 
     const checkpoints = jobDetail.checkpoints && Object.keys(jobDetail.checkpoints).length > 0 ? jobDetail.checkpoints : {};
     const cpEntries = Object.entries(checkpoints);
+    const allDone = cpEntries.length > 0 && cpEntries.every(([, v]) => !v.hasMore);
 
     return (
         <div className="page">
@@ -333,7 +334,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                                         if (!data) return;
                                         setLastUpdated(new Date());
                                         const cp = data.checkpoints || {};
-                                        prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+                                        prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
                                         setRowsPerSec(null);
                                         setConsecutiveZero(0);
                                     });
@@ -345,15 +346,12 @@ export default function DashboardPage({ jobs, onDelete }) {
                             </button>
                         </div>
                         {(() => {
-                            const totalRows = cpEntries.reduce((sum, [, rid]) => sum + Number(rid), 0);
-                            const leftIconColor =
-                                cpEntries?.length === 0 || rowsPerSec === null
-                                    ? "var(--color-on-surface-disabled)"
-                                    : listJob.status === "running"
-                                    ? "var(--color-success)"
-                                    : "var(--color-error)";
+                            const totalRows = cpEntries.reduce((sum, [, v]) => sum + Number(v.lastSuccessRid || 0), 0);
+                            const leftIconColor = listJob.status === "running" ? "var(--color-success)" : "var(--color-error)";
                             const rightIconColor =
                                 cpEntries?.length === 0 || rowsPerSec === null
+                                    ? "var(--color-on-surface-disabled)"
+                                    : allDone
                                     ? "var(--color-on-surface-disabled)"
                                     : rowsPerSec > 0
                                     ? "var(--color-success)"
@@ -380,13 +378,13 @@ export default function DashboardPage({ jobs, onDelete }) {
                                             </thead>
                                             <tbody>
                                                 {cpEntries?.length > 0 ? (
-                                                    cpEntries.map(([partition, rid]) => (
+                                                    cpEntries.map(([partition, v]) => (
                                                         <tr key={partition} className="border-t border-border">
                                                             <td className="py-6 pl-12">
                                                                 <span className="text-sm text-on-surface">{partition}</span>
                                                             </td>
                                                             <td className="py-6 pr-12 text-right">
-                                                                <span className="font-mono text-sm text-on-surface-secondary">{Number(rid).toLocaleString()}</span>
+                                                                <span className="font-mono text-sm text-on-surface-secondary">{v.lastSuccessRid ? Number(v.lastSuccessRid).toLocaleString() : "—"}</span>
                                                             </td>
                                                         </tr>
                                                     ))
