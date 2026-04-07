@@ -42,10 +42,7 @@ class Logger {
     const line = '-'.repeat(72);
     const text = `${line}\n  ${ts}  ${msg}\n${line}`;
     if (this._stdout) console.println(text);
-    if (this._fileEnabled) {
-      this._ensurePath();
-      if (this._filePath) fs.appendFileSync(this._filePath, text + '\n', 'utf8');
-    }
+    this._appendToFile(text + '\n');
   }
 
   close() {
@@ -65,10 +62,7 @@ class Logger {
       }
     }
 
-    if (this._fileEnabled) {
-      this._ensurePath();
-      if (this._filePath) fs.appendFileSync(this._filePath, line + '\n', 'utf8');
-    }
+    this._appendToFile(line + '\n');
   }
 
   _format(level, stage, fields) {
@@ -96,6 +90,19 @@ class Logger {
       this._currentDate = today;
     } catch (err) {
       console.error(`[Logger] failed to open log file: ${err.message}`);
+    }
+  }
+
+  _appendToFile(text) {
+    if (!this._fileEnabled) return;
+    this._ensurePath();
+    if (!this._filePath) return;
+    try {
+      fs.appendFileSync(this._filePath, text, 'utf8');
+    } catch (err) {
+      this._filePath = null;
+      this._currentDate = null;
+      console.error(`[Logger] failed to write log file: ${err.message}`);
     }
   }
 }

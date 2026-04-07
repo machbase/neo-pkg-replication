@@ -4,8 +4,18 @@
 
 CGI 파일을 machbase-neo jsh로 직접 실행한다.
 각 CGI 파일은 `conf.d/` 디렉토리를 직접 읽고 쓴다.
+`api/rc*.js` 는 Machbase Neo JSH `service` 모듈을 통해 replication service를 등록/제어한다.
 
 요청 본문은 `process.stdin.read()`로 읽는다 (`/dev/stdin` 미지원).
+
+### service 연동 관련 주의
+
+- `GET /cgi-bin/api/rc/list` 는 `conf.d/*.json` 전체가 아니라 install된 service만 반환한다.
+- `POST /cgi-bin/api/rc` 는 config 저장 후 service `install` 까지 수행한다.
+- `PUT /cgi-bin/api/rc` 는 config 저장 후, service가 실행 중이면 `stop -> start` 로 재적용한다.
+- `DELETE /cgi-bin/api/rc` 는 service `uninstall` 후 config, pid, checkpoint 파일을 함께 정리한다. 로그 파일은 유지한다.
+- 직접 JSH로 service 관련 CGI를 테스트할 때는 `/etc` mount 와 `SERVICE_CONTROLLER` 환경값이 필요할 수 있다.
+- `logging.file.directory` 에 `${CWD}` 를 쓰면 `cgi-bin` 의 부모 경로, 즉 패키지 루트로 치환된다.
 
 ### jsh 직접 실행 (테스트용)
 
@@ -15,27 +25,27 @@ CGI 파일을 machbase-neo jsh로 직접 실행한다.
 # 주의: -e 플래그는 반드시 스크립트 파일 앞에 위치해야 함
 
 # GET 목록
-./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=GET /public/neo-pkg-replication/cgi-bin/api/rc/list.js
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e REQUEST_METHOD=GET /public/neo-pkg-replication/cgi-bin/api/rc/list.js
 
 # GET 단건
 ./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
 
 # POST 등록
 echo '{"name":"repli-a","config":{"id":"repli-a","source":{"host":"192.168.1.10","port":5656,"user":"SYS","password":"MANAGER","table":"TAG","columns":null,"filter":null,"transform":null},"target":{"host":"192.168.1.20","port":5656,"user":"SYS","password":"MANAGER","table":"TAG_COPY","autoCreate":true},"startMode":"now","ridAfter":null,"metaSync":false,"pollIntervalMs":1000,"queryLimit":5000,"ridRangeSize":50000,"shutdownTimeoutMs":30000,"onSaveFailure":"continue","integrity":null,"retry":null}}' | \
-  ./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=POST /public/neo-pkg-replication/cgi-bin/api/rc.js
+  ./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST /public/neo-pkg-replication/cgi-bin/api/rc.js
 
 # PUT 수정
 echo '{"id":"repli-a","source":{"host":"192.168.1.10","port":5656,"user":"SYS","password":"MANAGER","table":"TAG","columns":null,"filter":null,"transform":null},"target":{"host":"192.168.1.20","port":5656,"user":"SYS","password":"MANAGER","table":"TAG_COPY","autoCreate":true},"startMode":"now","ridAfter":null,"metaSync":false,"pollIntervalMs":2000,"queryLimit":5000,"ridRangeSize":50000,"shutdownTimeoutMs":30000,"onSaveFailure":"continue","integrity":null,"retry":null}' | \
-  ./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
+  ./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
 
 # DELETE 삭제
-./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
 
-# POST 시작 (현재 미구현 — 수동 실행 안내)
-./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/start.js
+# POST 시작
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/start.js
 
-# POST 종료 (현재 미구현 — 수동 종료 안내)
-./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/stop.js
+# POST 종료
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/stop.js
 
 # POST 테이블 컬럼 정보 조회
 echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":"TAG"}' | \
@@ -46,10 +56,10 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 | CGI 파일 | 메서드 | 설명 |
 |----------|--------|------|
-| `api/rc/list.js` | GET | 목록 조회 |
-| `api/rc.js` | POST, GET, PUT, DELETE | 등록 / 단건 조회 / 수정 / 제거 |
-| `api/rc/start.js?name=xxx` | POST | 시작 (데몬 연동 예정) |
-| `api/rc/stop.js?name=xxx` | POST | 종료 (데몬 연동 예정) |
+| `api/rc/list.js` | GET | install된 replication service 목록 조회 |
+| `api/rc.js` | POST, GET, PUT, DELETE | 등록(service install) / 단건 조회 / 수정(실행 중이면 재시작) / 제거(service uninstall + 관련 파일 정리) |
+| `api/rc/start.js?name=xxx` | POST | service 시작 |
+| `api/rc/stop.js?name=xxx` | POST | service 종료 |
 | `api/table/columns.js` | POST | 테이블 컬럼 정보 조회 |
 
 ---
@@ -119,7 +129,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | `level` | string | `"info"` | `"trace"` \| `"debug"` \| `"info"` \| `"warn"` \| `"error"` |
 | `stdout` | boolean | true | 표준 출력 여부 |
 | `file.enabled` | boolean | false | 파일 출력 여부 |
-| `file.directory` | string | `"/work/logs"` | 로그 파일 디렉토리 (절대경로) |
+| `file.directory` | string | `"/work/logs"` | 로그 파일 디렉토리 (절대경로). `${CWD}` 사용 시 `cgi-bin` 부모 경로로 치환 |
 
 ### FilterRule
 
@@ -174,7 +184,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 ### GET /cgi-bin/api/rc/list
 
-등록된 replicator 전체 목록 조회.
+현재 install된 replicator service 목록 조회.
 
 **응답**
 ```json
@@ -192,13 +202,13 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | 필드 | 설명 |
 |------|------|
 | `name` | replicator 이름 |
-| `running` | PID 파일 존재 여부 (실행 중 여부) |
+| `running` | service 실행 중 여부 |
 
 ---
 
 ### POST /cgi-bin/api/rc
 
-새 replicator 등록. `conf.d/{name}.json` 파일로 저장된다.
+새 replicator 등록. `conf.d/{name}.json` 저장 후 service `install` 까지 수행한다.
 
 **요청 본문**
 ```json
@@ -323,7 +333,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 |------|------|
 | `name` | replicator 이름 |
 | `config` | ReplicatorConfig (password 필드 제외) |
-| `checkpoints` | 파티션별 마지막 복제 RID. 미시작 시 `{}` |
+| `checkpoints` | 파티션별 마지막 복제 RID 문자열. checkpoint 파일이 아직 없으면 빈 문자열일 수 있음 |
 
 **실패**
 ```json
@@ -334,7 +344,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 ### PUT /cgi-bin/api/rc?name=xxx
 
-replicator config 수정. `conf.d/{name}.json` 파일이 갱신된다.
+replicator config 수정. `conf.d/{name}.json` 파일이 갱신되며, service가 실행 중이면 `stop -> start` 로 재적용된다.
 
 **요청 본문**
 ```json
@@ -391,7 +401,7 @@ replicator config 수정. `conf.d/{name}.json` 파일이 갱신된다.
 
 ### DELETE /cgi-bin/api/rc?name=xxx
 
-replicator 제거. `conf.d/{name}.json` 파일도 삭제된다.
+replicator 제거. service `uninstall` 후 `conf.d/{name}.json`, `run/{name}.pid`, 관련 checkpoint 디렉토리를 함께 삭제한다.
 
 **응답**
 ```json
@@ -480,24 +490,20 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 ### POST /cgi-bin/api/rc/start?name=xxx
 
-replicator 시작. jsh 비동기 exec 지원 시 구현 예정.
-
-현재는 미구현이며, 수동 실행 명령을 안내한다.
+replicator service 시작.
 
 **응답**
 ```json
-{ "ok": false, "reason": "daemon not supported yet. run manually: machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/{name}.json" }
+{ "ok": true, "data": { "name": "repli-a" } }
 ```
 
 ---
 
 ### POST /cgi-bin/api/rc/stop?name=xxx
 
-replicator 종료. jsh 비동기 exec 지원 시 PID 파일 기반 SIGTERM으로 구현 예정.
-
-현재는 미구현이며, 수동 종료 방법을 안내한다.
+replicator service 종료. 성공 시 pid 파일도 정리한다.
 
 **응답**
 ```json
-{ "ok": false, "reason": "daemon not supported yet. stop manually: kill $(cat cgi-bin/run/{name}.pid)" }
+{ "ok": true, "data": { "name": "repli-a" } }
 ```

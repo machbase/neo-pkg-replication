@@ -13,6 +13,10 @@ const CGI = require(path.join(ROOT, 'src', 'cgi', 'cgi_util.js'));
 
 const { name } = CGI.parseQuery();
 
+function errorMessage(err) {
+  return err && err.message ? err.message : String(err);
+}
+
 function POST() {
   const body = CGI.readBody();
   if (!body.name) {
@@ -23,7 +27,14 @@ function POST() {
     CGI.reply({ ok: false, reason: `replicator '${body.name}' already exists` });
   } else {
     CGI.writeConfig(body.name, body.config);
-    CGI.reply({ ok: true, data: { name: body.name } });
+    CGI.installService(body.name, (err) => {
+      if (err) {
+        CGI.deleteConfig(body.name);
+        CGI.reply({ ok: false, reason: errorMessage(err) });
+      } else {
+        CGI.reply({ ok: true, data: { name: body.name } });
+      }
+    });
   }
 }
 
@@ -38,8 +49,7 @@ function GET() {
     const safeTarget = { ...config.target };
     delete safeTarget.password;
     const safeConfig = { ...config, source: safeSource, target: safeTarget };
-    const configId = config.id || `${config.source?.table}_${config.target?.table}`;
-    const checkpoints = CGI.readCheckpoints(configId);
+    const checkpoints = CGI.readCheckpoints(name, config);
     CGI.reply({ ok: true, data: { name, config: safeConfig, checkpoints } });
   }
 }
@@ -50,20 +60,46 @@ function PUT() {
     CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
   } else {
     CGI.writeConfig(name, CGI.readBody());
-    CGI.reply({ ok: true, data: { name } });
+    CGI.restartServiceIfRunning(name, (err) => {
+      if (err) {
+        CGI.reply({ ok: false, reason: errorMessage(err) });
+      } else {
+        CGI.reply({ ok: true, data: { name } });
+      }
+    });
   }
 }
 
 function DELETE() {
   if (!name) return CGI.reply({ ok: false, reason: 'name is required' });
-  if (!CGI.readConfig(name)) {
+  const config = CGI.readConfig(name);
+  if (!config) {
     CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
   } else {
-    CGI.deleteConfig(name);
-    CGI.reply({ ok: true });
+    CGI.stopServiceIfRunning(name, (stopErr) => {
+      if (stopErr) {
+        CGI.reply({ ok: false, reason: errorMessage(stopErr) });
+        return;
+      }
+      CGI.uninstallService(name, (err) => {
+        if (err && !CGI.isMissingServiceError(err)) {
+          CGI.reply({ ok: false, reason: errorMessage(err) });
+        } else {
+          CGI.deleteServiceDefinition(name);
+          CGI.deleteCheckpoints(name, config);
+          CGI.deletePid(name);
+          CGI.deleteConfig(name);
+          CGI.reply({ ok: true });
+        }
+      });
+    });
   }
 }
 
 const handlers = { POST, GET, PUT, DELETE };
 const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
-(handlers[method] || (() => CGI.reply({ ok: false, reason: 'method not allowed' })))();
+try {
+  (handlers[method] || (() => CGI.reply({ ok: false, reason: 'method not allowed' })))();
+} catch (err) {
+  CGI.reply({ ok: false, reason: errorMessage(err) });
+}

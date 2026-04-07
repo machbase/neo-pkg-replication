@@ -8,15 +8,49 @@ const _argv = process.argv[1];
 const ROOT = _argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
 const CGI = require(path.join(ROOT, 'src', 'cgi', 'cgi_util.js'));
 
+function errorMessage(err) {
+  return err && err.message ? err.message : String(err);
+}
+
+function replyInstalled(names, index, data) {
+  if (index >= names.length) {
+    CGI.reply({ ok: true, data });
+    return;
+  }
+
+  const name = names[index];
+  const installed = CGI.hasInstalledService(name);
+  CGI.getServiceStatus(name, (err, serviceInfo) => {
+    if (err) {
+      if (!installed) {
+        replyInstalled(names, index + 1, data);
+        return;
+      }
+      data.push({
+        name,
+        running: CGI.isRunning(name),
+      });
+      replyInstalled(names, index + 1, data);
+      return;
+    }
+
+    data.push({
+      name,
+      running: CGI.isServiceRunningStatus(serviceInfo),
+    });
+    replyInstalled(names, index + 1, data);
+  });
+}
+
 function GET() {
   const names = CGI.listConfigs();
-  const data = names.map(name => ({
-    name,
-    running: CGI.isRunning(name),
-  }));
-  CGI.reply({ ok: true, data });
+  replyInstalled(names, 0, []);
 }
 
 const handlers = { GET };
 const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
-(handlers[method] || (() => CGI.reply({ ok: false, reason: 'method not allowed' })))();
+try {
+  (handlers[method] || (() => CGI.reply({ ok: false, reason: 'method not allowed' })))();
+} catch (err) {
+  CGI.reply({ ok: false, reason: errorMessage(err) });
+}

@@ -16,9 +16,9 @@ cgi-bin/
 ├── api/
 │   ├── rc.js                     # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
 │   ├── rc/
-│   │   ├── list.js               # CGI: GET 목록 조회 (실행 상태)
-│   │   ├── start.js              # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
-│   │   └── stop.js               # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+│   │   ├── list.js               # CGI: GET 목록 조회 (install된 service만 반환)
+│   │   ├── start.js              # CGI: POST ?name=xxx -- service 시작
+│   │   └── stop.js               # CGI: POST ?name=xxx -- service 종료
 │   └── table/
 │       └── columns.js            # CGI: POST 테이블 컬럼 정보 조회
 ├── conf.d/
@@ -30,7 +30,7 @@ cgi-bin/
 │   │   ├── replicator.js         # Replicator -- discover -> syncMeta -> Workers 루프
 │   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
 │   ├── cgi/
-│   │   └── cgi_util.js           # CGI 유틸 (CGI class) -- conf.d CRUD + parseQuery + readBody + reply + isRunning + readCheckpoints
+│   │   └── cgi_util.js           # CGI 유틸 (CGI class) -- conf.d CRUD + service install/start/stop/uninstall + checkpoint 조회/정리
 │   ├── db/
 │   │   ├── client.js             # MachbaseClient -- DB 연결/쿼리 (machcli 래퍼)
 │   │   ├── stream.js             # MachbaseStream -- append 스트림 래퍼
@@ -67,6 +67,7 @@ cgi-bin/
 - `process.addShutdownHook`: Ctrl+C -> PID 파일 삭제 -> `replicator.shutdown()` -> `process.exit(0)`
 - PID 파일: `{ROOT}/run/{configName}.pid` (ROOT = `path.resolve(path.dirname(process.argv[1]))` = cgi-bin/)
 - ROOT: `path.resolve(path.dirname(process.argv[1]))` (`__dirname` 미제공)
+- `logging.file.directory` 의 `${CWD}` 는 `cgi-bin` 부모 경로, 즉 package root로 치환한다.
 
 ### src/replication/replicator.js — Replicator
 
@@ -101,19 +102,49 @@ CGI.listConfigs()              // conf.d/*.json 목록 (server.json 제외)
 CGI.readConfig(name)           // conf.d/{name}.json, 없으면 null
 CGI.writeConfig(name, config)  // atomic write (tmp -> rename)
 CGI.deleteConfig(name)
+CGI.deletePid(name)
 CGI.parseQuery()               // process.env.get('QUERY_STRING') 파싱
 CGI.readBody()                 // process.stdin.read() 로 JSON 파싱
 CGI.reply(data)                // CGI 응답 (Content-Type: application/json + body)
-CGI.isRunning(name)            // run/{name}.pid 파일 존재 여부
-CGI.readCheckpoints(configId)  // data/{configId}/*.json -> { [dataTable]: lastSuccessRid }
-                               //   rc.js GET 단건 조회에서 사용
+CGI.installService(name, cb)   // service install
+CGI.getServiceStatus(name, cb) // service status
+CGI.startService(name, cb)     // service start
+CGI.stopService(name, cb)      // service stop
+CGI.uninstallService(name, cb) // service uninstall
+CGI.stopServiceIfRunning(name, cb)
+CGI.restartServiceIfRunning(name, cb)
+CGI.hasInstalledService(name)  // install된 service 정의 파일 존재 여부
+CGI.readCheckpoints(name, config)   // checkpoint 파일 취합 -> { [dataTable]: lastSuccessRid }
+CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
 ```
 
 - ROOT 경로: `_argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length)`
 - `CONF_DIR`: `path.join(ROOT, 'conf.d')`
 - `RUN_DIR`: `path.join(ROOT, 'run')`
 - `DATA_DIR`: `path.join(ROOT, 'data')`
+- service 등록 시 executable은 `cgi-bin/replication.js` 자체를 사용한다.
+- service args에는 `cgi-bin/conf.d/{name}.json` 의 절대경로를 넣는다.
+- service working dir은 `cgi-bin` 부모인 package root다.
 - 환경변수: `process.env.get('KEY')` (jsh에서 `process.env.KEY` 불가)
+
+## service lifecycle 구현 메모
+
+- 등록은 `POST /api/rc` 에서 처리한다.
+  - config 저장
+  - service install
+- 수정은 `PUT /api/rc?name=...` 에서 처리한다.
+  - config 저장
+  - service가 `RUNNING` 상태일 때만 `stop -> start`
+- 시작/종료는 `POST /api/rc/start`, `POST /api/rc/stop`
+  - JSH `service` 모듈 사용
+- 삭제는 `DELETE /api/rc?name=...`
+  - service가 실행 중이면 stop
+  - service uninstall
+  - service 정의 파일, config, pid, checkpoint 정리
+  - 로그 파일은 유지
+- 목록은 `GET /api/rc/list`
+  - `conf.d` 전체가 아니라 install된 service만 반환
+- 직접 JSH로 service-aware CGI를 검증할 때는 `/public`, `/etc` mount 와 `SERVICE_CONTROLLER`가 필요할 수 있다.
 
 ### src/db/client.js — MachbaseClient
 
@@ -299,9 +330,9 @@ ntf testsuite/package/replication/replication.ts
 ../machbase-neo/machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/repli-a.json
 
 # CGI 테스트 (-e 플래그는 스크립트 파일 앞에 위치)
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js
+../machbase-neo/machbase-neo jsh -v /etc=$(pwd)/etc -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js
 ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/api/rc/start.js
+../machbase-neo/machbase-neo jsh -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/api/rc/start.js
 ```
 
 ## jsh 환경 제약사항
@@ -353,7 +384,7 @@ conn.close();
 | A-01 | CGI가 conf.d 직접 접근 | jsh `svr.serve()` Go 레벨 블로킹으로 HTTP 서버 + Worker 동시 실행 불가 |
 | A-02 | replicator는 독립 프로세스 | config별 격리, 장애 격리, 단순한 생명주기 |
 | A-03 | `process.addShutdownHook`으로 종료 처리 | setTimeout 기반 signal은 비동기 이후 실행 안 됨 |
-| A-04 | start/stop CGI는 503 반환 | jsh 비동기 exec 미지원. 지원 시 `process.exec()` + PID 파일로 구현 예정 |
+| A-04 | start/stop/register/delete는 JSH `service` 모듈로 제어 | 수동 프로세스 실행 대신 Machbase Neo service lifecycle에 맞춤 |
 | B-01 | Worker별 독립 machcli 연결 | 단일 연결 동시 query + append 충돌 |
 | B-02 | VOLATILE TABLE + JOIN으로 miss row 탐색 | TAG 테이블 JOIN 드라이빙 불가, PK 없음 |
 | B-03 | TIME 값은 `?` 파라미터 바인딩 전달 | BigInt 리터럴 SQL 삽입 시 정밀도 손실 |
