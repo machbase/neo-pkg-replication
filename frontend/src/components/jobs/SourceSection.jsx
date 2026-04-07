@@ -236,10 +236,11 @@ export default function SourceSection({ form, update, isEdit }) {
                     <input
                         type="text"
                         autoComplete="off"
-                        required
+                        required={!isEdit}
                         value={form.source.password}
                         onChange={(e) => update("source.password", koToEn(e.target.value))}
                         className="w-full input-masked"
+                        placeholder={isEdit ? "Leave blank to keep current password" : ""}
                     />
                 </div>
 

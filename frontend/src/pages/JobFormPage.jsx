@@ -216,7 +216,7 @@ export default function JobFormPage({ onRefresh }) {
                             {/* Right column: Source / Target Database */}
                             <div className="space-y-4">
                                 <SourceSection form={form} update={update} isEdit={isEdit} />
-                                <TargetSection form={form} update={update} />
+                                <TargetSection form={form} update={update} isEdit={isEdit} />
                             </div>
                         </div>
                     </form>
