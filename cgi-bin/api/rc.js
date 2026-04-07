@@ -53,6 +53,12 @@ function POST() {
   } else if (CGI.readConfig(body.name)) {
     CGI.reply({ ok: false, reason: `replicator '${body.name}' already exists` });
   } else {
+    try {
+      CGI.validateColumnOrderTypes(body.config);
+    } catch (err) {
+      CGI.reply({ ok: false, reason: errorMessage(err) });
+      return;
+    }
     CGI.writeConfig(body.name, body.config);
     CGI.installService(body.name, (err) => {
       if (err) {
@@ -88,6 +94,12 @@ function PUT() {
     CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
   } else {
     const nextConfig = applyPasswordFallback(CGI.readBody(), currentConfig);
+    try {
+      CGI.validateColumnOrderTypes(nextConfig);
+    } catch (err) {
+      CGI.reply({ ok: false, reason: errorMessage(err) });
+      return;
+    }
     CGI.writeConfig(name, nextConfig);
     CGI.restartServiceIfRunning(name, (err) => {
       if (err) {

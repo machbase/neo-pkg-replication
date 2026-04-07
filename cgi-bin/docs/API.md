@@ -11,11 +11,12 @@ CGI 파일을 machbase-neo jsh로 직접 실행한다.
 ### service 연동 관련 주의
 
 - `GET /cgi-bin/api/rc/list` 는 `conf.d/*.json` 전체가 아니라 install된 service만 반환한다.
-- `POST /cgi-bin/api/rc` 는 config 저장 후 service `install` 까지 수행한다.
-- `PUT /cgi-bin/api/rc` 는 config 저장 후, service가 실행 중이면 `stop -> start` 로 재적용한다. `source.password`/`target.password` 키가 없거나 빈 문자열(`""`)인 항목은 기존 값을 유지한다.
+- `POST /cgi-bin/api/rc` 는 config 저장 후 service `install` 까지 수행한다. 저장 전 source/target 컬럼을 "순서 기준"으로 타입 검증한다.
+- `PUT /cgi-bin/api/rc` 는 config 저장 후, service가 실행 중이면 `stop -> start` 로 재적용한다. `source.password`/`target.password` 키가 없거나 빈 문자열(`""`)인 항목은 기존 값을 유지한다. 저장 전 컬럼 순서/타입 검증을 동일하게 수행한다.
 - `DELETE /cgi-bin/api/rc` 는 service `uninstall` 후 config, pid, checkpoint 파일을 함께 정리한다. 로그 파일은 유지한다.
 - 직접 JSH로 service 관련 CGI를 테스트할 때는 `/etc` mount 와 `SERVICE_CONTROLLER` 환경값이 필요할 수 있다.
 - `logging.file.directory` 에 `${CWD}` 를 쓰면 `cgi-bin` 의 부모 경로, 즉 패키지 루트로 치환된다.
+- `source.table`/`target.table` 은 저장 시 대문자로 정규화된다.
 
 ### jsh 직접 실행 (테스트용)
 
@@ -94,7 +95,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | `source.user` | string | ✓ | — | 소스 DB 사용자명 |
 | `source.password` | string | ✓ | — | 소스 DB 비밀번호 |
 | `source.table` | string | ✓ | — | 원본 테이블명 |
-| `source.columns` | string[] \| null | | null | SELECT 컬럼 목록 (null=전체). TAG 테이블이면 NAME, TIME 필수 포함. |
+| `source.columns` | string[] \| null | | null | SELECT 컬럼 목록 (null=전체). 배열 지정 시 source 컬럼 순서를 target 데이터 컬럼 순서에 맞춰야 하며, TAG는 key(PRIMARY)와 base time(BASETIME) 컬럼을 반드시 포함해야 한다. |
 | `source.filter` | object[] \| null | | null | 복제 필터 목록 (FilterRule 참조) |
 | `source.transform` | object[] \| null | | null | read 후 값 변환 목록 (TransformRule 참조) |
 | `target` | object | ✓ | — | 대상 DB + 테이블 설정 |
@@ -102,7 +103,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | `target.port` | number | ✓ | — | 대상 DB 포트 |
 | `target.user` | string | ✓ | — | 대상 DB 사용자명 |
 | `target.password` | string | ✓ | — | 대상 DB 비밀번호 |
-| `target.table` | string | ✓ | — | 대상 테이블명. `autoCreate: true`이면 빈 문자열 허용 (source.table 이름 사용). |
+| `target.table` | string | | — | 대상 테이블명. 비어 있으면 `source.table` 을 사용한다. |
 | `target.autoCreate` | boolean | | false | 대상 테이블 미존재 시 src 스키마로 자동 생성 |
 | `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
 | `ridAfter` | number \| null | | null | `startMode: "ridAfter"` 시 기준 RID |
@@ -164,11 +165,13 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | `column` | string | 모두 | 변환을 적용할 컬럼명 |
 | `add` | number | 숫자 컬럼 | 더할 값. 수식: `(value + add) * multiply` |
 | `multiply` | number | 숫자 컬럼 | 곱할 값. 수식: `(value + add) * multiply` |
-| `prefix` | string | NAME 컬럼 | tag name 앞에 붙일 문자열 |
-| `suffix` | string | NAME 컬럼 | tag name 뒤에 붙일 문자열 |
+| `prefix` | string | NAME(논리 key) 컬럼 | tag name 앞에 붙일 문자열 |
+| `suffix` | string | NAME(논리 key) 컬럼 | tag name 뒤에 붙일 문자열 |
 
 > `add` / `multiply` 는 숫자 타입 컬럼에만 적용된다. `BigInt`, `null`, 문자열은 변환하지 않는다.  
-> `prefix` / `suffix` 는 TAG 테이블의 `NAME` 컬럼에만 적용된다.
+> `prefix` / `suffix` 는 TAG key(논리 `NAME`)에만 적용된다. 물리 컬럼명은 테이블마다 다를 수 있다.
+> 연산 순서는 `add` 후 `multiply` 이다. 즉 `(value + add) * multiply` 로 고정된다.
+> `bias` 키는 지원하지 않는다. 프론트엔드에서 `bias` 용어를 쓰는 경우 API 요청에서는 `add`로 매핑해서 보내야 한다.
 
 **예시**
 ```json
@@ -209,6 +212,10 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 ### POST /cgi-bin/api/rc
 
 새 replicator 등록. `conf.d/{name}.json` 저장 후 service `install` 까지 수행한다.
+저장 전에 source/target 데이터 컬럼을 순서 기준으로 매칭하여 타입을 검사한다.
+- `source.columns` 지정 시: 지정 배열 순서로 source 타입을 비교
+- `source.columns` 미지정 시: source 테이블의 물리 컬럼 순서를 사용
+- target 테이블이 없고 `target.autoCreate=true`인 경우: target 컬럼 순서를 source 테이블 순서로 간주해 검증
 
 **요청 본문**
 ```json
@@ -267,6 +274,10 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 **실패**
 ```json
 { "ok": false, "reason": "replicator 'repli-a' already exists" }
+```
+
+```json
+{ "ok": false, "reason": "column type mismatch at index 2: source.VALUE(TYPE=20) != target.VALUE1(TYPE=8)" }
 ```
 
 ---
@@ -333,7 +344,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 |------|------|
 | `name` | replicator 이름 |
 | `config` | ReplicatorConfig (password 필드 제외) |
-| `checkpoints` | 파티션별 checkpoint 정보. `lastSuccessRid`는 문자열, `hasMore`는 `rowsRead === queryLimit` 기준 추정값 |
+| `checkpoints` | 파티션별 checkpoint 정보. source 파티션 전체를 포함하며 파일이 아직 없으면 `{ "lastSuccessRid": "", "hasMore": false }` 로 반환된다. `lastSuccessRid`는 문자열, `hasMore`는 `rowsRead === queryLimit` 기준 추정값 |
 
 **실패**
 ```json
@@ -345,6 +356,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 ### PUT /cgi-bin/api/rc?name=xxx
 
 replicator config 수정. `conf.d/{name}.json` 파일이 갱신되며, service가 실행 중이면 `stop -> start` 로 재적용된다. `source.password` 또는 `target.password` 키가 요청 본문에 없거나 빈 문자열(`""`)이면 해당 항목은 기존 비밀번호를 유지한다.
+`POST`와 동일한 컬럼 순서/타입 검증을 수행하며, 검증 실패 시 저장하지 않는다.
 
 **요청 본문**
 ```json
@@ -450,8 +462,8 @@ replicator 제거. service `uninstall` 후 `conf.d/{name}.json`, `run/{name}.pid
 | `tableType` | `"TAG"` \| `"LOG"` |
 | `columns[].name` | 컬럼명 |
 | `columns[].type` | DDL 타입 문자열 (아래 타입 목록 참고) |
-| `columns[].isPrimary` | PRIMARY KEY 여부 (TAG 테이블의 NAME 컬럼) |
-| `columns[].isBasetime` | BASETIME 여부 (TAG 테이블의 TIME 컬럼) |
+| `columns[].isPrimary` | PRIMARY KEY 여부 (TAG key 컬럼, 물리 컬럼명은 테이블마다 다를 수 있음) |
+| `columns[].isBasetime` | BASETIME 여부 (TAG base time 컬럼, 물리 컬럼명은 테이블마다 다를 수 있음) |
 | `columns[].isSummarized` | SUMMARIZED 여부 (TAG 테이블의 VALUE 컬럼 등) |
 | `columns[].isMetadata` | TAG METADATA 컬럼 여부 (TAG 테이블의 추가 속성 컬럼) |
 

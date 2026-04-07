@@ -131,10 +131,12 @@ CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
 
 - 등록은 `POST /api/rc` 에서 처리한다.
   - config 저장
+  - source/target 데이터 컬럼을 순서 기준으로 타입 검증
   - service install
 - 수정은 `PUT /api/rc?name=...` 에서 처리한다.
   - config 저장
   - `source.password`/`target.password`는 각각 키가 누락되었거나 빈 문자열(`""`)인 경우 기존 값 유지
+  - source/target 데이터 컬럼을 순서 기준으로 타입 검증
   - service가 `RUNNING` 상태일 때만 `stop -> start`
 - 시작/종료는 `POST /api/rc/start`, `POST /api/rc/stop`
   - JSH `service` 모듈 사용
@@ -287,7 +289,7 @@ registerSignals(shutdownFlag, timeoutMs)
 - `integrity`: TAG 테이블 재시작 시 STARTUP_INTEGRITY 실행 여부. `false`=비활성화, 그 외=활성화
 - `target.autoCreate`: `true`이면 대상 테이블 없을 때 src 스키마로 자동 CREATE
 - `target.table`: `""` + `autoCreate: true` -> source.table 이름 사용
-- `source.columns`: `null`=전체, 배열 지정 시 TAG 테이블은 NAME/TIME 필수 포함
+- `source.columns`: `null`=전체, 배열 지정 시 target 데이터 컬럼 순서에 맞춰야 하며 TAG는 key(PRIMARY)/base time(BASETIME) 컬럼 필수 포함
 - `logging.file.directory`: 절대경로 `/work/logs` 사용 권장
 
 ## 테스트 실행
@@ -374,8 +376,8 @@ conn.close();
 ```
 
 **주의사항**
-- TAG 파티션 `NAME` 컬럼: `typeof number` (tag ID)
-- `TIME` 컬럼: Go `time.Time` 객체 -- `BigInt(row.TIME)` 불가, `?` 파라미터 바인딩으로만 전달
+- TAG 파티션의 key(PRIMARY) 컬럼: `typeof number` (tag ID), 물리 컬럼명은 테이블마다 다를 수 있음
+- TAG 파티션의 base time(BASETIME) 컬럼: Go `time.Time` 객체, 물리 컬럼명은 테이블마다 다를 수 있음. `BigInt(row.TIME)` 불가, `?` 파라미터 바인딩으로만 전달
 - VOLATILE TABLE: append 미지원 -> `exec('INSERT INTO ... VALUES (?,?,?)', ...)` 사용
 - 단일 연결에서 동시 query + append 불가 -> Worker별 독립 연결 사용
 

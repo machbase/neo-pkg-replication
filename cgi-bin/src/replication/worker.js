@@ -6,6 +6,7 @@ const RetryHandler = require('../lib/retry.js');
 const { MachbaseClient } = require('../db/client.js');
 const { TagDataTable, TagTable, LogTable } = require('../db/table.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
+const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
 
 const CHECKPOINT_BASE = path.resolve(path.dirname(process.argv[1]));
 const CHECKPOINT_DIRECTORY = path.join(CHECKPOINT_BASE, 'data');
@@ -163,12 +164,44 @@ class Worker {
     const ridRangeSize   = this.config.ridRangeSize;
     const pollIntervalMs = this.config.pollIntervalMs;
     const sourceColumns  = this.config.source.columns;
+    const sourceDataCols = this.srcSchema.columns
+      .filter((c) => !(c.flag & FLAG_METADATA))
+      .map((c) => c.name);
+    const targetDataCols = this.dstSchema.columns
+      .filter((c) => !(c.flag & FLAG_METADATA))
+      .map((c) => c.name);
+    const sourceOrder = Array.isArray(this.config.columnOrder?.source) && this.config.columnOrder.source.length > 0
+      ? this.config.columnOrder.source
+      : (Array.isArray(sourceColumns) && sourceColumns.length > 0 ? sourceColumns : sourceDataCols);
+    const targetOrder = Array.isArray(this.config.columnOrder?.target) && this.config.columnOrder.target.length > 0
+      ? this.config.columnOrder.target
+      : targetDataCols;
+    const logCtx = { job_id: this.config.id, partition: this.dataTable };
     const filter    = this.config.source.filter    ?? null;
     const transform = this.config.source.transform ?? null;
     const nameRule  = transform?.find(t => t.column === 'NAME') ?? null;
+    const sourcePrimaryCol = this.srcSchema.columns.find((c) => c.flag & FLAG_PRIMARY);
+    const sourceBaseTimeCol = this.srcSchema.columns.find((c) => c.flag & FLAG_BASETIME);
+    if (this.srcSchema.tableType === 'TAG' && (!sourcePrimaryCol || !sourceBaseTimeCol)) {
+      getLogger().error('worker', { ...logCtx, msg: 'PRIMARY/BASETIME column not found in source schema' });
+      return;
+    }
+    const sourcePrimaryColName = sourcePrimaryCol ? sourcePrimaryCol.name : null;
+    const sourceBaseTimeColName = sourceBaseTimeCol ? sourceBaseTimeCol.name : null;
     const retry = new RetryHandler(this.config.retry ?? {});
     const checkpointStore = new CheckpointStore(path.join(CHECKPOINT_DIRECTORY, this.config.id), this.dataTable);
-    const logCtx = { job_id: this.config.id, partition: this.dataTable };
+    const remapRowsByOrder = (rows) => {
+      if (!rows || rows.length === 0) return rows;
+      const width = Math.min(sourceOrder.length, targetOrder.length);
+      if (width === 0) return rows;
+      return rows.map((row) => {
+        const mapped = { ...row };
+        for (let i = 0; i < width; i++) {
+          mapped[targetOrder[i]] = row[sourceOrder[i]];
+        }
+        return mapped;
+      });
+    };
 
     // ═══════════════════════════════════════════════════════════
     // RESOLVE_START — 시작 RID 결정
@@ -239,6 +272,8 @@ class Worker {
         shutdownFlag,
         logCtx,
         checkpointStore,
+        sourcePrimaryColName,
+        sourceBaseTimeColName,
       });
       if (result === null) return;
       startRid = result.startRid;
@@ -282,18 +317,19 @@ class Worker {
         rows.map(row => row.data),
         transform
       );
+      const mappedOutRows = remapRowsByOrder(outRows);
       const droppedNoMeta = 0;
 
       if (shutdownFlag.value) return;
 
-      if (outRows.length > 0) {
-        const ok = await _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx);
+      if (mappedOutRows.length > 0) {
+        const ok = await _appendRows(dstTable, mappedOutRows, retry, shutdownFlag, logCtx);
         if (!ok) return;
       }
 
       const batchStats = {
         rowsRead:      rows.length,
-        rowsWritten:   outRows.length,
+        rowsWritten:   mappedOutRows.length,
         droppedNoMeta,
         skippedExists: 0,
       };
@@ -324,6 +360,8 @@ class Worker {
     shutdownFlag,
     logCtx,
     checkpointStore,
+    sourcePrimaryColName,
+    sourceBaseTimeColName,
   }) {
     getLogger().info('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
     let integrityRid = startRid;
@@ -359,7 +397,21 @@ class Worker {
           }
           break;
         }
-        const resolved = rows.map(row => ({ rid: row.rid, canonical: row.data.NAME, time: row.data.TIME }));
+        const resolved = rows.map((row) => ({
+          rid: row.rid,
+          canonical: sourcePrimaryColName ? row.data[sourcePrimaryColName] : row.data.NAME,
+          time: sourceBaseTimeColName ? row.data[sourceBaseTimeColName] : row.data.TIME,
+        }));
+        const invalidResolved = resolved.find((r) => r.canonical == null || r.time == null);
+        if (invalidResolved) {
+          getLogger().error('worker', {
+            ...logCtx,
+            phase: 'STARTUP_INTEGRITY',
+            rid: String(invalidResolved.rid),
+            msg: 'missing TAG key columns in read result',
+          });
+          outcome = 'return'; break;
+        }
 
         if (shutdownFlag.value) { outcome = 'return'; break; }
 

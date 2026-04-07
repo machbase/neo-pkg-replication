@@ -24,33 +24,35 @@ function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
 
   const chk = `_repli_chk_${suffix}`;
   const lkp = `_repli_lkp_${suffix}`;
-  const nameCol = schema.columns.find(c => c.name === 'NAME');
-  if (!nameCol) return { firstMissIdx: null, err: new Error(`findFirstMissRow: NAME column not found in schema for '${logicalTable}'`) };
-  const nameDdlType = nameCol.sqlType();
+  const keyCol = schema.columns.find(c => c.flag & FLAG_PRIMARY);
+  const baseTimeCol = schema.columns.find(c => c.flag & FLAG_BASETIME);
+  if (!keyCol || !baseTimeCol) {
+    return { firstMissIdx: null, err: new Error(`findFirstMissRow: PRIMARY/BASETIME column not found in schema for '${logicalTable}'`) };
+  }
+  const keyDdlType = keyCol.sqlType();
 
   try {
-    client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
-    client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
+    client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, KEYCOL ${keyDdlType}, BASETIME DATETIME)`);
+    client.execute(`CREATE VOLATILE TABLE ${lkp} (KEYCOL ${keyDdlType}, BASETIME DATETIME)`);
 
     // VOLATILE TABLE은 append 불가 → INSERT 문으로 데이터 삽입 (TIME 객체 그대로 바인딩)
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      client.execute(`INSERT INTO ${chk} (IDX, NAME, TIME) VALUES (?, ?, ?)`, i, r.canonical, r.time);
+      client.execute(`INSERT INTO ${chk} (IDX, KEYCOL, BASETIME) VALUES (?, ?, ?)`, i, r.canonical, r.time);
     }
 
     client.execute(
-      `INSERT INTO ${lkp} ` +
-      `SELECT t.NAME, t.TIME FROM ${logicalTable} t, ${chk} c ` +
-      `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
+      `INSERT INTO ${lkp} SELECT t.${keyCol.name}, t.${baseTimeCol.name} FROM ${logicalTable} t, ${chk} c ` +
+      `WHERE t.${keyCol.name} = c.KEYCOL AND t.${baseTimeCol.name} = c.BASETIME`
     );
 
     let result;
     try {
       result = client.query(
         `SELECT IDX FROM (` +
-          `SELECT c.IDX, t.NAME AS T_NAME ` +
-          `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
-        `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
+          `SELECT c.IDX, t.KEYCOL AS T_KEY ` +
+          `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.KEYCOL = t.KEYCOL AND c.BASETIME = t.BASETIME` +
+        `) WHERE T_KEY IS NULL ORDER BY IDX ASC LIMIT 1`
       );
     } finally {
       try {
@@ -85,10 +87,10 @@ const _STRING_TYPES = new Set([ColumnType.VARCHAR, ColumnType.TEXT]);
 
 /**
  * 행 데이터가 VALUE filter 조건을 통과하는지 검사
- * NAME 컬럼은 aliasCache 해석 후 별도 처리하므로 여기서는 건너뜀
+ * TAG key(name) 필터는 aliasCache 해석 후 별도 처리하므로 여기서는 건너뜀
  *
  * @param {object} data
- * @param {string[]} colNames - 실제 읽는 컬럼 목록 (NAME 제외)
+ * @param {string[]} colNames - 실제 읽는 컬럼 목록 (key 제외)
  * @param {Array|null} filter
  * @param {import('./types.js').TableSchema|null} schema
  * @returns {boolean}
@@ -636,7 +638,9 @@ class TagDataTable {
       ? cols.filter(c => sourceColumns.includes(c.name))
       : cols;
     const colNames = filtered.map(c => c.name);
-    const valueColNames = colNames.filter(n => n !== 'NAME');
+    const keyCol = cols.find(c => c.flag & FLAG_PRIMARY);
+    const keyColName = keyCol ? keyCol.name : 'NAME';
+    const valueColNames = colNames.filter(n => n !== keyColName);
 
     const endRid = startRid + BigInt(rangeSize);
 
@@ -661,7 +665,7 @@ class TagDataTable {
         if (!_passesValueFilter(data, valueColNames, filter, this.schema)) continue;
 
         if (this.aliasCache) {
-          const tagId = data.NAME;
+          const tagId = data[keyColName];
           let { canonical, meta, status } = this.aliasCache.resolve(tagId, nameRule);
           if (status === 'drop_not_found') {
             const found = this.cacheTagMetaByTagID(tagId);
@@ -675,6 +679,7 @@ class TagDataTable {
               `^${nameFilterEntry.like.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.')}$`, 'i'
             ).test(canonical)) continue;
           }
+          data[keyColName] = canonical;
           data.NAME = canonical;
           Object.assign(data, meta);
         }

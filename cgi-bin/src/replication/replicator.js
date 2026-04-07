@@ -1,7 +1,7 @@
 'use strict';
 
 const { MachbaseClient } = require('../db/client.js');
-const { FLAG_METADATA } = require('../db/types.js');
+const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
 const { TagMetaCache, TagTable, LogTable } = require('../db/table.js');
 const { Worker } = require('./worker.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
@@ -84,9 +84,12 @@ class Replicator {
           if (!this._validateSourceColumns(this.source, srcSchema)) return null;
 
           if (this.source.columns) {
-            const missing = ['NAME', 'TIME'].filter(c => !this.source.columns.includes(c));
+            const requiredCols = srcSchema.columns
+              .filter((c) => (c.flag & FLAG_METADATA) === 0 && ((c.flag & FLAG_PRIMARY) || (c.flag & FLAG_BASETIME)))
+              .map((c) => c.name);
+            const missing = requiredCols.filter(c => !this.source.columns.includes(c));
             if (missing.length > 0) {
-              getLogger().error('replicator', { ...this.logCtx, msg: `source.columns missing required TAG columns: ${missing.join(', ')}, skipping` });
+              getLogger().error('replicator', { ...this.logCtx, msg: `source.columns missing required TAG key columns: ${missing.join(', ')}, skipping` });
               return null;
             }
           }
@@ -160,19 +163,12 @@ class Replicator {
       return null;
     }
 
-    const dstNames = new Set(dstSchema.columns.map(c => c.name));
-    const effectiveSourceCols = Array.isArray(this.source.columns) && this.source.columns.length > 0
-      ? this.source.columns
-      : srcSchema.columns
-        .filter(c => !(c.flag & FLAG_METADATA))
-        .map(c => c.name);
-    const srcOnlyCols = effectiveSourceCols.filter(c => !dstNames.has(c));
-    if (srcOnlyCols.length > 0) {
-      getLogger().error('replicator', { ...this.logCtx, msg: `source has columns not present in destination: ${srcOnlyCols.join(', ')}, skipping` });
+    const columnOrder = this._validateColumnOrderCompatibility(srcSchema, dstSchema);
+    if (!columnOrder) {
       return null;
     }
 
-    return { tableType, dataTables, srcSchema, dstSchema };
+    return { tableType, dataTables, srcSchema, dstSchema, columnOrder };
   }
 
   // ── 3. meta sync ────────────────────────────────────────────────────────────
@@ -248,7 +244,7 @@ class Replicator {
   // ── 4. workers 실행 ─────────────────────────────────────────────────────────
 
   async runWorkers(discovered) {
-    const { tableType, dataTables, srcSchema, dstSchema } = discovered;
+    const { tableType, dataTables, srcSchema, dstSchema, columnOrder } = discovered;
 
     getLogger().info('replicator', {
       ...this.logCtx,
@@ -269,6 +265,7 @@ class Replicator {
       onSaveFailure:  this.onSaveFailure,
       integrity:      this.integrity,
       retry:          this.retry,
+      columnOrder,
     };
     const workers = dataTables.map(dataTable =>
       new Worker(workerConfig, dataTable, srcSchema, dstSchema, this.shutdownFlag)
@@ -311,6 +308,55 @@ class Replicator {
       return false;
     }
     return true;
+  }
+
+  _dataColumns(schema) {
+    return schema.columns.filter(c => !(c.flag & FLAG_METADATA));
+  }
+
+  _validateColumnOrderCompatibility(srcSchema, dstSchema) {
+    const sourceDataCols = this._dataColumns(srcSchema);
+    const targetDataCols = this._dataColumns(dstSchema);
+
+    const sourceByName = {};
+    for (const col of sourceDataCols) {
+      sourceByName[col.name] = col;
+    }
+
+    const sourceOrder = Array.isArray(this.source.columns) && this.source.columns.length > 0
+      ? this.source.columns
+      : sourceDataCols.map((c) => c.name);
+    const targetOrder = targetDataCols.map((c) => c.name);
+
+    if (sourceOrder.length !== targetOrder.length) {
+      getLogger().error('replicator', {
+        ...this.logCtx,
+        msg: `column count mismatch by order: source(${sourceOrder.length}) != target(${targetOrder.length}), skipping`,
+      });
+      return null;
+    }
+
+    for (let i = 0; i < targetDataCols.length; i++) {
+      const sourceName = sourceOrder[i];
+      const sourceCol = sourceByName[sourceName];
+      const targetCol = targetDataCols[i];
+      if (!sourceCol) {
+        getLogger().error('replicator', {
+          ...this.logCtx,
+          msg: `source column not found for order check: ${sourceName}, skipping`,
+        });
+        return null;
+      }
+      if (sourceCol.columnType !== targetCol.columnType) {
+        getLogger().error('replicator', {
+          ...this.logCtx,
+          msg: `column type mismatch at index ${i}: source.${sourceName}(${sourceCol.sqlType()}) != target.${targetCol.name}(${targetCol.sqlType()}), skipping`,
+        });
+        return null;
+      }
+    }
+
+    return { source: sourceOrder, target: targetOrder };
   }
 
   // ── 6. 메인 루프 ────────────────────────────────────────────────────────────

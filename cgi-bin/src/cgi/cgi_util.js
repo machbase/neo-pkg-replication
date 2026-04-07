@@ -5,6 +5,7 @@ const path = require('path');
 const process = require('process');
 const service = require('service');
 const { MachbaseClient } = require('../db/client.js');
+const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
 
 const _argv = process.argv[1];
 const ROOT = _argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
@@ -67,6 +68,109 @@ class CGI {
     const tmpPath = `${filePath}.${Date.now()}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(normalized, null, 2), 'utf8');
     fs.renameSync(tmpPath, filePath);
+  }
+
+  static normalizeColumnName(value) {
+    if (typeof value !== 'string') return value;
+    const col = value.trim();
+    return col ? col.toUpperCase() : col;
+  }
+
+  static dataColumnsByOrder(client, tableName) {
+    return client.selectColumnsByTableName(tableName)
+      .filter((c) => !c.NAME.startsWith('_') && !(c.FLAG & FLAG_METADATA));
+  }
+
+  static validateColumnOrderTypes(config) {
+    const normalized = CGI.normalizeConfigForSave(config);
+    const source = normalized?.source;
+    const target = normalized?.target;
+    if (!source || !target) {
+      throw new Error('source/target config is required');
+    }
+    if (!source.table) {
+      throw new Error('source.table is required');
+    }
+    const effectiveTargetTable = CGI.normalizeTableName(target.table) || CGI.normalizeTableName(source.table);
+    if (!effectiveTargetTable) {
+      throw new Error('target.table is required');
+    }
+
+    let srcClient = null;
+    let dstClient = null;
+    try {
+      srcClient = new MachbaseClient(source);
+      dstClient = new MachbaseClient(target);
+      srcClient.connect();
+      dstClient.connect();
+
+      const sourceCols = CGI.dataColumnsByOrder(srcClient, source.table);
+      const sourceType = srcClient.selectTableType(source.table).type;
+      const targetType = dstClient.selectTableType(effectiveTargetTable).type;
+      let targetCols;
+
+      if (targetType === 'UNSUPPORTED') {
+        if (target.autoCreate === true) {
+          targetCols = sourceCols.slice();
+        } else {
+          throw new Error(`target table '${effectiveTargetTable}' not found`);
+        }
+      } else {
+        targetCols = CGI.dataColumnsByOrder(dstClient, effectiveTargetTable);
+      }
+
+      if (sourceCols.length === 0) {
+        throw new Error(`source table '${source.table}' has no data columns`);
+      }
+      if (targetCols.length === 0) {
+        throw new Error(`target table '${effectiveTargetTable}' has no data columns`);
+      }
+
+      const sourceByName = {};
+      for (const col of sourceCols) {
+        sourceByName[col.NAME] = col;
+      }
+
+      let effectiveSourceCols;
+      if (Array.isArray(source.columns) && source.columns.length > 0) {
+        effectiveSourceCols = source.columns.map(CGI.normalizeColumnName);
+        const unknown = effectiveSourceCols.filter((name) => !sourceByName[name]);
+        if (unknown.length > 0) {
+          throw new Error(`source.columns contains unknown columns: ${unknown.join(', ')}`);
+        }
+        if (sourceType === 'TAG') {
+          const requiredCols = sourceCols
+            .filter((c) => (c.FLAG & FLAG_METADATA) === 0 && ((c.FLAG & FLAG_PRIMARY) || (c.FLAG & FLAG_BASETIME)))
+            .map((c) => c.NAME);
+          const missing = requiredCols.filter((c) => !effectiveSourceCols.includes(c));
+          if (missing.length > 0) {
+            throw new Error(`source.columns missing required TAG key columns: ${missing.join(', ')}`);
+          }
+        }
+      } else {
+        effectiveSourceCols = sourceCols.map((c) => c.NAME);
+      }
+
+      if (effectiveSourceCols.length !== targetCols.length) {
+        throw new Error(
+          `column count mismatch: source(${effectiveSourceCols.length}) != target(${targetCols.length})`
+        );
+      }
+
+      for (let i = 0; i < targetCols.length; i++) {
+        const sourceName = effectiveSourceCols[i];
+        const sourceCol = sourceByName[sourceName];
+        const targetCol = targetCols[i];
+        if (sourceCol.TYPE !== targetCol.TYPE) {
+          throw new Error(
+            `column type mismatch at index ${i}: source.${sourceName}(TYPE=${sourceCol.TYPE}) != target.${targetCol.NAME}(TYPE=${targetCol.TYPE})`
+          );
+        }
+      }
+    } finally {
+      try { srcClient && srcClient.close(); } catch (_) {}
+      try { dstClient && dstClient.close(); } catch (_) {}
+    }
   }
 
   static deleteConfig(name) {
