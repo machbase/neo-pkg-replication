@@ -12,7 +12,7 @@ CGI 파일을 machbase-neo jsh로 직접 실행한다.
 
 - `GET /cgi-bin/api/rc/list` 는 `conf.d/*.json` 전체가 아니라 install된 service만 반환한다.
 - `POST /cgi-bin/api/rc` 는 config 저장 후 service `install` 까지 수행한다.
-- `PUT /cgi-bin/api/rc` 는 config 저장 후, service가 실행 중이면 `stop -> start` 로 재적용한다. `source.password`/`target.password` 키가 빠진 항목은 기존 값을 유지한다.
+- `PUT /cgi-bin/api/rc` 는 config 저장 후, service가 실행 중이면 `stop -> start` 로 재적용한다. `source.password`/`target.password` 키가 없거나 빈 문자열(`""`)인 항목은 기존 값을 유지한다.
 - `DELETE /cgi-bin/api/rc` 는 service `uninstall` 후 config, pid, checkpoint 파일을 함께 정리한다. 로그 파일은 유지한다.
 - 직접 JSH로 service 관련 CGI를 테스트할 때는 `/etc` mount 와 `SERVICE_CONTROLLER` 환경값이 필요할 수 있다.
 - `logging.file.directory` 에 `${CWD}` 를 쓰면 `cgi-bin` 의 부모 경로, 즉 패키지 루트로 치환된다.
@@ -344,7 +344,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 ### PUT /cgi-bin/api/rc?name=xxx
 
-replicator config 수정. `conf.d/{name}.json` 파일이 갱신되며, service가 실행 중이면 `stop -> start` 로 재적용된다. `source.password` 또는 `target.password` 키가 요청 본문에 없으면 해당 항목은 기존 비밀번호를 유지한다.
+replicator config 수정. `conf.d/{name}.json` 파일이 갱신되며, service가 실행 중이면 `stop -> start` 로 재적용된다. `source.password` 또는 `target.password` 키가 요청 본문에 없거나 빈 문자열(`""`)이면 해당 항목은 기존 비밀번호를 유지한다.
 
 **요청 본문**
 ```json

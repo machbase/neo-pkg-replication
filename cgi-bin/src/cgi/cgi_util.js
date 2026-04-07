@@ -40,10 +40,32 @@ class CGI {
     }
   }
 
+  static normalizeTableName(value) {
+    if (typeof value !== 'string') return value;
+    const table = value.trim();
+    return table ? table.toUpperCase() : table;
+  }
+
+  static normalizeConfigForSave(config) {
+    if (!config || typeof config !== 'object') return config;
+
+    const normalized = { ...config };
+    if (config.source && typeof config.source === 'object') {
+      normalized.source = { ...config.source };
+      normalized.source.table = CGI.normalizeTableName(normalized.source.table);
+    }
+    if (config.target && typeof config.target === 'object') {
+      normalized.target = { ...config.target };
+      normalized.target.table = CGI.normalizeTableName(normalized.target.table);
+    }
+    return normalized;
+  }
+
   static writeConfig(name, config) {
+    const normalized = CGI.normalizeConfigForSave(config);
     const filePath = CGI.configPath(name);
     const tmpPath = `${filePath}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), 'utf8');
+    fs.writeFileSync(tmpPath, JSON.stringify(normalized, null, 2), 'utf8');
     fs.renameSync(tmpPath, filePath);
   }
 
@@ -366,11 +388,14 @@ class CGI {
           continue;
         }
         const updatedAt = d.checkpoint?.updatedAt || '';
-        const hasMore = d.checkpoint?.hasMore === true;
+        const initializedOnly = d.checkpoint?.initializedOnly === true;
+        const ridText = String(lastSuccessRid);
+        const isNegativeRid = /^-/.test(ridText);
+        const hasMore = !initializedOnly && !isNegativeRid && d.checkpoint?.hasMore === true;
         const prev = records[dataTable];
         if (!prev || updatedAt >= prev.updatedAt) {
           records[dataTable] = {
-            lastSuccessRid: String(lastSuccessRid),
+            lastSuccessRid: initializedOnly || isNegativeRid ? '' : ridText,
             hasMore,
             updatedAt,
           };
@@ -398,16 +423,18 @@ class CGI {
 
     let client = null;
     try {
-      client = new MachbaseClient(source);
+      const normalizedTable = String(logicalTable).toUpperCase();
+      const normalizedSource = { ...source, table: normalizedTable };
+      client = new MachbaseClient(normalizedSource);
       client.connect();
-      const tableType = client.selectTableType(logicalTable).type;
+      const tableType = client.selectTableType(normalizedTable).type;
       if (tableType === 'TAG') {
-        const parts = client.selectTagDataTables(logicalTable);
+        const parts = client.selectTagDataTables(normalizedTable);
         for (const part of parts) {
           push(part?.data_table);
         }
       } else if (tableType === 'LOG') {
-        push(logicalTable);
+        push(normalizedTable);
       }
     } catch (_) {
       // checkpoint 조회는 best-effort로 동작한다.

@@ -134,7 +134,7 @@ CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
   - service install
 - 수정은 `PUT /api/rc?name=...` 에서 처리한다.
   - config 저장
-  - `source.password`/`target.password`는 각각 키가 누락된 경우 기존 값 유지
+  - `source.password`/`target.password`는 각각 키가 누락되었거나 빈 문자열(`""`)인 경우 기존 값 유지
   - service가 `RUNNING` 상태일 때만 `stop -> start`
 - 시작/종료는 `POST /api/rc/start`, `POST /api/rc/stop`
   - JSH `service` 모듈 사용

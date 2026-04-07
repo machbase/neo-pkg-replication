@@ -195,6 +195,18 @@ class Worker {
         startRid = 0n; // 'full'
       }
       getLogger().info('worker', { ...logCtx, startMode, startRid: String(startRid), msg: 'worker start' });
+
+      // 파티션 파일이 없는 경우에도 checkpoint 파일을 만들어 관리 대상 파티션을 명시한다.
+      const initialCpRid = startRid > 0n ? (startRid - 1n) : -1n;
+      checkpointStore.save({
+        lastSuccessRid: initialCpRid,
+        sourceHost: this.config.source.host,
+        sourceTable: this.config.source.table,
+      }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 }, {
+        onSaveFailure: this.config.onSaveFailure,
+        queryLimit: batchSize,
+        initializedOnly: true,
+      });
     }
 
     // TAG alias cache 로드

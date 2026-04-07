@@ -19,10 +19,19 @@ class AbortController {
 
 class Replicator {
   constructor(config, shutdownFlag) {
-    const targetTable = config.target.table || config.source.table;
-    this.id             = config.id || `${config.source.table}_${targetTable}`;
-    this.source           = config.source;
-    this.target           = config.target;
+    const sourceTable = typeof config.source?.table === 'string'
+      ? config.source.table.toUpperCase()
+      : config.source?.table;
+    const targetTable = typeof config.target?.table === 'string'
+      ? config.target.table.toUpperCase()
+      : (config.target?.table || sourceTable);
+    const sourceColumns = Array.isArray(config.source?.columns)
+      ? config.source.columns.map((c) => typeof c === 'string' ? c.toUpperCase() : c)
+      : config.source?.columns;
+
+    this.source = { ...config.source, table: sourceTable, columns: sourceColumns };
+    this.target = { ...config.target, table: targetTable };
+    this.id             = config.id || `${sourceTable}_${targetTable}`;
     this.queryLimit       = config.queryLimit       ?? 5000;
     this.ridRangeSize     = config.ridRangeSize     ?? 50000;
     this.pollIntervalMs   = config.pollIntervalMs   ?? 1000;
@@ -152,9 +161,12 @@ class Replicator {
     }
 
     const dstNames = new Set(dstSchema.columns.map(c => c.name));
-    const srcOnlyCols = srcSchema.columns
-      .filter(c => !(c.flag & FLAG_METADATA) && !dstNames.has(c.name))
-      .map(c => c.name);
+    const effectiveSourceCols = Array.isArray(this.source.columns) && this.source.columns.length > 0
+      ? this.source.columns
+      : srcSchema.columns
+        .filter(c => !(c.flag & FLAG_METADATA))
+        .map(c => c.name);
+    const srcOnlyCols = effectiveSourceCols.filter(c => !dstNames.has(c));
     if (srcOnlyCols.length > 0) {
       getLogger().error('replicator', { ...this.logCtx, msg: `source has columns not present in destination: ${srcOnlyCols.join(', ')}, skipping` });
       return null;

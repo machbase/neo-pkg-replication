@@ -28,12 +28,16 @@ function applyPasswordFallback(nextConfig, currentConfig) {
   const nextTarget = nextConfig.target;
   const validSource = !!nextSource && typeof nextSource === 'object';
   const validTarget = !!nextTarget && typeof nextTarget === 'object';
+  const sourcePasswordMissingOrEmpty = validSource
+    && (!hasOwn(nextSource, 'password') || nextSource.password === '');
+  const targetPasswordMissingOrEmpty = validTarget
+    && (!hasOwn(nextTarget, 'password') || nextTarget.password === '');
 
-  if (validSource && !hasOwn(nextSource, 'password') && hasOwn(currentConfig?.source, 'password')) {
+  if (sourcePasswordMissingOrEmpty && hasOwn(currentConfig?.source, 'password')) {
     nextSource.password = currentConfig.source.password;
   }
 
-  if (validTarget && !hasOwn(nextTarget, 'password') && hasOwn(currentConfig?.target, 'password')) {
+  if (targetPasswordMissingOrEmpty && hasOwn(currentConfig?.target, 'password')) {
     nextTarget.password = currentConfig.target.password;
   }
 

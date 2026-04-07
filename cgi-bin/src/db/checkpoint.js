@@ -32,7 +32,7 @@ class CheckpointStore {
     let data;
     try {
       data = JSON.parse(fs.readFileSync(filePath, 'utf-8'), (key, value) => {
-        if (BIGINT_KEYS.has(key) && typeof value === 'string' && /^\d+$/.test(value)) {
+        if (BIGINT_KEYS.has(key) && typeof value === 'string' && /^-?\d+$/.test(value)) {
           return BigInt(value);
         }
         return value;
@@ -63,6 +63,10 @@ class CheckpointStore {
       });
       return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
     }
+    if (cp.initializedOnly === true) {
+      // placeholder checkpoint는 "resume 가능한 checkpoint"로 취급하지 않는다.
+      return { cp: null, exists: false, err: null };
+    }
 
     return { cp, exists: true, err: null };
   }
@@ -71,7 +75,7 @@ class CheckpointStore {
    * 체크포인트 저장 (atomic write)
    * @param {{ lastSuccessRid: bigint, sourceServer?: string, sourceTable?: string }} cp
    * @param {{ rowsRead: number, rowsWritten: number, droppedNoMeta: number, skippedExists: number }} stats
-   * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number }} [opts]
+   * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number, initializedOnly?: boolean }} [opts]
    * @returns {Error|null}
    */
   save(cp, stats, opts) {
@@ -93,7 +97,12 @@ class CheckpointStore {
       const content = JSON.stringify({
         version: 1,
         source:     { server: cp.sourceServer || '', table: cp.sourceTable || '', dataTable },
-        checkpoint: { lastSuccessRid: cp.lastSuccessRid, updatedAt: new Date().toISOString(), hasMore },
+        checkpoint: {
+          lastSuccessRid: cp.lastSuccessRid,
+          updatedAt: new Date().toISOString(),
+          hasMore,
+          initializedOnly: opts?.initializedOnly === true ? true : undefined,
+        },
       }, (_key, value) => (_isBigInt(value) ? value.toString() : value), 2);
 
       const tmpPath = `${filePath}.${Date.now()}.tmp`;
