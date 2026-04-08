@@ -539,7 +539,8 @@ class CGI {
 
   static isMissingServiceError(err) {
     const message = err && err.message ? String(err.message) : '';
-    return message.indexOf('does not exist') >= 0;
+    return message.indexOf('does not exist') >= 0
+      || message.indexOf('not found') >= 0;
   }
 
   static isServiceRunningStatus(serviceInfo) {
@@ -550,7 +551,11 @@ class CGI {
   static restartServiceIfRunning(name, callback) {
     CGI.getServiceStatus(name, (err, serviceInfo) => {
       if (err) {
-        callback(err);
+        if (CGI.isMissingServiceError(err)) {
+          callback(null, false);
+        } else {
+          callback(err);
+        }
         return;
       }
       if (!CGI.isServiceRunningStatus(serviceInfo)) {
