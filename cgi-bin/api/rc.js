@@ -127,9 +127,9 @@ function DELETE() {
           CGI.reply({ ok: false, reason: errorMessage(err) });
         } else {
           const serviceDefinitionErr = CGI.deleteServiceDefinition(name);
-          CGI.deleteCheckpoints(name, config);
           const pidErr = CGI.deletePid(name);
           const configErr = CGI.deleteConfig(name);
+          CGI.deleteCheckpoints(name, config);
           if (serviceDefinitionErr) {
             CGI.reply({ ok: false, reason: errorMessage(serviceDefinitionErr) });
             return;

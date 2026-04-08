@@ -226,6 +226,13 @@ class CGI {
   }
 
   static removePath(targetPath) {
+    if (typeof fs.rmSync === 'function') {
+      try {
+        fs.rmSync(targetPath, { recursive: true, force: true });
+      } catch (_) {}
+      return;
+    }
+
     let stat;
     try {
       stat = fs.statSync(targetPath);
@@ -239,6 +246,7 @@ class CGI {
         entries = fs.readdirSync(targetPath);
       } catch (_) {}
       for (const entry of entries) {
+        if (entry === '.' || entry === '..') continue;
         CGI.removePath(path.join(targetPath, entry));
       }
       try { fs.rmdirSync(targetPath); } catch (_) {}
@@ -306,6 +314,31 @@ class CGI {
       push(rawName);
     }
     return names;
+  }
+
+  static installedServiceNames(name) {
+    const names = [];
+    const seen = {};
+    for (const serviceName of CGI.serviceNames(name)) {
+      for (const serviceDir of CGI.getServiceDirectoryCandidates()) {
+        const filePath = path.join(serviceDir, `${serviceName}.json`);
+        try {
+          if (fs.statSync(filePath).isFile() && !seen[serviceName]) {
+            seen[serviceName] = true;
+            names.push(serviceName);
+          }
+        } catch (_) {}
+      }
+    }
+    return names;
+  }
+
+  static serviceNamesForControl(name) {
+    const installed = CGI.installedServiceNames(name);
+    if (installed.length > 0) {
+      return installed;
+    }
+    return [CGI.serviceName(name)];
   }
 
   static getNeoHome() {
@@ -433,7 +466,7 @@ class CGI {
   }
 
   static getServiceStatus(name, callback) {
-    const names = CGI.serviceNames(name);
+    const names = CGI.serviceNamesForControl(name);
     const next = (index, lastErr) => {
       if (index >= names.length) {
         callback(lastErr || new Error(`service '${CGI.serviceName(name)}' does not exist`));
@@ -451,7 +484,7 @@ class CGI {
   }
 
   static uninstallService(name, callback) {
-    const names = CGI.serviceNames(name);
+    const names = CGI.serviceNamesForControl(name);
     const next = (index, firstErr) => {
       if (index >= names.length) {
         callback(firstErr);
@@ -469,7 +502,7 @@ class CGI {
   }
 
   static startService(name, callback) {
-    const names = CGI.serviceNames(name);
+    const names = CGI.serviceNamesForControl(name);
     const next = (index, lastErr) => {
       if (index >= names.length) {
         callback(lastErr || new Error(`service '${CGI.serviceName(name)}' does not exist`));
@@ -487,7 +520,7 @@ class CGI {
   }
 
   static stopService(name, callback) {
-    const names = CGI.serviceNames(name);
+    const names = CGI.serviceNamesForControl(name);
     const next = (index, lastErr) => {
       if (index >= names.length) {
         callback(lastErr || new Error(`service '${CGI.serviceName(name)}' does not exist`));
