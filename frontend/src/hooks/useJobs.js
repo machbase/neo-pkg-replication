@@ -5,16 +5,20 @@ import { useApp } from "../context/AppContext";
 export default function useJobs() {
     const [jobs, setJobs] = useState([]);
     const [loading, setLoading] = useState(true);
-    const { notify } = useApp();
+    const { notify, setSelectedJobId } = useApp();
     const intervalRef = useRef(null);
     const lastErrorRef = useRef(null);
+    const initialSelectedRef = useRef(false);
 
     const fetchJobs = useCallback(async () => {
         try {
             const data = await jobsApi.listJobs();
-            console.log("data", data);
             setJobs(data);
             lastErrorRef.current = null;
+            if (!initialSelectedRef.current && data.length > 0) {
+                initialSelectedRef.current = true;
+                setSelectedJobId(data[0].id);
+            }
         } catch (e) {
             const msg = e.reason || e.message;
             if (lastErrorRef.current !== msg) {
@@ -24,7 +28,7 @@ export default function useJobs() {
         } finally {
             setLoading(false);
         }
-    }, [notify]);
+    }, [notify, setSelectedJobId]);
 
     useEffect(() => {
         fetchJobs();

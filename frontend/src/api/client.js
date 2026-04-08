@@ -1,8 +1,9 @@
 class ApiError extends Error {
-    constructor(status, reason) {
+    constructor(status, reason, data) {
         super(reason);
         this.status = status;
         this.reason = reason;
+        this.data = data;
     }
 }
 
@@ -30,7 +31,7 @@ async function request(method, path, body) {
     } catch {
         throw new ApiError(res.status, `Server returned non-JSON response (${res.status})`);
     }
-    if (!json.ok) throw new ApiError(res.status, json.reason || 'Unknown error');
+    if (!json.ok) throw new ApiError(res.status, json.reason || 'Unknown error', json);
     return json.data;
 }
 

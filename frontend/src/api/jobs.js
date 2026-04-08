@@ -36,5 +36,11 @@ export const startJob = (name) =>
 export const stopJob = (name) =>
   request('POST', `${RC}/stop?name=${encodeURIComponent(name)}`)
 
+export const recoverJob = (name) =>
+  request('POST', `${RC}/recover?name=${encodeURIComponent(name)}`)
+
+export const overwriteJob = (name) =>
+  request('POST', `${RC}/overwrite?name=${encodeURIComponent(name)}`)
+
 export const fetchTableColumns = ({ host, port, user, password, table }) =>
   request('POST', '/cgi-bin/api/table/columns', { host, port: Number(port), user, password, table })

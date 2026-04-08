@@ -227,7 +227,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                 if (data) {
                     setLastUpdated(new Date());
                     const cp = data.checkpoints || {};
-                    prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+                    prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
                 }
             });
         }
@@ -239,7 +239,7 @@ export default function DashboardPage({ jobs, onDelete }) {
             if (!data) return;
             setLastUpdated(new Date());
             const cp = data.checkpoints || {};
-            const currentTotal = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+            const currentTotal = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
             if (prevTotalRowsRef.current !== null) {
                 const diff = currentTotal - prevTotalRowsRef.current;
                 const rate = Math.max(0, diff / 5);
@@ -283,15 +283,10 @@ export default function DashboardPage({ jobs, onDelete }) {
     const src = jobDetail.source || {};
     const tgt = jobDetail.target || {};
     const retry = jobDetail.retry || {};
-    // TODO: remove dummy data when backend implements checkpoints
-    const DUMMY_CHECKPOINTS = {
-        PARTITION_0: 154320,
-        PARTITION_1: 98210,
-        PARTITION_2: 231050,
-        PARTITION_3: 45600,
-    };
-    const checkpoints = jobDetail.checkpoints && Object.keys(jobDetail.checkpoints).length > 0 ? jobDetail.checkpoints : DUMMY_CHECKPOINTS;
+
+    const checkpoints = jobDetail.checkpoints && Object.keys(jobDetail.checkpoints).length > 0 ? jobDetail.checkpoints : {};
     const cpEntries = Object.entries(checkpoints);
+    const allDone = cpEntries.length > 0 && cpEntries.every(([, v]) => !v.hasMore);
 
     return (
         <div className="page">
@@ -339,7 +334,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                                         if (!data) return;
                                         setLastUpdated(new Date());
                                         const cp = data.checkpoints || {};
-                                        prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+                                        prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
                                         setRowsPerSec(null);
                                         setConsecutiveZero(0);
                                     });
@@ -350,83 +345,90 @@ export default function DashboardPage({ jobs, onDelete }) {
                                 <Icon name="refresh" className="icon-sm" />
                             </button>
                         </div>
-                        {cpEntries.length > 0 ? (
-                            (() => {
-                                const totalRows = cpEntries.reduce((sum, [, rid]) => sum + Number(rid), 0);
-                                const leftIconColor =
-                                    rowsPerSec === null ? "var(--color-on-surface-disabled)" : listJob.status === "running" ? "var(--color-success)" : "var(--color-error)";
-                                const rightIconColor = rowsPerSec === null ? "var(--color-on-surface-disabled)" : rowsPerSec > 0 ? "var(--color-success)" : "var(--color-error)";
-                                const isFlowing = rowsPerSec !== null && rowsPerSec > 0;
-                                return (
-                                    <div className="flex items-center justify-center gap-24">
-                                        {/* Left DB icon — status color */}
-                                        <div className="flex flex-col items-center shrink-0">
-                                            <Icon name="database" className="shrink-0" style={{ fontSize: "120px", color: leftIconColor }} />
-                                            <span className="font-mono text-xs text-on-surface-disabled mt-2">
-                                                {src.host}:{src.port}
-                                            </span>
-                                        </div>
+                        {(() => {
+                            const totalRows = cpEntries.reduce((sum, [, v]) => sum + Number(v.lastSuccessRid || 0), 0);
+                            const leftIconColor = listJob.status === "running" ? "var(--color-success)" : "var(--color-error)";
+                            const rightIconColor =
+                                cpEntries?.length === 0 || rowsPerSec === null
+                                    ? "var(--color-on-surface-disabled)"
+                                    : allDone
+                                    ? "var(--color-on-surface-disabled)"
+                                    : rowsPerSec > 0
+                                    ? "var(--color-success)"
+                                    : "var(--color-error)";
+                            const isFlowing = rowsPerSec !== null && rowsPerSec > 0;
+                            return (
+                                <div className="flex items-center justify-center gap-24">
+                                    {/* Left DB icon — status color */}
+                                    <div className="flex flex-col items-center shrink-0">
+                                        <Icon name="database" className="shrink-0" style={{ fontSize: "120px", color: leftIconColor }} />
+                                        <span className="font-mono text-xs text-on-surface-disabled mt-2">
+                                            {src.host}:{src.port}
+                                        </span>
+                                    </div>
 
-                                        {/* Table */}
-                                        <div className="flex-1 min-w-0" style={{ maxWidth: "360px" }}>
-                                            <table className="w-full">
-                                                <thead>
-                                                    <tr className="text-xs text-on-surface-tertiary">
-                                                        <th className="text-left font-medium pb-6 pl-12">Partition</th>
-                                                        <th className="text-right font-medium pb-6 pr-12">Last Row ID</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {cpEntries.map(([partition, rid]) => (
+                                    {/* Table */}
+                                    <div className="flex-1 min-w-0" style={{ maxWidth: "360px" }}>
+                                        <table className="w-full">
+                                            <thead>
+                                                <tr className="text-xs text-on-surface-tertiary">
+                                                    <th className="text-left font-medium pb-6 pl-12">Partition</th>
+                                                    <th className="text-right font-medium pb-6 pr-12">Last Row ID</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {cpEntries?.length > 0 ? (
+                                                    cpEntries.map(([partition, v]) => (
                                                         <tr key={partition} className="border-t border-border">
                                                             <td className="py-6 pl-12">
                                                                 <span className="text-sm text-on-surface">{partition}</span>
                                                             </td>
                                                             <td className="py-6 pr-12 text-right">
-                                                                <span className="font-mono text-sm text-on-surface-secondary">{Number(rid).toLocaleString()}</span>
+                                                                <span className="font-mono text-sm text-on-surface-secondary">{v.lastSuccessRid ? Number(v.lastSuccessRid).toLocaleString() : "—"}</span>
                                                             </td>
                                                         </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                            <p className="text-right text-xs text-on-surface-disabled mt-8 pr-12">Total: {totalRows.toLocaleString()}</p>
-                                        </div>
-
-                                        {/* Flow arrow + rate */}
-                                        <div className="flex flex-col items-center gap-6 shrink-0" style={{ width: "100px" }}>
-                                            <div
-                                                className={`repl-flow-arrow ${isFlowing ? `flowing text-primary` : ""} ${consecutiveZero >= 2 ? "text-error" : ""}`}
-                                                style={{ fontSize: "56px", fontWeight: 700, letterSpacing: "-6px" }}
-                                            >
-                                                <span>&gt;</span>
-                                                <span>&gt;</span>
-                                                <span>&gt;</span>
-                                            </div>
-                                            <span
-                                                className={`text-sm font-mono font-medium ${
-                                                    rowsPerSec === null ? "text-on-surface-disabled" : consecutiveZero >= 2 ? "text-error" : "text-success"
-                                                }`}
-                                            >
-                                                {rowsPerSec !== null ? `${rowsPerSec.toFixed(1)} r/s` : "—"}
-                                            </span>
-                                        </div>
-
-                                        {/* Right DB icon — rate color */}
-                                        <div className="flex flex-col items-center shrink-0">
-                                            <Icon name="database" className="shrink-0" style={{ fontSize: "120px", color: rightIconColor }} />
-                                            <span className="font-mono text-xs text-on-surface-disabled mt-2">
-                                                {tgt.host}:{tgt.port}
-                                            </span>
-                                        </div>
+                                                    ))
+                                                ) : (
+                                                    <tr>
+                                                        <td colSpan="2" className="py-6 pl-12">
+                                                            <span className="text-sm text-on-surface-disabled">Job has not been executed yet</span>
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                        <p className="text-right text-xs text-on-surface-disabled mt-8 pr-12">Total: {totalRows.toLocaleString()}</p>
                                     </div>
-                                );
-                            })()
-                        ) : (
-                            <div className="dash-field-box">
-                                <Icon name="database" className="text-on-surface-disabled" />
-                                <span className="text-sm text-on-surface-disabled">Job has not been executed yet</span>
-                            </div>
-                        )}
+
+                                    {/* Flow arrow + rate */}
+                                    <div className="flex flex-col items-center gap-6 shrink-0" style={{ width: "100px" }}>
+                                        <div
+                                            className={`repl-flow-arrow ${isFlowing ? `flowing text-primary` : ""} ${consecutiveZero >= 2 ? "text-error" : ""}`}
+                                            style={{ fontSize: "56px", fontWeight: 700, letterSpacing: "-6px" }}
+                                        >
+                                            <span>&gt;</span>
+                                            <span>&gt;</span>
+                                            <span>&gt;</span>
+                                        </div>
+                                        <span
+                                            className={`text-sm font-mono font-medium ${
+                                                rowsPerSec === null ? "text-on-surface-disabled" : consecutiveZero >= 2 ? "text-error" : "text-success"
+                                            }`}
+                                        >
+                                            {rowsPerSec !== null ? `${rowsPerSec.toFixed(1)} r/s` : "—"}
+                                        </span>
+                                    </div>
+
+                                    {/* Right DB icon — rate color */}
+                                    <div className="flex flex-col items-center shrink-0">
+                                        <Icon name="database" className="shrink-0" style={{ fontSize: "120px", color: rightIconColor }} />
+                                        <span className="font-mono text-xs text-on-surface-disabled mt-2">
+                                            {tgt.host}:{tgt.port}
+                                        </span>
+                                    </div>
+                                </div>
+                            );
+                        })()}
                     </section>
 
                     {/* Two-column layout */}

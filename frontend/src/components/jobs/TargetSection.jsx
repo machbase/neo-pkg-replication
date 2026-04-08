@@ -1,7 +1,7 @@
 import Icon from '../common/Icon'
 import { koToEn } from '../../utils/korean'
 
-export default function TargetSection({ form, update }) {
+export default function TargetSection({ form, update, isEdit }) {
   return (
     <div className="form-card">
       <div className="form-card-header">
@@ -32,7 +32,7 @@ export default function TargetSection({ form, update }) {
 
         <div>
           <label className="form-label">Password</label>
-          <input type="text" autoComplete="off" required value={form.target.password} onChange={e => update('target.password', koToEn(e.target.value))} className="w-full input-masked" />
+          <input type="text" autoComplete="off" required={!isEdit} value={form.target.password} onChange={e => update('target.password', koToEn(e.target.value))} className="w-full input-masked" placeholder={isEdit ? "Leave blank to keep current password" : ""} />
         </div>
       </div>
     </div>
