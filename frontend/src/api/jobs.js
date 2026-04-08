@@ -13,10 +13,10 @@ export const listJobs = async () => {
   return data.map(mapListItem)
 }
 
-// 단건 응답: { name, config: { ... } }
+// 단건 응답: { name, config: { ... }, checkpoints: { ... } }
 export const getJob = async (name) => {
   const data = await request('GET', `${RC}?name=${encodeURIComponent(name)}`)
-  return { name: data.name, ...data.config }
+  return { name: data.name, ...data.config, checkpoints: data.checkpoints }
 }
 
 // 생성: { name, config }
