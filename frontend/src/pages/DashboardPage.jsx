@@ -357,11 +357,13 @@ export default function DashboardPage({ jobs, onDelete }) {
                                     : rowsPerSec > 0
                                     ? "var(--color-success)"
                                     : "var(--color-error)";
-                            const isFlowing = rowsPerSec !== null && rowsPerSec > 0;
+                            const hasAnyMore = cpEntries.length > 0 && cpEntries.some(([, v]) => v.hasMore);
+                            const isFlowing = hasAnyMore && listJob.status !== "stopped";
                             return (
                                 <div className="flex items-center justify-center gap-24">
                                     {/* Left DB icon — status color */}
                                     <div className="flex flex-col items-center shrink-0">
+                                        <span className="font-mono text-sm text-on-surface-secondary font-medium mb-4">{src.table || "—"}</span>
                                         <Icon name="database" className="shrink-0" style={{ fontSize: "120px", color: leftIconColor }} />
                                         <span className="font-mono text-xs text-on-surface-disabled mt-2">
                                             {src.host}:{src.port}
@@ -422,6 +424,7 @@ export default function DashboardPage({ jobs, onDelete }) {
 
                                     {/* Right DB icon — rate color */}
                                     <div className="flex flex-col items-center shrink-0">
+                                        <span className="font-mono text-sm text-on-surface-secondary font-medium mb-4">{tgt.table || "—"}</span>
                                         <Icon name="database" className="shrink-0" style={{ fontSize: "120px", color: rightIconColor }} />
                                         <span className="font-mono text-xs text-on-surface-disabled mt-2">
                                             {tgt.host}:{tgt.port}
