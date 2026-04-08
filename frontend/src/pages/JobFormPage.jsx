@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router";
 import { useApp } from "../context/AppContext";
 import * as jobsApi from "../api/jobs";
 import Icon from "../components/common/Icon";
+import { koToEn } from "../utils/korean";
 import SourceSection from "../components/jobs/SourceSection";
 import TargetSection from "../components/jobs/TargetSection";
 import ExecutionSection from "../components/jobs/ExecutionSection";
@@ -202,7 +203,11 @@ export default function JobFormPage({ onRefresh }) {
                                             type="text"
                                             disabled={isEdit}
                                             value={form.id}
-                                            onChange={(e) => update("id", e.target.value)}
+                                            onChange={(e) => {
+                                                const v = koToEn(e.target.value).replace(/[^a-zA-Z0-9_-]/g, "");
+                                                update("id", v);
+                                            }}
+                                            pattern="^[a-zA-Z0-9_-]*$"
                                             className="w-full disabled:opacity-50"
                                             placeholder="Auto-generated from table names if empty"
                                         />

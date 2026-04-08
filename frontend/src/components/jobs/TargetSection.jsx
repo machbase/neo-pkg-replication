@@ -22,7 +22,7 @@ export default function TargetSection({ form, update, isEdit }) {
           </div>
           <div>
             <label className="form-label">Table</label>
-            <input type="text" value={form.target.table} onChange={e => update('target.table', e.target.value)} className="w-full" placeholder="Target table name" />
+            <input type="text" value={form.target.table} onChange={e => update('target.table', koToEn(e.target.value).replace(/[^a-zA-Z0-9_]/g, ''))} className="w-full" placeholder="Target table name" />
           </div>
           <div>
             <label className="form-label">User</label>

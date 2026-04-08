@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import * as jobsApi from "../api/jobs";
 import { useApp } from "../context/AppContext";
 
-const AUTO_REFRESH = false;
+const AUTO_REFRESH = true;
 
 export default function useJobs() {
     const [jobs, setJobs] = useState([]);
@@ -35,7 +35,7 @@ export default function useJobs() {
     useEffect(() => {
         fetchJobs();
         if (AUTO_REFRESH) {
-            intervalRef.current = setInterval(fetchJobs, 5000);
+            intervalRef.current = setInterval(fetchJobs, 10000);
             return () => clearInterval(intervalRef.current);
         }
     }, [fetchJobs]);

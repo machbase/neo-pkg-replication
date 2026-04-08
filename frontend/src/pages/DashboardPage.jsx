@@ -99,9 +99,15 @@ function RuleBadge({ label, value }) {
 }
 
 function SourceDetailCard({ src }) {
+    const isAllColumns = src.columns === null || src.columns === undefined;
     const columns = src.columns || [];
     const filter = src.filter || [];
     const transform = src.transform || [];
+
+    // Collect all column names that have rules (for "All columns" mode)
+    const ruleColumns = isAllColumns
+        ? [...new Set([...filter.map((r) => r.column), ...transform.map((r) => r.column)])]
+        : [];
 
     const hasStringRule = (name) => {
         const f = filter.find((r) => r.column === name);
@@ -114,17 +120,19 @@ function SourceDetailCard({ src }) {
         return f?.min != null || f?.max != null || t?.add != null || t?.multiply != null;
     };
 
-    const stringRows = columns.filter(hasStringRule).map((name) => ({
+    const colsForRules = isAllColumns ? ruleColumns : columns;
+    const stringRows = colsForRules.filter(hasStringRule).map((name) => ({
         name,
         filter: filter.find((r) => r.column === name),
         transform: transform.find((r) => r.column === name),
     }));
-    const numericRows = columns.filter(hasNumericRule).map((name) => ({
+    const numericRows = colsForRules.filter(hasNumericRule).map((name) => ({
         name,
         filter: filter.find((r) => r.column === name),
         transform: transform.find((r) => r.column === name),
     }));
-    const plainCols = columns.filter((name) => !hasStringRule(name) && !hasNumericRule(name));
+    const plainCols = isAllColumns ? [] : columns.filter((name) => !hasStringRule(name) && !hasNumericRule(name));
+    const hasRules = stringRows.length > 0 || numericRows.length > 0;
 
     return (
         <section className="form-card">
@@ -144,9 +152,9 @@ function SourceDetailCard({ src }) {
                 </div>
             </div>
 
-            {columns.length > 0 ? (
+            {(columns.length > 0 || hasRules) ? (
                 <div className="space-y-16 mt-16">
-                    <span className="text-xs text-on-surface-tertiary">Total Columns ({columns.length})</span>
+                    <span className="text-xs text-on-surface-tertiary">{isAllColumns ? "All columns" : `Total Columns (${columns.length})`}</span>
                     {stringRows.length > 0 && (
                         <div className="columns-table-wrap">
                             <div className="columns-table-info">
@@ -250,10 +258,10 @@ export default function DashboardPage({ jobs, onDelete }) {
         });
     }, [selectedJobId, fetchJobDetail]);
 
-    const AUTO_REFRESH_DASHBOARD = false;
+    const AUTO_REFRESH_DASHBOARD = true;
     useEffect(() => {
         if (!AUTO_REFRESH_DASHBOARD || !selectedJobId) return;
-        const id = setInterval(refreshReplicationInfo, 5000);
+        const id = setInterval(refreshReplicationInfo, 10000);
         return () => clearInterval(id);
     }, [selectedJobId, refreshReplicationInfo]);
 
@@ -341,7 +349,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                                     });
                                 }}
                                 className={`${lastUpdated ? "" : "ml-auto"} p-4 hover:bg-surface-hover rounded-base transition-colors tooltip`}
-                                data-tooltip="Refresh (auto every 5s)"
+                                data-tooltip="Refresh (auto every 10s)"
                             >
                                 <Icon name="refresh" className="icon-sm" />
                             </button>

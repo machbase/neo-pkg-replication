@@ -55,7 +55,7 @@ export default function SourceSection({ form, update, isEdit }) {
     };
 
     const handleTableChange = (e) => {
-        update("source.table", e.target.value);
+        update("source.table", koToEn(e.target.value).replace(/[^a-zA-Z0-9_]/g, ""));
         // table name changed → clear fetched columns
         setFetchedColumns(null);
         setTableType(null);
@@ -167,47 +167,15 @@ export default function SourceSection({ form, update, isEdit }) {
         overscan: 5,
     });
 
-    const [filterModes, setFilterModes] = useState({});
-
-    const getFilterMode = (colName) => {
-        if (filterModes[colName]) return filterModes[colName];
-        const rule = getFilterRule(colName);
-        if (rule?.in) return "in";
-        return "like";
-    };
-
-    const switchFilterMode = (colName, mode) => {
-        setFilterModes((prev) => ({ ...prev, [colName]: mode }));
-        // clear the other field
-        if (mode === "like") {
-            updateFilter(colName, "in", undefined);
-            setInDrafts((prev) => { const next = { ...prev }; delete next[colName]; return next; });
-        } else {
-            updateFilter(colName, "like", undefined);
-        }
-    };
-
     const renderFilterCell = (col) => {
         const cat = getColumnCategory(col.type);
         const rule = getFilterRule(col.name);
-        if (cat === "string") {
-            const mode = getFilterMode(col.name);
-            return (
-                <div className="flex flex-col gap-4">
-                    <div className="flex gap-4">
-                        <select value={mode} onChange={(e) => switchFilterMode(col.name, e.target.value)} className="vtable-filter-select">
-                            <option value="like">LIKE</option>
-                            <option value="in">IN</option>
-                        </select>
-                        {mode === "like" ? (
-                            <input type="text" value={rule?.like || ""} onChange={(e) => updateFilter(col.name, "like", e.target.value || undefined)} className="w-full" placeholder="LIKE %" />
-                        ) : (
-                            <input type="text" value={getInDisplay(col.name, rule)} onChange={(e) => handleInChange(col.name, e.target.value)} onBlur={() => handleInBlur(col.name)} className="w-full" placeholder="IN val1, val2" />
-                        )}
-                    </div>
-                </div>
-            );
-        }
+        if (cat === "string") return (
+            <div className="flex flex-col gap-4">
+                <input type="text" value={rule?.like || ""} onChange={(e) => updateFilter(col.name, "like", e.target.value || undefined)} className="w-full" placeholder="LIKE %" />
+                <input type="text" value={getInDisplay(col.name, rule)} onChange={(e) => handleInChange(col.name, e.target.value)} onBlur={() => handleInBlur(col.name)} className="w-full" placeholder="IN val1, val2" />
+            </div>
+        );
         if (cat === "numeric") return (
             <div className="flex gap-4">
                 <input type="number" value={rule?.min ?? ""} onChange={(e) => updateFilter(col.name, "min", e.target.value ? Number(e.target.value) : undefined)} className="w-full" placeholder="Min (≥)" />
@@ -220,7 +188,12 @@ export default function SourceSection({ form, update, isEdit }) {
     const renderTransformCell = (col) => {
         const cat = getColumnCategory(col.type);
         const rule = getTransformRule(col.name);
-        if (cat === "string") return <span className="text-tertiary">—</span>;
+        if (cat === "string") return (
+            <div className="flex gap-4">
+                <input type="text" value={rule?.prefix || ""} onChange={(e) => updateTransform(col.name, "prefix", e.target.value || undefined)} className="w-full" placeholder="Prefix" />
+                <input type="text" value={rule?.suffix || ""} onChange={(e) => updateTransform(col.name, "suffix", e.target.value || undefined)} className="w-full" placeholder="Suffix" />
+            </div>
+        );
         if (cat === "numeric") return (
             <div className="flex gap-4">
                 <input type="number" value={rule?.add ?? ""} onChange={(e) => updateTransform(col.name, "add", e.target.value ? Number(e.target.value) : undefined)} className="w-full" placeholder="Add" />
@@ -299,20 +272,6 @@ export default function SourceSection({ form, update, isEdit }) {
                                     placeholder="Search columns..."
                                 />
                             </div>
-                            {tableType?.toUpperCase() === "TAG" && fetchedColumns.length > 0 && (() => {
-                                const nameCol = fetchedColumns[0]?.name;
-                                const rule = getTransformRule(nameCol);
-                                return (
-                                    <div className="vtable-tag-name-transform">
-                                        <span className="text-sm text-secondary">Name Tag Transform</span>
-                                        <div className="flex gap-8 items-center">
-                                            <input type="text" value={rule?.prefix || ""} onChange={(e) => updateTransform(nameCol, "prefix", e.target.value || undefined)} className="w-full" placeholder="Prefix" />
-                                            <span className="mono text-secondary shrink-0">{nameCol}</span>
-                                            <input type="text" value={rule?.suffix || ""} onChange={(e) => updateTransform(nameCol, "suffix", e.target.value || undefined)} className="w-full" placeholder="Suffix" />
-                                        </div>
-                                    </div>
-                                );
-                            })()}
                             {/* Virtual table header */}
                             <div className="vtable-header">
                                 <div className="vtable-cell vtable-cell-check">
