@@ -33,7 +33,7 @@ function replyConfigs(names, index, data) {
 
     data.push({
       name,
-      installed,
+      installed: true,
       running: CGI.isServiceRunningStatus(serviceInfo),
     });
     replyConfigs(names, index + 1, data);
