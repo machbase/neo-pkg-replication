@@ -89,7 +89,9 @@ cgi-bin/
    - cp 없음 -> startMode 기준 (`full`=0n, `now`=srcMaxRid+1n, `ridAfter`=BigInt)
    - TAG: `srcTable.cacheTagMetaAll()`
 2. **STARTUP_INTEGRITY** (TAG + cp 존재 + `integrity !== false`):
-   - 배치 읽기 -> `dstTable.findFirstMissRow()` -> firstMiss 발견 시 safeCpRid 저장 후 STEADY 진입
+   - 배치 읽기(`ORDER BY _RID`) -> `dstTable.findFirstMissRow()`
+   - source batch 순서대로 target의 `PRIMARY + BASETIME` 존재 여부를 확인
+   - firstMiss 발견 시 safeCpRid 저장 후 STEADY 진입
 3. **STEADY_REPLICATION**:
    - `srcTable.read()` -> `_applyTransform()` -> `dstTable.append()` -> `checkpointStore.save()`
    - rows 없음 + `rangeMaxRid > 0n` (필터 전량 차단) -> checkpoint 진행 후 sleep 없이 continue
@@ -186,7 +188,7 @@ table.setSchema(schema)
 table.getDataTables()                      // [{ data_table, table_id }]
 table.loadTagMetaCache(nameFilter?)        // TagMetaCache
 table.append(rows)                         // Error|null
-table.findFirstMissRow(resolved, client, suffix)  // { firstMissIdx, err } -- STARTUP_INTEGRITY 전용
+table.findFirstMissRow(resolved, client, suffix)  // { firstMissIdx, err } -- STARTUP_INTEGRITY 전용, source batch 순서대로 target 존재 여부 확인
 
 // TagDataTable
 dataTable.open() / dataTable.close()
@@ -196,12 +198,14 @@ dataTable.read(startRid, limit, rangeSize, nameRule, sourceColumns, filter)
   // { rows, rangeMaxRid, err }
   //   rows: 복제 대상 행 목록
   //   rangeMaxRid: 쿼리 RID 범위 내 실제 최대 RID (필터로 전량 차단된 경우에도 > 0n)
+  //   source read SQL은 ORDER BY _RID 사용
 dataTable.getMaxRid()                      // BigInt
 
 // LogTable
 logTable.open() / logTable.close()
 logTable.getSchema()
 logTable.read(startRid, limit, rangeSize, filter)  // { rows, rangeMaxRid, err }
+  // source read SQL은 ORDER BY _RID 사용
 logTable.append(rows)
 logTable.getMaxRid()
 ```
