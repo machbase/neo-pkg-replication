@@ -12,7 +12,7 @@ function errorMessage(err) {
   return err && err.message ? err.message : String(err);
 }
 
-function replyInstalled(names, index, data) {
+function replyConfigs(names, index, data) {
   if (index >= names.length) {
     CGI.reply({ ok: true, data });
     return;
@@ -22,29 +22,27 @@ function replyInstalled(names, index, data) {
   const installed = CGI.hasInstalledService(name);
   CGI.getServiceStatus(name, (err, serviceInfo) => {
     if (err) {
-      if (!installed) {
-        replyInstalled(names, index + 1, data);
-        return;
-      }
       data.push({
         name,
-        running: CGI.isRunning(name),
+        installed,
+        running: installed ? CGI.isRunning(name) : false,
       });
-      replyInstalled(names, index + 1, data);
+      replyConfigs(names, index + 1, data);
       return;
     }
 
     data.push({
       name,
+      installed,
       running: CGI.isServiceRunningStatus(serviceInfo),
     });
-    replyInstalled(names, index + 1, data);
+    replyConfigs(names, index + 1, data);
   });
 }
 
 function GET() {
   const names = CGI.listConfigs();
-  replyInstalled(names, 0, []);
+  replyConfigs(names, 0, []);
 }
 
 const handlers = { GET };

@@ -16,7 +16,8 @@ cgi-bin/
 ├── api/
 │   ├── rc.js                     # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
 │   ├── rc/
-│   │   ├── list.js               # CGI: GET 목록 조회 (install된 service만 반환)
+│   │   ├── install.js            # CGI: POST ?name=xxx -- 기존 config 기준 service install
+│   │   ├── list.js               # CGI: GET 목록 조회 (config 전체 + installed/running)
 │   │   ├── start.js              # CGI: POST ?name=xxx -- service 시작
 │   │   └── stop.js               # CGI: POST ?name=xxx -- service 종료
 │   └── table/
@@ -134,6 +135,8 @@ CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
   - config 저장
   - source/target 데이터 컬럼을 순서 기준으로 타입 검증
   - service install
+- 별도 install은 `POST /api/rc/install?name=...` 에서 처리한다.
+  - 기존 `conf.d/{name}.json` 이 있는 경우 service install만 수행
 - 수정은 `PUT /api/rc?name=...` 에서 처리한다.
   - config 저장
   - `source.password`/`target.password`는 각각 키가 누락되었거나 빈 문자열(`""`)인 경우 기존 값 유지
@@ -147,7 +150,8 @@ CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
   - service가 이미 없어도 service 정의 파일, config, pid, checkpoint 정리는 계속 시도
   - 로그 파일은 유지
 - 목록은 `GET /api/rc/list`
-  - `conf.d` 전체가 아니라 install된 service만 반환
+  - `conf.d` 전체를 반환
+  - 각 항목에 `installed`, `running` 포함
 - 직접 JSH로 service-aware CGI를 검증할 때는 `/public`, `/etc` mount 와 `SERVICE_CONTROLLER`가 필요할 수 있다.
 
 ### src/db/client.js — MachbaseClient

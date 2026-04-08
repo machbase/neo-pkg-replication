@@ -10,8 +10,9 @@ CGI 파일을 machbase-neo jsh로 직접 실행한다.
 
 ### service 연동 관련 주의
 
-- `GET /cgi-bin/api/rc/list` 는 `conf.d/*.json` 전체가 아니라 install된 service만 반환한다.
+- `GET /cgi-bin/api/rc/list` 는 `conf.d/*.json` 전체를 반환하고, 각 항목에 service install 여부를 `installed` 로 함께 표시한다.
 - `POST /cgi-bin/api/rc` 는 config 저장 후 service `install` 까지 수행한다. 저장 전 source/target 컬럼을 "순서 기준"으로 타입 검증한다.
+- `POST /cgi-bin/api/rc/install?name=...` 는 이미 저장된 `conf.d/{name}.json` 기준으로 service만 install 한다.
 - `PUT /cgi-bin/api/rc` 는 config 저장 후, service가 실행 중이면 `stop -> start` 로 재적용한다. `source.password`/`target.password` 키가 없거나 빈 문자열(`""`)인 항목은 기존 값을 유지한다. 저장 전 컬럼 순서/타입 검증을 동일하게 수행한다.
 - `DELETE /cgi-bin/api/rc` 는 service `uninstall` 후 config, pid, checkpoint 파일을 함께 정리한다. service가 이미 없더라도 남은 설정 파일 정리는 계속 시도한다. 로그 파일은 유지한다.
 - 직접 JSH로 service 관련 CGI를 테스트할 때는 `/etc` mount 와 `SERVICE_CONTROLLER` 환경값이 필요할 수 있다.
@@ -49,6 +50,9 @@ echo '{"id":"repli-a","source":{"host":"192.168.1.10","port":5656,"user":"SYS","
 # POST 종료
 ./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/stop.js
 
+# POST install (기존 config 기준 service 등록)
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/install.js
+
 # POST 테이블 컬럼 정보 조회
 echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":"TAG"}' | \
   ./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=POST /public/neo-pkg-replication/cgi-bin/api/table/columns.js
@@ -58,8 +62,9 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 | CGI 파일 | 메서드 | 설명 |
 |----------|--------|------|
-| `api/rc/list.js` | GET | install된 replication service 목록 조회 |
+| `api/rc/list.js` | GET | replication config 목록 조회 (`installed`, `running` 포함) |
 | `api/rc.js` | POST, GET, PUT, DELETE | 등록(service install) / 단건 조회 / 수정(실행 중이면 재시작) / 제거(service uninstall + 관련 파일 정리) |
+| `api/rc/install.js?name=xxx` | POST | 기존 config 기준 service install |
 | `api/rc/start.js?name=xxx` | POST | service 시작 |
 | `api/rc/stop.js?name=xxx` | POST | service 종료 |
 | `api/table/columns.js` | POST | 테이블 컬럼 정보 조회 |
@@ -188,7 +193,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 ### GET /cgi-bin/api/rc/list
 
-현재 install된 replicator service 목록 조회.
+현재 저장된 replicator config 목록 조회. install 여부와 실행 여부를 함께 반환한다.
 
 **응답**
 ```json
@@ -197,6 +202,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
   "data": [
     {
       "name": "repli-a",
+      "installed": true,
       "running": false
     }
   ]
@@ -206,6 +212,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | 필드 | 설명 |
 |------|------|
 | `name` | replicator 이름 |
+| `installed` | service install 여부 |
 | `running` | service 실행 중 여부 |
 
 ---
@@ -279,6 +286,26 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 ```json
 { "ok": false, "reason": "column type mismatch at index 2: source.VALUE(TYPE=20) != target.VALUE1(TYPE=8)" }
+```
+
+---
+
+### POST /cgi-bin/api/rc/install?name=xxx
+
+이미 저장된 `conf.d/{name}.json` 기준으로 service를 install 한다. config가 없으면 실패한다.
+
+**응답**
+```json
+{ "ok": true, "data": { "name": "repli-a" } }
+```
+
+**실패**
+```json
+{ "ok": false, "reason": "replicator 'repli-a' not found" }
+```
+
+```json
+{ "ok": false, "reason": "replicator 'repli-a' already installed" }
 ```
 
 ---
