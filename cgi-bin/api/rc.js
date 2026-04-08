@@ -126,10 +126,26 @@ function DELETE() {
         if (err && !CGI.isMissingServiceError(err)) {
           CGI.reply({ ok: false, reason: errorMessage(err) });
         } else {
-          CGI.deleteServiceDefinition(name);
+          const serviceDefinitionErr = CGI.deleteServiceDefinition(name);
           CGI.deleteCheckpoints(name, config);
-          CGI.deletePid(name);
-          CGI.deleteConfig(name);
+          const pidErr = CGI.deletePid(name);
+          const configErr = CGI.deleteConfig(name);
+          if (serviceDefinitionErr) {
+            CGI.reply({ ok: false, reason: errorMessage(serviceDefinitionErr) });
+            return;
+          }
+          if (pidErr) {
+            CGI.reply({ ok: false, reason: errorMessage(pidErr) });
+            return;
+          }
+          if (configErr) {
+            CGI.reply({ ok: false, reason: errorMessage(configErr) });
+            return;
+          }
+          if (CGI.configExists(name)) {
+            CGI.reply({ ok: false, reason: `failed to delete config '${name}'` });
+            return;
+          }
           CGI.reply({ ok: true });
         }
       });

@@ -7,6 +7,15 @@ const { Worker } = require('./worker.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 
 // jsh에는 AbortController가 없으므로 직접 구현
+function isEnabledFlag(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1';
+  }
+  return false;
+}
+
 class AbortSignal {
   constructor() { this.aborted = false; }
 }
@@ -30,7 +39,11 @@ class Replicator {
       : config.source?.columns;
 
     this.source = { ...config.source, table: sourceTable, columns: sourceColumns };
-    this.target = { ...config.target, table: targetTable };
+    this.target = {
+      ...config.target,
+      table: targetTable,
+      autoCreate: isEnabledFlag(config.target?.autoCreate),
+    };
     this.id             = config.id || `${sourceTable}_${targetTable}`;
     this.queryLimit       = config.queryLimit       ?? 5000;
     this.ridRangeSize     = config.ridRangeSize     ?? 50000;

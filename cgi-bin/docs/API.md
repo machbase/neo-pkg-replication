@@ -13,10 +13,11 @@ CGI 파일을 machbase-neo jsh로 직접 실행한다.
 - `GET /cgi-bin/api/rc/list` 는 `conf.d/*.json` 전체가 아니라 install된 service만 반환한다.
 - `POST /cgi-bin/api/rc` 는 config 저장 후 service `install` 까지 수행한다. 저장 전 source/target 컬럼을 "순서 기준"으로 타입 검증한다.
 - `PUT /cgi-bin/api/rc` 는 config 저장 후, service가 실행 중이면 `stop -> start` 로 재적용한다. `source.password`/`target.password` 키가 없거나 빈 문자열(`""`)인 항목은 기존 값을 유지한다. 저장 전 컬럼 순서/타입 검증을 동일하게 수행한다.
-- `DELETE /cgi-bin/api/rc` 는 service `uninstall` 후 config, pid, checkpoint 파일을 함께 정리한다. 로그 파일은 유지한다.
+- `DELETE /cgi-bin/api/rc` 는 service `uninstall` 후 config, pid, checkpoint 파일을 함께 정리한다. service가 이미 없더라도 남은 설정 파일 정리는 계속 시도한다. 로그 파일은 유지한다.
 - 직접 JSH로 service 관련 CGI를 테스트할 때는 `/etc` mount 와 `SERVICE_CONTROLLER` 환경값이 필요할 수 있다.
 - `logging.file.directory` 에 `${CWD}` 를 쓰면 `cgi-bin` 의 부모 경로, 즉 패키지 루트로 치환된다.
 - `source.table`/`target.table` 은 저장 시 대문자로 정규화된다.
+- 내부적으로 실제 Machbase Neo service name은 API의 `name` 앞에 `"_rpl_"` 를 붙여 사용한다. 예: `name="test4"` -> service name `"_rpl_test4"`
 
 ### jsh 직접 실행 (테스트용)
 
@@ -104,7 +105,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 | `target.user` | string | ✓ | — | 대상 DB 사용자명 |
 | `target.password` | string | ✓ | — | 대상 DB 비밀번호 |
 | `target.table` | string | | — | 대상 테이블명. 비어 있으면 `source.table` 을 사용한다. |
-| `target.autoCreate` | boolean | | false | 대상 테이블 미존재 시 src 스키마로 자동 생성 |
+| `target.autoCreate` | boolean | | false | 대상 테이블 미존재 시 src 스키마로 자동 생성. 등록 시점에도 target 테이블이 없어도 허용된다. |
 | `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
 | `ridAfter` | number \| null | | null | `startMode: "ridAfter"` 시 기준 RID |
 | `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |

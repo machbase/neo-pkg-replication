@@ -13,6 +13,7 @@ const APP_ROOT = path.dirname(ROOT);
 const CONF_DIR = path.join(ROOT, 'conf.d');
 const RUN_DIR  = path.join(ROOT, 'run');
 const DATA_DIR = path.join(ROOT, 'data');
+const SERVICE_NAME_PREFIX = '_rpl_';
 
 class CGI {
 
@@ -58,6 +59,7 @@ class CGI {
     if (config.target && typeof config.target === 'object') {
       normalized.target = { ...config.target };
       normalized.target.table = CGI.normalizeTableName(normalized.target.table);
+      normalized.target.autoCreate = CGI.isAutoCreateEnabled(normalized.target.autoCreate);
     }
     return normalized;
   }
@@ -85,6 +87,7 @@ class CGI {
     const normalized = CGI.normalizeConfigForSave(config);
     const source = normalized?.source;
     const target = normalized?.target;
+    const autoCreateEnabled = CGI.isAutoCreateEnabled(target?.autoCreate);
     if (!source || !target) {
       throw new Error('source/target config is required');
     }
@@ -110,7 +113,7 @@ class CGI {
       let targetCols;
 
       if (targetType === 'UNSUPPORTED') {
-        if (target.autoCreate === true) {
+        if (autoCreateEnabled) {
           targetCols = sourceCols.slice();
         } else {
           throw new Error(`target table '${effectiveTargetTable}' not found`);
@@ -174,11 +177,52 @@ class CGI {
   }
 
   static deleteConfig(name) {
-    try { fs.unlinkSync(CGI.configPath(name)); } catch (_) {}
+    return CGI.deleteFile(CGI.configPath(name));
   }
 
   static deletePid(name) {
-    try { fs.unlinkSync(path.join(RUN_DIR, `${name}.pid`)); } catch (_) {}
+    return CGI.deleteFile(path.join(RUN_DIR, `${name}.pid`));
+  }
+
+  static configExists(name) {
+    try {
+      return fs.statSync(CGI.configPath(name)).isFile();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static isMissingFsError(err) {
+    if (err && err.code === 'ENOENT') {
+      return true;
+    }
+    const message = err && err.message ? String(err.message) : String(err || '');
+    return message.indexOf('no such file') >= 0
+      || message.indexOf('cannot find the file') >= 0
+      || message.indexOf('cannot find the path') >= 0;
+  }
+
+  static deleteFile(filePath) {
+    try {
+      fs.unlinkSync(filePath);
+      return null;
+    } catch (err) {
+      if (CGI.isMissingFsError(err)) {
+        return null;
+      }
+      return err;
+    }
+  }
+
+  static isAutoCreateEnabled(value) {
+    if (value === true || value === 1) {
+      return true;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      return normalized === 'true' || normalized === '1';
+    }
+    return false;
   }
 
   static removePath(targetPath) {
@@ -239,7 +283,29 @@ class CGI {
   // ── service 제어 ────────────────────────────────────────────────────────────
 
   static serviceName(name) {
-    return name;
+    const serviceName = String(name || '');
+    if (serviceName.startsWith(SERVICE_NAME_PREFIX)) {
+      return serviceName;
+    }
+    return `${SERVICE_NAME_PREFIX}${serviceName}`;
+  }
+
+  static serviceNames(name) {
+    const rawName = String(name || '');
+    const names = [];
+    const seen = {};
+    const push = (value) => {
+      if (!value || seen[value]) return;
+      seen[value] = true;
+      names.push(value);
+    };
+    push(CGI.serviceName(rawName));
+    if (rawName.startsWith(SERVICE_NAME_PREFIX)) {
+      push(rawName.slice(SERVICE_NAME_PREFIX.length));
+    } else {
+      push(rawName);
+    }
+    return names;
   }
 
   static getNeoHome() {
@@ -287,10 +353,12 @@ class CGI {
     const result = [];
     const seen = {};
     for (const serviceDir of CGI.getServiceDirectoryCandidates()) {
-      const filePath = path.join(serviceDir, `${CGI.serviceName(name)}.json`);
-      if (!seen[filePath]) {
-        seen[filePath] = true;
-        result.push(filePath);
+      for (const serviceName of CGI.serviceNames(name)) {
+        const filePath = path.join(serviceDir, `${serviceName}.json`);
+        if (!seen[filePath]) {
+          seen[filePath] = true;
+          result.push(filePath);
+        }
       }
     }
     return result;
@@ -314,9 +382,14 @@ class CGI {
   }
 
   static deleteServiceDefinition(name) {
+    let firstErr = null;
     for (const filePath of CGI.getServiceDefinitionPaths(name)) {
-      try { fs.unlinkSync(filePath); } catch (_) {}
+      const err = CGI.deleteFile(filePath);
+      if (!firstErr && err) {
+        firstErr = err;
+      }
     }
+    return firstErr;
   }
 
   static getReplicationScriptPath() {
@@ -360,19 +433,75 @@ class CGI {
   }
 
   static getServiceStatus(name, callback) {
-    CGI.callService('status', [CGI.serviceName(name)], callback);
+    const names = CGI.serviceNames(name);
+    const next = (index, lastErr) => {
+      if (index >= names.length) {
+        callback(lastErr || new Error(`service '${CGI.serviceName(name)}' does not exist`));
+        return;
+      }
+      CGI.callService('status', [names[index]], (err, serviceInfo) => {
+        if (err && CGI.isMissingServiceError(err)) {
+          next(index + 1, err);
+          return;
+        }
+        callback(err, serviceInfo);
+      });
+    };
+    next(0, null);
   }
 
   static uninstallService(name, callback) {
-    CGI.callService('uninstall', [CGI.serviceName(name)], callback);
+    const names = CGI.serviceNames(name);
+    const next = (index, firstErr) => {
+      if (index >= names.length) {
+        callback(firstErr);
+        return;
+      }
+      CGI.callService('uninstall', [names[index]], (err) => {
+        if (!err || CGI.isMissingServiceError(err)) {
+          next(index + 1, firstErr);
+          return;
+        }
+        next(index + 1, firstErr || err);
+      });
+    };
+    next(0, null);
   }
 
   static startService(name, callback) {
-    CGI.callService('start', [CGI.serviceName(name)], callback);
+    const names = CGI.serviceNames(name);
+    const next = (index, lastErr) => {
+      if (index >= names.length) {
+        callback(lastErr || new Error(`service '${CGI.serviceName(name)}' does not exist`));
+        return;
+      }
+      CGI.callService('start', [names[index]], (err) => {
+        if (err && CGI.isMissingServiceError(err)) {
+          next(index + 1, err);
+          return;
+        }
+        callback(err);
+      });
+    };
+    next(0, null);
   }
 
   static stopService(name, callback) {
-    CGI.callService('stop', [CGI.serviceName(name)], callback);
+    const names = CGI.serviceNames(name);
+    const next = (index, lastErr) => {
+      if (index >= names.length) {
+        callback(lastErr || new Error(`service '${CGI.serviceName(name)}' does not exist`));
+        return;
+      }
+      CGI.callService('stop', [names[index]], (err) => {
+        if (err && CGI.isMissingServiceError(err)) {
+          next(index + 1, err);
+          return;
+        }
+        callback(err);
+      });
+    };
+    next(0, null);
   }
 
   static isMissingServiceError(err) {

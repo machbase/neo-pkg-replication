@@ -123,6 +123,7 @@ CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
 - `RUN_DIR`: `path.join(ROOT, 'run')`
 - `DATA_DIR`: `path.join(ROOT, 'data')`
 - service 등록 시 executable은 `cgi-bin/replication.js` 자체를 사용한다.
+- 실제 Machbase Neo service name은 API name 앞에 `"_rpl_"` prefix를 붙여 사용한다.
 - service args에는 `cgi-bin/conf.d/{name}.json` 의 절대경로를 넣는다.
 - service working dir은 `cgi-bin` 부모인 package root다.
 - 환경변수: `process.env.get('KEY')` (jsh에서 `process.env.KEY` 불가)
@@ -143,7 +144,7 @@ CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
 - 삭제는 `DELETE /api/rc?name=...`
   - service가 실행 중이면 stop
   - service uninstall
-  - service 정의 파일, config, pid, checkpoint 정리
+  - service가 이미 없어도 service 정의 파일, config, pid, checkpoint 정리는 계속 시도
   - 로그 파일은 유지
 - 목록은 `GET /api/rc/list`
   - `conf.d` 전체가 아니라 install된 service만 반환
