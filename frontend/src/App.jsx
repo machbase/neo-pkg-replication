@@ -11,7 +11,7 @@ const CHANNEL_NAME = 'app:neo-replication'
 export default function App() {
   const navigate = useNavigate()
   const { selectedJobId, setSelectedJobId } = useApp()
-  const { jobs, toggleJob, removeJob, refreshJobs } = useJobs()
+  const { jobs, toggleJob, installJob, removeJob, refreshJobs } = useJobs()
   const channelRef = useRef(null)
   const handlersRef = useRef({})
 
@@ -26,6 +26,10 @@ export default function App() {
     toggleJob: (payload) => {
       const job = jobs.find(j => j.id === payload.jobId)
       if (job) toggleJob(job)
+    },
+    installJob: (payload) => {
+      const job = jobs.find(j => j.id === payload.jobId)
+      if (job) installJob(job)
     },
     requestReady: () => {
       const ch = channelRef.current

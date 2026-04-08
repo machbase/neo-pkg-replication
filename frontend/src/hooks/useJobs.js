@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import * as jobsApi from "../api/jobs";
 import { useApp } from "../context/AppContext";
 
+const AUTO_REFRESH = false;
+
 export default function useJobs() {
     const [jobs, setJobs] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -32,8 +34,10 @@ export default function useJobs() {
 
     useEffect(() => {
         fetchJobs();
-        intervalRef.current = setInterval(fetchJobs, 5000);
-        return () => clearInterval(intervalRef.current);
+        if (AUTO_REFRESH) {
+            intervalRef.current = setInterval(fetchJobs, 5000);
+            return () => clearInterval(intervalRef.current);
+        }
     }, [fetchJobs]);
 
     const toggleJob = useCallback(
@@ -46,6 +50,19 @@ export default function useJobs() {
                     await jobsApi.startJob(job.id);
                     notify(`Job '${job.id}' started`, "success");
                 }
+                await fetchJobs();
+            } catch (e) {
+                notify(e.reason || e.message, "error");
+            }
+        },
+        [fetchJobs, notify]
+    );
+
+    const installJob = useCallback(
+        async (job) => {
+            try {
+                await jobsApi.installJob(job.id);
+                notify(`Job '${job.id}' installed`, "success");
                 await fetchJobs();
             } catch (e) {
                 notify(e.reason || e.message, "error");
@@ -67,5 +84,5 @@ export default function useJobs() {
         [fetchJobs, notify]
     );
 
-    return { jobs, loading, toggleJob, removeJob, refreshJobs: fetchJobs };
+    return { jobs, loading, toggleJob, installJob, removeJob, refreshJobs: fetchJobs };
 }

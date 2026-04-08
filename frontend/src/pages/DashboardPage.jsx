@@ -250,8 +250,9 @@ export default function DashboardPage({ jobs, onDelete }) {
         });
     }, [selectedJobId, fetchJobDetail]);
 
+    const AUTO_REFRESH_DASHBOARD = false;
     useEffect(() => {
-        if (!selectedJobId) return;
+        if (!AUTO_REFRESH_DASHBOARD || !selectedJobId) return;
         const id = setInterval(refreshReplicationInfo, 5000);
         return () => clearInterval(id);
     }, [selectedJobId, refreshReplicationInfo]);

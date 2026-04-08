@@ -2,10 +2,10 @@ import { request } from './client'
 
 const RC = '/cgi-bin/api/rc'
 
-// list 응답: [{ name, running }]
+// list 응답: [{ name, installed, running }]
 function mapListItem(j) {
   const { checkpoints, ...rest } = j
-  return { ...rest, id: j.name, status: j.running ? 'running' : 'stopped' }
+  return { ...rest, id: j.name, installed: j.installed, status: j.running ? 'running' : 'stopped' }
 }
 
 export const listJobs = async () => {
@@ -41,6 +41,9 @@ export const recoverJob = (name) =>
 
 export const overwriteJob = (name) =>
   request('POST', `${RC}/overwrite?name=${encodeURIComponent(name)}`)
+
+export const installJob = (name) =>
+  request('POST', `${RC}/install?name=${encodeURIComponent(name)}`)
 
 export const fetchTableColumns = ({ host, port, user, password, table }) =>
   request('POST', '/cgi-bin/api/table/columns', { host, port: Number(port), user, password, table })

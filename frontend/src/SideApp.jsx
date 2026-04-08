@@ -73,15 +73,28 @@ export default function SideApp() {
                             className={`side-item ${selectedJobId === job.id ? "active" : ""}`}
                         >
                             <span className="flex-1 truncate min-w-0">{job.id}</span>
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    send("toggleJob", { jobId: job.id });
-                                }}
-                                className={`switch shrink-0 ml-4 ${job.status === "running" ? "active" : ""}`}
-                            >
-                                <div className="switch-thumb" />
-                            </button>
+                            {job.installed === false ? (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        send("installJob", { jobId: job.id });
+                                    }}
+                                    className="btn-icon-sm shrink-0 ml-4 tooltip"
+                                    data-tooltip="Install"
+                                >
+                                    <Icon name="download" className="icon-sm" />
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        send("toggleJob", { jobId: job.id });
+                                    }}
+                                    className={`switch shrink-0 ml-4 ${job.status === "running" ? "active" : ""}`}
+                                >
+                                    <div className="switch-thumb" />
+                                </button>
+                            )}
                         </div>
                     ))}
                     {jobs.length === 0 && <p className="side-empty">No jobs</p>}
