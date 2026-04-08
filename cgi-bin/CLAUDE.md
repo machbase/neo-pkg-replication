@@ -153,6 +153,7 @@ CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
   - `conf.d` 전체를 반환
   - 각 항목에 `installed`, `running` 포함
 - 직접 JSH로 service-aware CGI를 검증할 때는 `/public`, `/etc` mount 와 `SERVICE_CONTROLLER`가 필요할 수 있다.
+- TAG `NAME` filter(`like`, `in`)는 원본 tag name 기준으로 평가하고, `prefix`/`suffix` 는 filter 통과 후 target에 기록할 때만 적용한다.
 
 ### src/db/client.js — MachbaseClient
 

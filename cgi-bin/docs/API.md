@@ -152,6 +152,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 > - 숫자 컬럼에는 `min` / `max` 만 적용된다. `in` / `like` 는 무시된다.
 > - `NAME` 컬럼에는 `in` / `like` 만 적용된다. `min` / `max` 는 무시된다.
+> - TAG `NAME` 필터는 원본 tag name 기준으로 먼저 검사된다. `prefix` / `suffix` 는 filter 통과 후 대상에 기록할 때만 적용된다.
 
 **예시**
 ```json
@@ -176,6 +177,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 > `add` / `multiply` 는 숫자 타입 컬럼에만 적용된다. `BigInt`, `null`, 문자열은 변환하지 않는다.  
 > `prefix` / `suffix` 는 TAG key(논리 `NAME`)에만 적용된다. 물리 컬럼명은 테이블마다 다를 수 있다.
+> TAG `NAME` filter(`in`, `like`)는 `prefix` / `suffix` 적용 전 원본 이름 기준으로 평가된다.
 > 연산 순서는 `add` 후 `multiply` 이다. 즉 `(value + add) * multiply` 로 고정된다.
 > `bias` 키는 지원하지 않는다. 프론트엔드에서 `bias` 용어를 쓰는 경우 API 요청에서는 `add`로 매핑해서 보내야 한다.
 
