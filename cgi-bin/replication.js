@@ -7,19 +7,24 @@ const ROOT = path.resolve(path.dirname(process.argv[1]));
 
 const { init: initLogger, getInstance: getLogger } = require(path.join(ROOT, 'src', 'lib', 'logger.js'));
 const { Replicator } = require(path.join(ROOT, 'src', 'replication', 'replicator.js'));
+const { CONF_DIR, DATA_DIR } = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 
-const configPath = process.argv[2];
-if (!configPath) {
-  getLogger().error('app', { msg: 'config path is required: neo-repli.js <config.json>' });
+fs.mkdirSync(CONF_DIR, { recursive: true });
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const configName = process.argv[2];
+if (!configName) {
+  getLogger().error('app', { msg: 'config name is required: replication.js <name>' });
   process.exit(1);
 }
+
+const configPath = path.join(CONF_DIR, `${configName}.json`);
 
 try {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
   initLogger(config.logging);
 
-  const configName = path.basename(configPath, '.json');
-  const pidFile = path.join(ROOT, 'run', `${configName}.pid`);
+  const pidFile = path.join(ROOT, `${configName}.pid`);
   fs.mkdirSync(path.dirname(pidFile), { recursive: true });
   fs.writeFileSync(pidFile, String(process.pid), 'utf-8');
 

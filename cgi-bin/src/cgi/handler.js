@@ -403,13 +403,12 @@ class Handler {
   }
 
   static buildServiceInstallConfig(name) {
-    const configPath = path.join(CONF_DIR, `${name}.json`);
     return {
       name: Handler.serviceName(name),
       enable: false,
       working_dir: APP_DIR,
-      executable: path.join(APP_DIR, 'replication.js'),
-      args: [configPath],
+      executable: path.join(APP_DIR, 'cgi-bin', 'replication.js'),
+      args: [name],
     };
   }
 
@@ -832,3 +831,5 @@ class Handler {
 }
 
 module.exports = Handler;
+module.exports.CONF_DIR = CONF_DIR;
+module.exports.DATA_DIR = DATA_DIR;
