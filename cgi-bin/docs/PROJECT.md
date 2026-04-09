@@ -96,7 +96,6 @@ cgi-bin/
 │       ├── logger.js             # Logger -- 날짜 로테이션, stdout/file 출력
 │       ├── retry.js              # RetryHandler
 │       ├── json_file.js          # JsonFile -- atomic read/write
-│       └── signal.js             # registerSignals -- SIGTERM/SIGINT 핸들러
 └── docs/
     ├── PROJECT.md                # 본 문서
     ├── API.md                    # CGI REST API 명세
@@ -443,15 +442,6 @@ retry.sleepOrShutdown(ms, shutdownFlag)  // "timeout"|"shutdown"
 retry.nextDelay(attempt)                 // ms (exponential backoff)
 retry.isExhausted(attempt)               // bool
 retry.shouldRetry(err)                   // bool
-```
-
-### M10. registerSignals (`src/lib/signal.js`)
-
-```js
-const { registerSignals } = require('./signal.js');
-registerSignals(shutdownFlag, timeoutMs);
-// SIGTERM / SIGINT 수신 -> shutdownFlag.value = true
-// timeoutMs 초과 시 process.exit(1) 강제 종료
 ```
 
 ---

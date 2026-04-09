@@ -42,7 +42,6 @@ cgi-bin/
 │       ├── logger.js             # Logger -- 크기 기반 로테이션, file 출력 ($HOME/public/logs)
 │       ├── retry.js              # RetryHandler
 │       ├── json_file.js          # JsonFile -- atomic read/write
-│       └── signal.js             # SIGTERM/SIGINT 핸들러 (registerSignals)
 ├── tests/
 │   ├── test.js                   # jsh 테스트 프레임워크 (suite/test/assert/run)
 │   ├── fixtures.js               # 테스트 DB 접속 정보
@@ -248,13 +247,6 @@ retry.sleepOrShutdown(ms, shutdownFlag)  // 'timeout'|'shutdown'
 retry.nextDelay(attempt)                 // ms (exponential backoff)
 retry.isExhausted(attempt)              // bool
 retry.shouldRetry(err)                  // bool
-```
-
-### src/lib/signal.js — registerSignals
-
-```js
-registerSignals(shutdownFlag, timeoutMs)
-// SIGTERM / SIGINT 수신 -> shutdownFlag.value = true -> timeout 초과 시 process.exit(1)
 ```
 
 ## conf.d/{name}.json 형식 (ReplicatorConfig)
