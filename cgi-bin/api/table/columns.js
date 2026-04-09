@@ -18,4 +18,8 @@ function POST() {
 
 const handlers = { POST };
 const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
-(handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))();
+try {
+  (handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))();
+} catch (err) {
+  Handler.reply({ ok: false, reason: err.message });
+}
