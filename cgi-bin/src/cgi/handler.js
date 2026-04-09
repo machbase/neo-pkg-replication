@@ -9,7 +9,7 @@ const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME, FLAG_SUMMARIZED } = require(
 
 const SERVICE_NAME_PREFIX = '_rpl_';
 
-const APP_DIR = process.cwd();
+const APP_DIR = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/'));
 const CONF_DIR = path.join(APP_DIR, 'conf.d');
 const DATA_DIR = path.join(APP_DIR, 'data');
 
