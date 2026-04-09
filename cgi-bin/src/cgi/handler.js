@@ -260,11 +260,8 @@ class Handler {
 
   static readBody() {
     try {
-      // TODO : enable, neo-regress pass를 위해 disalbe 처리함.
-      //const len = parseInt(process.env.get('CONTENT_LENGTH') || '0', 10);
-      //if (!len) return {};
-      //const raw = process.stdin._read(len);
-      const raw = process.stdin._read();
+      const len = parseInt(process.env.get('CONTENT_LENGTH') || '0', 10);
+      const raw = len > 0 ? process.stdin._read(len) : process.stdin._read();
       return raw ? JSON.parse(raw) : {};
     } catch (_) {
       return {};
