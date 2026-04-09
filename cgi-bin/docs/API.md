@@ -227,6 +227,13 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 - `source.columns` 미지정 시: source 테이블의 물리 컬럼 순서를 사용
 - target 테이블이 없고 `target.autoCreate=true`인 경우: target 컬럼 순서를 source 테이블 순서로 간주해 검증
 
+**요청 파라미터**
+
+| 필드 | 필수 | 설명 |
+|------|------|------|
+| `name` | ✓ | replicator 이름 |
+| `config` | ✓ | ReplicatorConfig |
+
 **요청 본문**
 ```json
 {
@@ -283,6 +290,14 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 **실패**
 ```json
+{ "ok": false, "reason": "name is required" }
+```
+
+```json
+{ "ok": false, "reason": "config is required" }
+```
+
+```json
 { "ok": false, "reason": "replicator 'repli-a' already exists" }
 ```
 
@@ -314,7 +329,7 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 ### GET /cgi-bin/api/rc?name=xxx
 
-특정 replicator config 조회.
+특정 replicator config 조회. password 필드는 응답에서 제외된다.
 
 **응답**
 ```json
@@ -378,6 +393,10 @@ echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":
 
 **실패**
 ```json
+{ "ok": false, "reason": "name is required" }
+```
+
+```json
 { "ok": false, "reason": "replicator 'xxx' not found" }
 ```
 
@@ -439,15 +458,37 @@ replicator config 수정. `conf.d/{name}.json` 파일이 갱신되며, service�
 { "ok": true, "data": { "name": "repli-a" } }
 ```
 
+**실패**
+```json
+{ "ok": false, "reason": "name is required" }
+```
+
+```json
+{ "ok": false, "reason": "replicator 'repli-a' not found" }
+```
+
+```json
+{ "ok": false, "reason": "column type mismatch at index 2: source.VALUE(TYPE=20) != target.VALUE1(TYPE=8)" }
+```
+
 ---
 
 ### DELETE /cgi-bin/api/rc?name=xxx
 
-replicator 제거. service `uninstall` 후 `conf.d/{name}.json`, `run/{name}.pid`, 관련 checkpoint 디렉토리를 함께 삭제한다.
+replicator 제거. service `uninstall` 후 `conf.d/{name}.json`, `{name}.pid`, 관련 checkpoint 디렉토리를 함께 삭제한다.
 
 **응답**
 ```json
 { "ok": true }
+```
+
+**실패**
+```json
+{ "ok": false, "reason": "name is required" }
+```
+
+```json
+{ "ok": false, "reason": "replicator 'repli-a' not found" }
 ```
 
 ---
@@ -539,6 +580,15 @@ replicator service 시작.
 { "ok": true, "data": { "name": "repli-a" } }
 ```
 
+**실패**
+```json
+{ "ok": false, "reason": "name is required" }
+```
+
+```json
+{ "ok": false, "reason": "replicator 'repli-a' not found" }
+```
+
 ---
 
 ### POST /cgi-bin/api/rc/stop?name=xxx
@@ -548,4 +598,13 @@ replicator service 종료. 성공 시 pid 파일도 정리한다.
 **응답**
 ```json
 { "ok": true, "data": { "name": "repli-a" } }
+```
+
+**실패**
+```json
+{ "ok": false, "reason": "name is required" }
+```
+
+```json
+{ "ok": false, "reason": "replicator 'repli-a' not found" }
 ```
