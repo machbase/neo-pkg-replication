@@ -759,7 +759,13 @@ class Handler {
   static startReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     if (!Handler.getConfig(name)) { callback(new Error(`replicator '${name}' not found`)); return; }
-    Handler.startService(name, callback);
+    Handler.getServiceStatus(name, (err, serviceInfo) => {
+      if (!err && Handler.isServiceRunningStatus(serviceInfo)) {
+        callback(new Error(`replicator '${name}' is already running`));
+        return;
+      }
+      Handler.startService(name, callback);
+    });
   }
 
   static stopReplicator(name, callback) {
