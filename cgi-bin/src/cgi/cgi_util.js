@@ -67,6 +67,7 @@ class CGI {
   static writeConfig(name, config) {
     const normalized = CGI.normalizeConfigForSave(config);
     const filePath = CGI.configPath(name);
+    fs.mkdirSync(CONF_DIR, { recursive: true });
     const tmpPath = `${filePath}.${Date.now()}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(normalized, null, 2), 'utf8');
     fs.renameSync(tmpPath, filePath);
