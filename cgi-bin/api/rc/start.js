@@ -4,32 +4,21 @@
 
 const path = require('path');
 const process = require('process');
-const _argv = process.argv[1];
-const ROOT = _argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
-const CGI = require(path.join(ROOT, 'src', 'cgi', 'cgi_util.js'));
+const ROOT = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
+const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 
-const { name } = CGI.parseQuery();
-
-function errorMessage(err) {
-  return err && err.message ? err.message : String(err);
-}
+const { name } = Handler.parseQuery();
 
 function POST() {
-  if (!name) return CGI.reply({ ok: false, reason: 'name is required' });
-  if (!CGI.readConfig(name)) return CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
-  CGI.startService(name, (err) => {
-    if (err) {
-      CGI.reply({ ok: false, reason: errorMessage(err) });
-    } else {
-      CGI.reply({ ok: true, data: { name } });
-    }
+  Handler.startReplicator(name, (err) => {
+    Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data: { name } });
   });
 }
 
 const handlers = { POST };
 const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
 try {
-  (handlers[method] || (() => CGI.reply({ ok: false, reason: 'method not allowed' })))();
+  (handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))();
 } catch (err) {
-  CGI.reply({ ok: false, reason: errorMessage(err) });
+  Handler.reply({ ok: false, reason: err.message });
 }

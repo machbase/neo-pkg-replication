@@ -101,10 +101,10 @@ cgi-bin/
 ### src/cgi/cgi_util.js — CGI 유틸 (CGI class)
 
 ```js
-CGI.listConfigs()              // conf.d/*.json 목록 (server.json 제외)
-CGI.readConfig(name)           // conf.d/{name}.json, 없으면 null
+CGI.getConfigList()              // conf.d/*.json 목록 (server.json 제외)
+CGI.getConfig(name)           // conf.d/{name}.json, 없으면 null
 CGI.writeConfig(name, config)  // atomic write (tmp -> rename)
-CGI.deleteConfig(name)
+CGI.removeConfig(name)
 CGI.deletePid(name)
 CGI.parseQuery()               // process.env.get('QUERY_STRING') 파싱
 CGI.readBody()                 // process.stdin.read() 로 JSON 파싱

@@ -313,10 +313,10 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 ### M3. cgi_util.js -- CGI 유틸 (CGI class)
 
 ```js
-CGI.listConfigs()              // conf.d/*.json 파일명 목록 (server.json 제외)
-CGI.readConfig(name)           // conf.d/{name}.json 읽기, 없으면 null
+CGI.getConfigList()              // conf.d/*.json 파일명 목록 (server.json 제외)
+CGI.getConfig(name)           // conf.d/{name}.json 읽기, 없으면 null
 CGI.writeConfig(name, config)  // conf.d/{name}.json atomic write (tmp -> rename)
-CGI.deleteConfig(name)         // conf.d/{name}.json 삭제
+CGI.removeConfig(name)         // conf.d/{name}.json 삭제
 CGI.parseQuery()               // process.env.get('QUERY_STRING') 파싱 -> { key: value }
 CGI.readBody()                 // process.stdin.read() 에서 JSON body 읽기
 CGI.reply(data)                // CGI 응답 출력 (Content-Type: application/json + body)
