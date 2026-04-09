@@ -405,9 +405,9 @@ class Handler {
   static buildServiceInstallConfig(name) {
     return {
       name: Handler.serviceName(name),
-      enable: false,
+      enable: true,
       working_dir: APP_DIR,
-      executable: path.join(APP_DIR, 'cgi-bin', 'replication.js'),
+      executable: path.join(APP_DIR, 'replication.js'),
       args: [name],
     };
   }
