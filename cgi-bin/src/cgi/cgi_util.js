@@ -7,15 +7,17 @@ const service = require('service');
 const { MachbaseClient } = require('../db/client.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
 
-const _argv = process.argv[1];
-const ROOT = _argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
-const APP_ROOT = path.dirname(ROOT);
-const CONF_DIR = path.join(ROOT, 'conf.d');
-const RUN_DIR  = path.join(ROOT, 'run');
-const DATA_DIR = path.join(ROOT, 'data');
 const SERVICE_NAME_PREFIX = '_rpl_';
 
+const APP_DIR = process.cwd();
+const CONF_DIR = path.join(APP_DIR, 'conf.d');
+const DATA_DIR = path.join(APP_DIR, 'data');
+
 class CGI {
+
+  static read(name) {
+
+  }
 
   // ── conf.d CRUD ─────────────────────────────────────────────────────────────
 
@@ -179,10 +181,6 @@ class CGI {
 
   static deleteConfig(name) {
     return CGI.deleteFile(CGI.configPath(name));
-  }
-
-  static deletePid(name) {
-    return CGI.deleteFile(path.join(RUN_DIR, `${name}.pid`));
   }
 
   static configExists(name) {
@@ -427,11 +425,11 @@ class CGI {
   }
 
   static getReplicationScriptPath() {
-    return path.join(ROOT, 'replication.js');
+    return path.join(APP_DIR, 'replication.js');
   }
 
   static getServiceWorkingDir() {
-    return APP_ROOT;
+    return APP_DIR;
   }
 
   static buildServiceInstallConfig(name) {
@@ -606,7 +604,7 @@ class CGI {
   // ── 실행 상태 / 체크포인트 ──────────────────────────────────────────────────
 
   static isRunning(name) {
-    return fs.existsSync(path.join(RUN_DIR, `${name}.pid`));
+    return fs.existsSync(path.join(APP_DIR, `${name}.pid`));
   }
 
   /**

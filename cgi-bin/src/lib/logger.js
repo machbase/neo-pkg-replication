@@ -2,33 +2,48 @@
 
 const fs = require('fs');
 const path = require('path');
+const process = require('process');
+
+const HOME = process.env.get('HOME');
+const LOG_DIR = path.join(HOME, 'public', 'logs');
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
 const LEVELS = { trace: -1, debug: 0, info: 1, warn: 2, error: 3 };
-const LEVEL_LABEL = { trace: 'TRACE', debug: 'DEBUG', info: 'INFO ', warn: 'WARN ', error: 'ERROR' };
+const LEVEL_LABEL = { trace: 'TRACE', debug: 'DEBUG', info: 'INFO', warn: 'WARN', error: 'ERROR' };
 
 /**
- * Logger — 날짜 기반 로테이션, stdout/file 독립 제어
+ * Logger — 크기 기반 로테이션, file 출력
  *
- * 포맷: {timestamp} [{LEVEL}] {stage} {key=value ...} msg="{msg}"
+ * 출력 디렉토리: $HOME/public/logs  (고정)
+ * 파일명: repli.log, repli_0001.log, repli_0002.log, ...
+ * 파일당 최대 크기: 10 MB
+ *
+ * 포맷: [LEVEL] YYYY-MM-DD HH:MM:SS.sss  stage  message  (key=value ...)
  *
  * 설정 (config.logging):
- *   level      : "debug"|"info"|"warn"|"error"  (기본 "info")
- *   stdout     : boolean                          (기본 true)
- *   file:
- *     enabled  : boolean                          (기본 false)
- *     directory: string                           (기본 "/work/logs")
+ *   disable  : boolean                                 (기본 false, true이면 모든 출력 비활성화)
+ *   level    : "trace"|"debug"|"info"|"warn"|"error"  (기본 "info")
+ *   maxFiles : number                                  (기본 10, 최대 파일 개수)
  */
 class Logger {
   constructor(loggingConfig = {}) {
+    this._disabled = loggingConfig.disable === true;
     this._minLevel = LEVELS[loggingConfig.level] ?? LEVELS.info;
-    this._stdout = loggingConfig.stdout !== false;
-
-    const fileCfg = loggingConfig.file || {};
-    this._fileEnabled = fileCfg.enabled === true;
-    this._fileDir = fileCfg.directory || '/work/logs';
+    this._maxFiles = (loggingConfig.maxFiles > 0 ? loggingConfig.maxFiles : 10);
+    this._fileDir = LOG_DIR;
 
     this._filePath = null;
-    this._currentDate = null;
+    this._fileIndex = 0;
+    this._fileSize = 0;
+
+    if (!this._disabled) {
+      try {
+        fs.mkdirSync(this._fileDir, { recursive: true });
+      } catch (err) {
+        console.error(`[Logger] failed to create log directory: ${err.message}`);
+      }
+    }
   }
 
   trace(stage, fields) { this._write('trace', stage, fields); }
@@ -38,35 +53,23 @@ class Logger {
   error(stage, fields) { this._write('error', stage, fields); }
 
   banner(msg) {
-    const ts = new Date().toISOString();
+    if (this._disabled) return;
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
     const line = '-'.repeat(72);
     const text = `${line}\n  ${ts}  ${msg}\n${line}`;
-    if (this._stdout) console.println(text);
     this._appendToFile(text + '\n');
   }
 
-  close() {
-    this._stream = null;
-  }
+  close() {}
 
   _write(level, stage, fields = {}) {
+    if (this._disabled) return;
     if (LEVELS[level] < this._minLevel) return;
-
-    const line = this._format(level, stage, fields);
-
-    if (this._stdout) {
-      if (level === 'error' || level === 'warn') {
-        console.error(line);
-      } else {
-        console.println(line);
-      }
-    }
-
-    this._appendToFile(line + '\n');
+    this._appendToFile(this._format(level, stage, fields) + '\n');
   }
 
   _format(level, stage, fields) {
-    const ts = new Date().toISOString();
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
     const label = LEVEL_LABEL[level] || level.toUpperCase();
 
     const { msg, ...rest } = fields;
@@ -74,34 +77,55 @@ class Logger {
       .filter(([, v]) => v !== undefined && v !== null)
       .map(([k, v]) => `${k}=${_quoteIfNeeded(String(v))}`);
 
-    if (msg !== undefined) kvParts.push(`msg=${_quoteIfNeeded(String(msg))}`);
+    const msgStr = msg !== undefined ? String(msg) : '';
+    const kv = kvParts.length > 0 ? `  (${kvParts.join(' ')})` : '';
+    return `[${label}] ${ts}  ${stage}  ${msgStr}${kv}`;
+  }
 
-    const kv = kvParts.length > 0 ? ' ' + kvParts.join(' ') : '';
-    return `${ts} [${label}] ${stage}${kv}`;
+  // index 0: repli.log, index 1+: repli_0001.log, repli_0002.log, ...
+  _resolveFilePath(index) {
+    const suffix = index === 0 ? '' : `_${String(index).padStart(4, '0')}`;
+    return path.join(this._fileDir, `repli${suffix}.log`);
   }
 
   _ensurePath() {
-    const today = new Date().toISOString().slice(0, 10);
-    if (this._currentDate === today && this._filePath) return;
+    if (this._filePath) return;
 
     try {
-      fs.mkdirSync(this._fileDir, { recursive: true });
-      this._filePath = path.join(this._fileDir, `repli-${today}.log`);
-      this._currentDate = today;
+      // 10 MB 미만인 첫 번째 파일을 찾아 이어씀
+      while (this._fileIndex < this._maxFiles) {
+        const candidate = this._resolveFilePath(this._fileIndex);
+        let size = 0;
+        try { size = fs.statSync(candidate).size; } catch (_) {}
+        if (size < MAX_FILE_SIZE) {
+          this._filePath = candidate;
+          this._fileSize = size;
+          break;
+        }
+        this._fileIndex++;
+      }
     } catch (err) {
       console.error(`[Logger] failed to open log file: ${err.message}`);
     }
   }
 
   _appendToFile(text) {
-    if (!this._fileEnabled) return;
     this._ensurePath();
     if (!this._filePath) return;
+
+    // 파일 크기 초과 시 다음 인덱스 파일로 전환
+    if (this._fileSize + text.length > MAX_FILE_SIZE) {
+      if (this._fileIndex + 1 >= this._maxFiles) return; // 최대 파일 개수 도달, 쓰기 중단
+      this._fileIndex++;
+      this._filePath = this._resolveFilePath(this._fileIndex);
+      this._fileSize = 0;
+    }
+
     try {
       fs.appendFileSync(this._filePath, text, 'utf8');
+      this._fileSize += text.length;
     } catch (err) {
       this._filePath = null;
-      this._currentDate = null;
       console.error(`[Logger] failed to write log file: ${err.message}`);
     }
   }

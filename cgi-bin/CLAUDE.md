@@ -39,7 +39,7 @@ cgi-bin/
 │   │   ├── checkpoint.js         # CheckpointStore -- cp 파일 load/save
 │   │   └── types.js              # ColumnType, Column, TableSchema (순수 도메인 모델)
 │   └── lib/
-│       ├── logger.js             # Logger -- 날짜 로테이션, stdout/file 출력
+│       ├── logger.js             # Logger -- 크기 기반 로테이션, file 출력 ($HOME/public/logs)
 │       ├── retry.js              # RetryHandler
 │       ├── json_file.js          # JsonFile -- atomic read/write
 │       └── signal.js             # SIGTERM/SIGINT 핸들러 (registerSignals)
@@ -68,7 +68,7 @@ cgi-bin/
 - `process.addShutdownHook`: Ctrl+C -> PID 파일 삭제 -> `replicator.shutdown()` -> `process.exit(0)`
 - PID 파일: `{ROOT}/run/{configName}.pid` (ROOT = `path.resolve(path.dirname(process.argv[1]))` = cgi-bin/)
 - ROOT: `path.resolve(path.dirname(process.argv[1]))` (`__dirname` 미제공)
-- `logging.file.directory` 의 `${CWD}` 는 `cgi-bin` 부모 경로, 즉 package root로 치환한다.
+- 로그 디렉토리는 `$HOME/public/logs`로 고정이며 별도 설정 불필요.
 
 ### src/replication/replicator.js — Replicator
 
@@ -263,9 +263,9 @@ registerSignals(shutdownFlag, timeoutMs)
 {
   "id": "repli-a",
   "logging": {
+    "disable": false,
     "level": "info",
-    "stdout": true,
-    "file": { "enabled": true, "directory": "/work/logs" }
+    "maxFiles": 10
   },
   "source": {
     "host": "...", "port": 5656, "user": "SYS", "password": "MANAGER",
@@ -300,7 +300,8 @@ registerSignals(shutdownFlag, timeoutMs)
 - `target.autoCreate`: `true`이면 대상 테이블 없을 때 src 스키마로 자동 CREATE
 - `target.table`: `""` + `autoCreate: true` -> source.table 이름 사용
 - `source.columns`: `null`=전체, 배열 지정 시 target 데이터 컬럼 순서에 맞춰야 하며 TAG는 key(PRIMARY)/base time(BASETIME) 컬럼 필수 포함
-- `logging.file.directory`: 절대경로 `/work/logs` 사용 권장
+- 로그 디렉토리: `$HOME/public/logs` 고정 (logger.js 내부에서 결정)
+- `logging.disable: true` 설정 시 디렉토리 생성 및 모든 출력 비활성화
 
 ## 테스트 실행
 
