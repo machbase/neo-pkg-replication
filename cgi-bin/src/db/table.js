@@ -272,6 +272,12 @@ class TagMetaCache {
 
   get size() { return this._map.size; }
 
+  /**
+   * tagId에 대한 이름과 메타 정보를 캐시에 등록한다.
+   * @param {number|bigint} tagId
+   * @param {string} name
+   * @param {object} [meta={}]
+   */
   set(tagId, name, meta = {}) {
     if (name.includes('\x00')) {
       throw new Error(`tag name contains null byte: ${JSON.stringify(name)}`);
@@ -279,10 +285,21 @@ class TagMetaCache {
     this._map.set(BigInt(tagId), { name, meta });
   }
 
+  /**
+   * tagId에 해당하는 이름을 반환한다. 없으면 undefined를 반환한다.
+   * @param {number|bigint} tagId
+   * @returns {string|undefined}
+   */
   get(tagId) {
     return this._map.get(BigInt(tagId))?.name;
   }
 
+  /**
+   * tagId를 이름으로 변환하고 nameRule을 적용한다.
+   * @param {number|bigint} tagId
+   * @param {{ prefix?: string, suffix?: string }|null} nameRule
+   * @returns {{ name: string|null, canonical: string|null, meta: object, status: 'ok'|'drop_not_found' }}
+   */
   resolve(tagId, nameRule) {
     const entry = this._map.get(BigInt(tagId));
     if (entry === undefined) return { name: null, canonical: null, meta: {}, status: 'drop_not_found' };
@@ -290,6 +307,12 @@ class TagMetaCache {
     return { name: entry.name, canonical, meta: entry.meta, status: 'ok' };
   }
 
+  /**
+   * tagName에 nameRule의 prefix/suffix를 적용한다.
+   * @param {string} tagName
+   * @param {{ prefix?: string, suffix?: string }|null} nameRule
+   * @returns {string}
+   */
   static _applyNameRule(tagName, nameRule) {
     if (!nameRule) return tagName;
     let name = tagName;

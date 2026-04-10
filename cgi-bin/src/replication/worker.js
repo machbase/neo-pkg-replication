@@ -1,5 +1,14 @@
 'use strict';
 
+/**
+ * @fileoverview Worker — 파티션 단위 복제 상태 머신
+ *
+ * 상태 전이: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
+ *   - RESOLVE_START: checkpoint 또는 startMode 기준으로 시작 RID를 결정한다.
+ *   - STARTUP_INTEGRITY: 재시작 시 누락 행을 탐색하여 복제 시작점을 조정한다 (TAG 전용).
+ *   - STEADY_REPLICATION: 소스를 주기적으로 읽어 대상에 append한다.
+ */
+
 const path = require('path');
 const CheckpointStore = require('../db/checkpoint.js');
 const RetryHandler = require('../lib/retry.js');
@@ -20,8 +29,11 @@ const INTEGRITY_BATCH_LIMIT = 500;
 
 
 /**
- * transform[] 적용: (value + add) * multiply, prefix/suffix
- * number 타입 컬럼에만 add/multiply 적용, BigInt/null/string은 skip
+ * transform[] 설정을 행 배열에 적용한다.
+ * number 타입 컬럼에만 `(value + add) * multiply`를 적용하며, BigInt/null/string은 건너뛴다.
+ * @param {Array<object>} rows
+ * @param {Array<{ column: string, add: number, multiply: number }>|null} transform
+ * @returns {Array<object>}
  */
 function _applyTransform(rows, transform) {
   if (!transform || transform.length === 0) return rows;
@@ -38,7 +50,16 @@ function _applyTransform(rows, transform) {
 }
 
 /**
- * 공통 retry 루프
+ * 공통 retry 루프. fn이 `{ done: true }` 를 반환할 때까지 재시도한다.
+ * @param {object} opts
+ * @param {function(): { done: boolean, value?: any, retryable?: boolean, msg?: string }} opts.fn
+ * @param {RetryHandler} opts.retry
+ * @param {{ value: boolean }} opts.shutdownFlag
+ * @param {object} opts.logCtx
+ * @param {string} opts.exhaustedMsg
+ * @param {string} [opts.retryMsg]
+ * @param {string} [opts.phase]
+ * @returns {Promise<{ ok: boolean, value?: any }>}
  */
 async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retryMsg, phase }) {
   const ctx = phase ? { ...logCtx, phase } : logCtx;
@@ -96,6 +117,13 @@ async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
  *   RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
  */
 class Worker {
+  /**
+   * @param {object} config - workerConfig (id, source, target, queryLimit, ridRangeSize, ...)
+   * @param {string} dataTable - 담당 파티션 테이블명 (예: _TAG_DATA_0)
+   * @param {import('../db/types.js').TableSchema} srcSchema - 소스 스키마
+   * @param {import('../db/types.js').TableSchema} dstSchema - 대상 스키마
+   * @param {{ value: boolean }} shutdownFlag - 외부 종료 요청 플래그
+   */
   constructor(config, dataTable, srcSchema, dstSchema, shutdownFlag) {
     this.config = config;
     this.dataTable = dataTable;
@@ -105,7 +133,9 @@ class Worker {
   }
 
   /**
-   * 연결 생성 + 전체 실행
+   * DB 연결을 열고 상태 머신을 실행한다.
+   * @param {AbortSignal} signal - 외부 취소 신호
+   * @returns {Promise<void>}
    */
   async run(signal) {
     const logCtx = {
@@ -157,7 +187,9 @@ class Worker {
   }
 
   /**
-   * 상태 머신: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
+   * 상태 머신을 실행한다: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
+   * @param {{ srcTable: object, dstTable: object, shutdownFlag: { value: boolean } }} opts
+   * @returns {Promise<void>}
    */
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
     const batchSize      = this.config.queryLimit;

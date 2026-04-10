@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * @fileoverview Replicator — 소스→대상 데이터 복제 오케스트레이터
+ *
+ * 메인 루프: discover() → syncMeta() [TAG 전용] → runWorkers()
+ * 각 단계 실패 시 5초 후 재시도한다.
+ */
+
 const { MachbaseClient } = require('../db/client.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
 const { TagMetaCache, TagTable, LogTable } = require('../db/table.js');
@@ -7,6 +14,13 @@ const { Worker } = require('./worker.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 
 // jsh에는 AbortController가 없으므로 직접 구현
+
+/**
+ * config 값을 boolean으로 변환한다.
+ * true, 1, "true", "1"이면 true를 반환한다.
+ * @param {boolean|number|string} value
+ * @returns {boolean}
+ */
 function isEnabledFlag(value) {
   if (value === true || value === 1) return true;
   if (typeof value === 'string') {
@@ -16,17 +30,31 @@ function isEnabledFlag(value) {
   return false;
 }
 
+/** jsh 미제공 AbortSignal 구현 */
 class AbortSignal {
   constructor() { this.aborted = false; }
 }
+
+/** jsh 미제공 AbortController 구현 */
 class AbortController {
   constructor() { this.signal = new AbortSignal(); }
+  /** 신호를 abort 상태로 전환한다. */
   abort() { this.signal.aborted = true; }
 }
 
 // ─── Replicator ───────────────────────────────────────────────────────────────
 
+/**
+ * 소스→대상 복제 오케스트레이터
+ *
+ * discover() → syncMeta() [TAG 전용] → runWorkers() 루프를 실행한다.
+ * 각 단계 실패 시 5초 후 재시도한다.
+ */
 class Replicator {
+  /**
+   * @param {object} config - ReplicatorConfig
+   * @param {{ value: boolean }} [shutdownFlag] - 외부에서 종료를 요청하는 플래그
+   */
   constructor(config, shutdownFlag) {
     const sourceTable = typeof config.source?.table === 'string'
       ? config.source.table.toUpperCase()
@@ -64,6 +92,12 @@ class Replicator {
 
   // ── 2. discover ─────────────────────────────────────────────────────────────
 
+  /**
+   * 소스/대상 테이블 타입·스키마·파티션 목록을 조회한다.
+   * autoCreate가 활성화된 경우 대상 테이블을 자동 생성한다.
+   * @returns {{ tableType: string, dataTables: string[], srcSchema: object, dstSchema: object, columnOrder: object }|null}
+   *   조회 실패 또는 설정 오류 시 null을 반환한다.
+   */
   discover() {
     const targetTable = this.target.table || this.source.table;
 
@@ -186,6 +220,11 @@ class Replicator {
 
   // ── 3. meta sync ────────────────────────────────────────────────────────────
 
+  /**
+   * TAG META 테이블의 이름과 메타 컬럼을 대상과 동기화한다.
+   * @param {import('../db/types.js').TableSchema} srcSchema
+   * @returns {true|null} 성공 시 true, 실패 시 null
+   */
   syncMeta(srcSchema) {
     const targetTable = this.target.table || this.source.table;
     const nameRule = (this.source.transform ?? []).find(t => t.column === 'NAME') ?? null;
@@ -256,6 +295,12 @@ class Replicator {
 
   // ── 4. workers 실행 ─────────────────────────────────────────────────────────
 
+  /**
+   * 파티션별 Worker를 병렬로 실행한다.
+   * 한 Worker가 실패하면 AbortController를 통해 나머지를 중단한다.
+   * @param {{ tableType: string, dataTables: string[], srcSchema: object, dstSchema: object, columnOrder: object }} discovered
+   * @returns {Promise<boolean>} 전체 완료 시 true, 중단 시 false
+   */
   async runWorkers(discovered) {
     const { tableType, dataTables, srcSchema, dstSchema, columnOrder } = discovered;
 
@@ -312,6 +357,12 @@ class Replicator {
 
   // ── 5. source 컬럼 유효성 검사 ──────────────────────────────────────────────
 
+  /**
+   * source.columns에 존재하지 않는 컬럼이 포함되어 있는지 검사한다.
+   * @param {object} source
+   * @param {import('../db/types.js').TableSchema} schema
+   * @returns {boolean}
+   */
   _validateSourceColumns(source, schema) {
     if (!source.columns) return true;
     const actualCols = new Set(schema.columns.map(c => c.name));
@@ -323,10 +374,21 @@ class Replicator {
     return true;
   }
 
+  /**
+   * 스키마에서 메타데이터 컬럼을 제외한 데이터 컬럼만 반환한다.
+   * @param {import('../db/types.js').TableSchema} schema
+   * @returns {import('../db/types.js').Column[]}
+   */
   _dataColumns(schema) {
     return schema.columns.filter(c => !(c.flag & FLAG_METADATA));
   }
 
+  /**
+   * 소스/대상 데이터 컬럼을 순서 기준으로 타입 호환성을 검증한다.
+   * @param {import('../db/types.js').TableSchema} srcSchema
+   * @param {import('../db/types.js').TableSchema} dstSchema
+   * @returns {{ source: string[], target: string[] }|null} 호환 시 컬럼 순서 매핑, 불일치 시 null
+   */
   _validateColumnOrderCompatibility(srcSchema, dstSchema) {
     const sourceDataCols = this._dataColumns(srcSchema);
     const targetDataCols = this._dataColumns(dstSchema);
@@ -374,10 +436,17 @@ class Replicator {
 
   // ── 6. 메인 루프 ────────────────────────────────────────────────────────────
 
+  /**
+   * shutdownFlag를 true로 설정하여 복제 루프 종료를 요청한다.
+   */
   shutdown() {
     this.shutdownFlag.value = true;
   }
 
+  /**
+   * 복제 메인 루프를 시작한다. shutdown()이 호출될 때까지 반복한다.
+   * @returns {Promise<void>}
+   */
   async start() {
     getLogger().info('replicator', { ...this.logCtx, msg: 'start' });
 

@@ -1,8 +1,24 @@
 'use strict';
 
+/**
+ * @fileoverview Replicator 프로세스 진입점
+ *
+ * 사용법: jsh replication.js <configName>
+ *   configName: conf.d/{name}.json 에서 이름 부분
+ *
+ * 동작:
+ *   1. conf.d/{configName}.json 읽기
+ *   2. Logger 초기화
+ *   3. PID 파일 생성 ({ROOT}/{configName}.pid)
+ *   4. Replicator.start() 실행
+ *   5. Shutdown hook 등록 (PID 파일 삭제 + Replicator.shutdown())
+ */
+
 const process = require('process');
 const path = require('path');
 const fs = require('fs');
+
+/** @type {string} cgi-bin 디렉토리 절대경로 */
 const ROOT = path.resolve(path.dirname(process.argv[1]));
 
 const { init: initLogger, getInstance: getLogger } = require(path.join(ROOT, 'src', 'lib', 'logger.js'));

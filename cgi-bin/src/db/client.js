@@ -1,21 +1,40 @@
 'use strict';
 
+/**
+ * @fileoverview MachbaseClient — machcli 동기 DB 클라이언트 래퍼
+ *
+ * 모든 메서드는 동기(sync)로 동작한다.
+ * 단일 연결에서 동시 query + append를 수행할 수 없으므로 Worker별 독립 인스턴스를 사용한다.
+ */
+
 const { Client } = require('machcli');
 const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 
 
+/**
+ * Machbase Neo DB 연결 및 쿼리 클라이언트
+ */
 class MachbaseClient {
+  /**
+   * @param {{ host: string, port: number, user: string, password: string }} config - DB 접속 정보
+   */
   constructor(config) {
     this._config = config;
     this._db = null;
     this._conn = null;
   }
 
+  /**
+   * DB에 연결한다.
+   */
   connect() {
     this._db   = new Client(this._config);
     this._conn = this._db.connect();
   }
 
+  /**
+   * DB 연결을 닫는다. 오류는 무시한다.
+   */
   close() {
     try { this._conn && this._conn.close(); } catch (_) {}
     try { this._db   && this._db.close();   } catch (_) {}
@@ -23,6 +42,12 @@ class MachbaseClient {
     this._db   = null;
   }
 
+  /**
+   * SELECT 쿼리를 실행하고 결과 행 배열을 반환한다.
+   * @param {string} sql
+   * @param {Array} [values] - 바인딩 파라미터
+   * @returns {Array<object>}
+   */
   query(sql, values) {
     try {
       const rows = values && values.length > 0
@@ -39,11 +64,23 @@ class MachbaseClient {
     }
   }
 
+  /**
+   * 지정 테이블에 대한 append 스트림을 열어 반환한다.
+   * @param {string} table
+   * @param {Array<{ name: string }>} columns
+   * @returns {object} machcli Appender 인스턴스
+   */
   openAppender(table, columns) {
     const appender = this._conn.append(table);
     return appender.withInputColumns(...columns.map(c => c.name));
   }
 
+  /**
+   * DDL/DML SQL을 실행한다.
+   * @param {string} sql
+   * @param {...*} values - 바인딩 파라미터
+   * @returns {*}
+   */
   execute(sql, ...values) {
     try {
       return values.length > 0 ? this._conn.exec(sql, ...values) : this._conn.exec(sql);

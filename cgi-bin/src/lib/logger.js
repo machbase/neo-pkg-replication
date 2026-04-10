@@ -46,12 +46,21 @@ class Logger {
     }
   }
 
+  /** @param {string} stage @param {object} fields */
   trace(stage, fields) { this._write('trace', stage, fields); }
+  /** @param {string} stage @param {object} fields */
   debug(stage, fields) { this._write('debug', stage, fields); }
+  /** @param {string} stage @param {object} fields */
   info(stage, fields)  { this._write('info',  stage, fields); }
+  /** @param {string} stage @param {object} fields */
   warn(stage, fields)  { this._write('warn',  stage, fields); }
+  /** @param {string} stage @param {object} fields */
   error(stage, fields) { this._write('error', stage, fields); }
 
+  /**
+   * 구분선과 함께 배너 메시지를 파일에 출력한다.
+   * @param {string} msg
+   */
   banner(msg) {
     if (this._disabled) return;
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
@@ -60,14 +69,28 @@ class Logger {
     this._appendToFile(text + '\n');
   }
 
+  /** 로거를 닫는다 (현재 구현에서는 no-op). */
   close() {}
 
+  /**
+   * 레벨 필터를 통과한 로그를 파일에 기록한다.
+   * @param {string} level
+   * @param {string} stage
+   * @param {object} [fields={}]
+   */
   _write(level, stage, fields = {}) {
     if (this._disabled) return;
     if (LEVELS[level] < this._minLevel) return;
     this._appendToFile(this._format(level, stage, fields) + '\n');
   }
 
+  /**
+   * 로그 라인을 포맷팅하여 문자열로 반환한다.
+   * @param {string} level
+   * @param {string} stage
+   * @param {object} fields
+   * @returns {string}
+   */
   _format(level, stage, fields) {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
     const label = LEVEL_LABEL[level] || level.toUpperCase();
@@ -83,11 +106,20 @@ class Logger {
   }
 
   // index 0: repli.log, index 1+: repli_0001.log, repli_0002.log, ...
+  /**
+   * 파일 인덱스에 해당하는 로그 파일 경로를 반환한다.
+   * @param {number} index
+   * @returns {string}
+   */
   _resolveFilePath(index) {
     const suffix = index === 0 ? '' : `_${String(index).padStart(4, '0')}`;
     return path.join(this._fileDir, `repli${suffix}.log`);
   }
 
+  /**
+   * 현재 쓸 로그 파일 경로를 결정한다.
+   * 10MB 미만인 첫 번째 파일을 찾아 이어쓰고, 없으면 새 인덱스 파일을 사용한다.
+   */
   _ensurePath() {
     if (this._filePath) return;
 
@@ -109,6 +141,10 @@ class Logger {
     }
   }
 
+  /**
+   * 텍스트를 현재 로그 파일에 추가한다. 크기 초과 시 다음 인덱스 파일로 전환한다.
+   * @param {string} text
+   */
   _appendToFile(text) {
     this._ensurePath();
     if (!this._filePath) return;
@@ -131,17 +167,30 @@ class Logger {
   }
 }
 
+/**
+ * 공백, 등호, 따옴표가 포함된 문자열을 큰따옴표로 감싼다.
+ * @param {string} str
+ * @returns {string}
+ */
 function _quoteIfNeeded(str) {
   return /[ ="]/.test(str) ? `"${str.replace(/"/g, '\\"')}"` : str;
 }
 
 let _instance = new Logger();
 
+/**
+ * Logger 싱글턴을 새 설정으로 초기화한다.
+ * @param {{ disable?: boolean, level?: string, maxFiles?: number }} loggingConfig
+ */
 function init(loggingConfig) {
   _instance.close();
   _instance = new Logger(loggingConfig);
 }
 
+/**
+ * Logger 싱글턴 인스턴스를 반환한다.
+ * @returns {Logger}
+ */
 function getInstance() {
   return _instance;
 }

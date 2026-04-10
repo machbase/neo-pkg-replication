@@ -13,10 +13,21 @@ const APP_DIR = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/'
 const CONF_DIR = path.join(APP_DIR, 'conf.d');
 const DATA_DIR = path.join(APP_DIR, 'data');
 
+/**
+ * CGI 핸들러 — replicator 설정/서비스 생명주기 관리
+ *
+ * conf.d/ CRUD, service install/start/stop/uninstall, checkpoint 조회를 담당한다.
+ * 모든 메서드는 static이다.
+ */
 class Handler {
 
   // ── 파일 유틸 ──────────────────────────────────────────────────────────────
 
+  /**
+   * 파일이 존재하는지 확인한다.
+   * @param {string} filePath
+   * @returns {boolean}
+   */
   static exists(filePath) {
     try {
       return fs.statSync(filePath).isFile();
@@ -25,6 +36,11 @@ class Handler {
     }
   }
 
+  /**
+   * JSON 파일을 읽어 파싱한다. 실패하면 null을 반환한다.
+   * @param {string} filePath
+   * @returns {object|null}
+   */
   static _read(filePath) {
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
@@ -66,6 +82,10 @@ class Handler {
 
   // ── conf.d CRUD ─────────────────────────────────────────────────────────────
 
+  /**
+   * conf.d/ 디렉토리의 JSON 설정 파일 이름 목록을 반환한다.
+   * @returns {string[]}
+   */
   static getConfigList() {
     try {
       return fs.readdirSync(CONF_DIR)
@@ -76,11 +96,21 @@ class Handler {
     }
   }
 
+  /**
+   * 이름으로 설정 파일을 읽어 반환한다. 없으면 null을 반환한다.
+   * @param {string} name
+   * @returns {object|null}
+   */
   static getConfig(name) {
     const filePath = path.join(CONF_DIR, `${name}.json`);
     return Handler._read(filePath);
   }
 
+  /**
+   * 설정을 정규화하여 파일에 저장한다.
+   * @param {string} name
+   * @param {object} config
+   */
   static writeConfig(name, config) {
     const filePath = path.join(CONF_DIR, `${name}.json`);
     const normalized = Handler.normalizeConfigForSave(config);
@@ -88,11 +118,21 @@ class Handler {
     Handler._write(filePath, data);
   }
 
+  /**
+   * 설정 파일을 삭제한다.
+   * @param {string} name
+   * @returns {Error|null}
+   */
   static removeConfig(name) {
     const filePath = path.join(CONF_DIR, `${name}.json`);
     return Handler._delete(filePath);
   }
 
+  /**
+   * 설정 파일이 존재하는지 확인한다.
+   * @param {string} name
+   * @returns {boolean}
+   */
   static existsConfig(name) {
     const filePath = path.join(CONF_DIR, `${name}.json`);
     return Handler.exists(filePath);
@@ -100,18 +140,33 @@ class Handler {
 
   // ── 정규화 / 검증 ─────────────────────────────────────────────────────────
 
+  /**
+   * 테이블명을 trim 후 대문자로 정규화한다.
+   * @param {string} value
+   * @returns {string}
+   */
   static normalizeTableName(value) {
     if (typeof value !== 'string') return value;
     const table = value.trim();
     return table ? table.toUpperCase() : table;
   }
 
+  /**
+   * 컬럼명을 trim 후 대문자로 정규화한다.
+   * @param {string} value
+   * @returns {string}
+   */
   static normalizeColumnName(value) {
     if (typeof value !== 'string') return value;
     const col = value.trim();
     return col ? col.toUpperCase() : col;
   }
 
+  /**
+   * 저장 전 config 정규화 (테이블명 대문자, autoCreate 불리언 변환)
+   * @param {object} config
+   * @returns {object}
+   */
   static normalizeConfigForSave(config) {
     if (!config || typeof config !== 'object') return config;
 
@@ -128,6 +183,11 @@ class Handler {
     return normalized;
   }
 
+  /**
+   * autoCreate 설정값을 boolean으로 변환한다.
+   * @param {boolean|number|string} value
+   * @returns {boolean}
+   */
   static isAutoCreateEnabled(value) {
     if (value === true || value === 1) return true;
     if (typeof value === 'string') {
@@ -248,6 +308,10 @@ class Handler {
 
   // ── CGI I/O ──────────────────────────────────────────────────────────────
 
+  /**
+   * QUERY_STRING 환경변수를 파싱하여 키-값 객체로 반환한다.
+   * @returns {Record<string, string>}
+   */
   static parseQuery() {
     const qs = process.env.get('QUERY_STRING') || '';
     const result = {};
@@ -258,6 +322,10 @@ class Handler {
     return result;
   }
 
+  /**
+   * stdin에서 요청 바디를 읽어 JSON으로 파싱한다. 실패 시 빈 객체를 반환한다.
+   * @returns {object}
+   */
   static readBody() {
     try {
       // TODO : enable, neo-regress pass를 위해 disalbe 처리함.
@@ -271,6 +339,10 @@ class Handler {
     }
   }
 
+  /**
+   * CGI 응답을 JSON으로 stdout에 출력한다.
+   * @param {object} data
+   */
   static reply(data) {
     const body = JSON.stringify(data);
     process.stdout.write('Content-Type: application/json\r\n');
@@ -280,6 +352,12 @@ class Handler {
 
   // ── service 제어 (low-level) ──────────────────────────────────────────────
 
+  /**
+   * 이름에 `_rpl_` prefix를 붙여 service 이름으로 변환한다.
+   * 이미 prefix가 있으면 그대로 반환한다.
+   * @param {string} name
+   * @returns {string}
+   */
   static serviceName(name) {
     const serviceName = String(name || '');
     if (serviceName.startsWith(SERVICE_NAME_PREFIX)) {
@@ -312,6 +390,12 @@ class Handler {
     return names;
   }
 
+  /**
+   * 실제로 설치된 service 이름 목록을 반환한다.
+   * prefixed/bare 양쪽을 모두 탐색한다.
+   * @param {string} name
+   * @returns {string[]}
+   */
   static installedServiceNames(name) {
     const names = [];
     const seen = {};
@@ -369,6 +453,11 @@ class Handler {
     return result;
   }
 
+  /**
+   * name에 해당하는 service 정의 파일 경로 후보 목록을 반환한다.
+   * @param {string} name
+   * @returns {string[]}
+   */
   static getServiceDefinitionPaths(name) {
     const result = [];
     const seen = {};
@@ -384,6 +473,11 @@ class Handler {
     return result;
   }
 
+  /**
+   * 설치된 service 정의 파일이 하나 이상 존재하는지 확인한다.
+   * @param {string} name
+   * @returns {boolean}
+   */
   static hasInstalledService(name) {
     for (const filePath of Handler.getServiceDefinitionPaths(name)) {
       try {
@@ -393,6 +487,11 @@ class Handler {
     return false;
   }
 
+  /**
+   * name에 해당하는 service 정의 파일들을 삭제한다.
+   * @param {string} name
+   * @returns {Error|null}
+   */
   static deleteServiceDefinition(name) {
     let firstErr = null;
     for (const filePath of Handler.getServiceDefinitionPaths(name)) {
@@ -402,6 +501,11 @@ class Handler {
     return firstErr;
   }
 
+  /**
+   * service install 설정 객체를 생성한다.
+   * @param {string} name - replicator 이름
+   * @returns {{ name: string, enable: boolean, working_dir: string, executable: string, args: string[] }}
+   */
   static buildServiceInstallConfig(name) {
     return {
       name: Handler.serviceName(name),
@@ -412,6 +516,12 @@ class Handler {
     };
   }
 
+  /**
+   * service 모듈 메서드를 안전하게 호출한다.
+   * @param {string} method - service 모듈 메서드명
+   * @param {Array} args - 메서드 인자 (callback 제외)
+   * @param {function(Error|null, any=): void} callback
+   */
   static callService(method, args, callback) {
     if (!service || typeof service[method] !== 'function') {
       callback(new Error(`service.${method}() is not available`));
@@ -426,10 +536,20 @@ class Handler {
     }
   }
 
+  /**
+   * service를 설치한다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
   static installService(name, callback) {
     Handler.callService('install', [Handler.buildServiceInstallConfig(name)], callback);
   }
 
+  /**
+   * service 상태를 조회한다. 설치된 이름이 여러 개면 순서대로 시도한다.
+   * @param {string} name
+   * @param {function(Error|null, object=): void} callback
+   */
   static getServiceStatus(name, callback) {
     const names = Handler.serviceNamesForControl(name);
     const next = (index, lastErr) => {
@@ -448,6 +568,11 @@ class Handler {
     next(0, null);
   }
 
+  /**
+   * service를 제거한다. 존재하지 않는 service는 오류 없이 건너뛴다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
   static uninstallService(name, callback) {
     const names = Handler.serviceNamesForControl(name);
     const next = (index, firstErr) => {
@@ -466,6 +591,11 @@ class Handler {
     next(0, null);
   }
 
+  /**
+   * service를 시작한다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
   static startService(name, callback) {
     const names = Handler.serviceNamesForControl(name);
     const next = (index, lastErr) => {
@@ -484,6 +614,11 @@ class Handler {
     next(0, null);
   }
 
+  /**
+   * service를 종료한다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
   static stopService(name, callback) {
     const names = Handler.serviceNamesForControl(name);
     const next = (index, lastErr) => {
@@ -502,12 +637,22 @@ class Handler {
     next(0, null);
   }
 
+  /**
+   * service가 존재하지 않아서 발생한 오류인지 판별한다.
+   * @param {Error} err
+   * @returns {boolean}
+   */
   static isMissingServiceError(err) {
     const message = err && err.message ? String(err.message) : '';
     return message.indexOf('does not exist') >= 0
       || message.indexOf('not found') >= 0;
   }
 
+  /**
+   * serviceInfo의 status가 RUNNING인지 확인한다.
+   * @param {object} serviceInfo
+   * @returns {boolean}
+   */
   static isServiceRunningStatus(serviceInfo) {
     const status = serviceInfo && serviceInfo.status ? String(serviceInfo.status).toUpperCase() : '';
     return status === 'RUNNING';
@@ -649,6 +794,12 @@ class Handler {
 
   // ── 비즈니스 로직 ─────────────────────────────────────────────────────────
 
+  /**
+   * nextConfig에서 password가 누락되거나 빈 문자열인 경우 currentConfig의 값으로 채운다.
+   * @param {object} nextConfig
+   * @param {object} currentConfig
+   * @returns {object}
+   */
   static _applyPasswordFallback(nextConfig, currentConfig) {
     if (!nextConfig || typeof nextConfig !== 'object') return nextConfig;
 
@@ -669,6 +820,11 @@ class Handler {
     return nextConfig;
   }
 
+  /**
+   * replicator를 생성한다. config 저장 후 service를 설치한다.
+   * @param {{ name: string, config: object }} body
+   * @param {function(Error|null, { name: string }=): void} callback
+   */
   static createReplicator(body, callback) {
     if (!body.name) { callback(new Error('name is required')); return; }
     if (!body.config) { callback(new Error('config is required')); return; }
@@ -690,6 +846,11 @@ class Handler {
     });
   }
 
+  /**
+   * replicator 설정과 checkpoint 정보를 반환한다. password는 제거된다.
+   * @param {string} name
+   * @param {function(Error|null, { name: string, config: object, checkpoints: object }=): void} callback
+   */
   static getReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     const config = Handler.getConfig(name);
@@ -706,6 +867,12 @@ class Handler {
     callback(null, { name, config: safeConfig, checkpoints });
   }
 
+  /**
+   * replicator 설정을 업데이트한다. service가 실행 중이면 재시작한다.
+   * @param {string} name
+   * @param {object} body - 새 config
+   * @param {function(Error|null, boolean=): void} callback
+   */
   static updateReplicator(name, body, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     const currentConfig = Handler.getConfig(name);
@@ -721,6 +888,11 @@ class Handler {
     Handler.restartServiceIfRunning(name, callback);
   }
 
+  /**
+   * replicator를 삭제한다. service 중지 → 제거 → 설정/PID/checkpoint 파일 정리 순으로 진행한다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
   static deleteReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     const config = Handler.getConfig(name);
@@ -749,6 +921,11 @@ class Handler {
     });
   }
 
+  /**
+   * 기존 config를 기반으로 service를 설치한다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
   static installReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     if (!Handler.getConfig(name)) { callback(new Error(`replicator '${name}' not found`)); return; }
@@ -756,6 +933,11 @@ class Handler {
     Handler.installService(name, callback);
   }
 
+  /**
+   * replicator service를 시작한다. 이미 실행 중이면 오류를 반환한다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
   static startReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     if (!Handler.getConfig(name)) { callback(new Error(`replicator '${name}' not found`)); return; }
@@ -768,6 +950,11 @@ class Handler {
     });
   }
 
+  /**
+   * replicator service를 종료하고 PID 파일을 삭제한다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
   static stopReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     if (!Handler.getConfig(name)) { callback(new Error(`replicator '${name}' not found`)); return; }
@@ -779,6 +966,10 @@ class Handler {
     });
   }
 
+  /**
+   * 등록된 replicator 목록과 각각의 installed/running 상태를 반환한다.
+   * @param {function(Error|null, Array=): void} callback
+   */
   static listReplicators(callback) {
     const names = Handler.getConfigList();
     const data = [];
@@ -799,6 +990,11 @@ class Handler {
     next(0);
   }
 
+  /**
+   * 지정한 서버/테이블의 컬럼 정보를 조회한다.
+   * @param {{ host: string, port: number|string, user: string, password: string, table: string }} body
+   * @param {function(Error|null, { table: string, tableType: string, columns: Array }=): void} callback
+   */
   static getTableColumns(body, callback) {
     const { host, port, user, password, table } = body;
     if (!host)     { callback(new Error('host is required')); return; }

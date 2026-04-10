@@ -1,20 +1,46 @@
 'use strict';
 
+/**
+ * @fileoverview CheckpointStore — 파티션별 복제 진행 위치(RID) 저장/로드
+ *
+ * 저장 파일 형식 (cgi-bin/data/{replicatorId}/{dataTable}.json):
+ * {
+ *   "version": 1,
+ *   "source": { "server": "...", "table": "...", "dataTable": "..." },
+ *   "checkpoint": { "lastSuccessRid": "12345", "updatedAt": "...", "hasMore": false }
+ * }
+ */
+
 const { getInstance: getLogger } = require('../lib/logger.js');
 
 const fs = require('fs');
 const path = require('path');
 
+/** @type {Set<string>} BigInt로 복원해야 하는 JSON 키 집합 */
 const BIGINT_KEYS = new Set(['lastSuccessRid']);
 
-// goja(jsh)에서 typeof bigint === 'bigint'가 동작하지 않으므로 별도 판별
+/**
+ * goja(jsh)에서 `typeof v === 'bigint'`가 올바르게 동작하지 않으므로 별도 판별한다.
+ * @param {*} v
+ * @returns {boolean}
+ */
 function _isBigInt(v) {
   return typeof v === 'bigint' || (v !== null && typeof v === 'object' && v.constructor && v.constructor.name === 'BigInt');
 }
 
 // ─── CheckpointStore ──────────────────────────────────────────────────────────
 
+/**
+ * 파티션 단위 checkpoint 파일 저장소
+ *
+ * 하나의 인스턴스가 하나의 파티션(dataTable) 파일을 관리한다.
+ * 파일 경로: {directory}/{dataTable}.json
+ */
 class CheckpointStore {
+  /**
+   * @param {string} directory - checkpoint 파일 저장 디렉토리 (cgi-bin/data/{replicatorId})
+   * @param {string} dataTable - 파티션 테이블명 (예: _TAG_DATA_0)
+   */
   constructor(directory, dataTable) {
     if (!directory) throw new Error('directory is required');
     if (!dataTable)  throw new Error('dataTable is required');
