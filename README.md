@@ -25,9 +25,10 @@ repli/
 │   ├── api/
 │   │   ├── rc.js                 # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
 │   │   ├── rc/
-│   │   │   ├── list.js           # CGI: GET 목록 조회
-│   │   │   ├── start.js          # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
-│   │   │   └── stop.js           # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+│   │   │   ├── install.js        # CGI: POST ?name=xxx -- 기존 config 기준 service install
+│   │   │   ├── list.js           # CGI: GET 목록 조회 (installed/running 상태 포함)
+│   │   │   ├── start.js          # CGI: POST ?name=xxx -- service 시작
+│   │   │   └── stop.js           # CGI: POST ?name=xxx -- service 종료
 │   │   └── table/
 │   │       └── columns.js        # CGI: POST 테이블 컬럼 정보 조회
 │   ├── conf.d/
@@ -39,7 +40,7 @@ repli/
 │   │   │   ├── replicator.js     # Replicator 클래스
 │   │   │   └── worker.js         # Worker 상태 머신
 │   │   ├── cgi/
-│   │   │   └── cgi_util.js       # CGI 유틸 (conf.d CRUD, reply)
+│   │   │   └── handler.js        # Handler 클래스 (conf.d CRUD + service 생명주기 + checkpoint 조회)
 │   │   ├── db/
 │   │   │   ├── client.js         # MachbaseClient
 │   │   │   ├── stream.js         # MachbaseStream
@@ -49,7 +50,6 @@ repli/
 │   │   └── lib/
 │   │       ├── logger.js
 │   │       ├── retry.js
-│   │       ├── signal.js
 │   │       └── json_file.js
 │   ├── tests/                    # jsh 통합 테스트
 │   └── docs/
@@ -157,8 +157,9 @@ machbase-neo 웹 서버를 통해 replicator 설정을 관리한다. CGI 파일�
 | GET | `/cgi-bin/api/rc?name=xxx` | 단건 조회 (설정 + 체크포인트) |
 | PUT | `/cgi-bin/api/rc?name=xxx` | 설정 수정 |
 | DELETE | `/cgi-bin/api/rc?name=xxx` | 삭제 |
-| POST | `/cgi-bin/api/rc/start?name=xxx` | 시작 (데몬 연동 예정) |
-| POST | `/cgi-bin/api/rc/stop?name=xxx` | 종료 (데몬 연동 예정) |
+| POST | `/cgi-bin/api/rc/install?name=xxx` | 기존 config 기준 service install |
+| POST | `/cgi-bin/api/rc/start?name=xxx` | service 시작 |
+| POST | `/cgi-bin/api/rc/stop?name=xxx` | service 종료 |
 | POST | `/cgi-bin/api/table/columns` | 테이블 컬럼 정보 조회 |
 
 자세한 명세는 [cgi-bin/docs/API.md](cgi-bin/docs/API.md) 참고.

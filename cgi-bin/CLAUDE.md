@@ -31,7 +31,7 @@ cgi-bin/
 │   │   ├── replicator.js         # Replicator -- discover -> syncMeta -> Workers 루프
 │   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
 │   ├── cgi/
-│   │   └── cgi_util.js           # CGI 유틸 (CGI class) -- conf.d CRUD + service install/start/stop/uninstall + checkpoint 조회/정리
+│   │   └── handler.js            # Handler 클래스 -- conf.d CRUD + service install/start/stop/uninstall + checkpoint 조회/정리
 │   ├── db/
 │   │   ├── client.js             # MachbaseClient -- DB 연결/쿼리 (machcli 래퍼)
 │   │   ├── stream.js             # MachbaseStream -- append 스트림 래퍼
@@ -41,7 +41,7 @@ cgi-bin/
 │   └── lib/
 │       ├── logger.js             # Logger -- 크기 기반 로테이션, file 출력 ($HOME/public/logs)
 │       ├── retry.js              # RetryHandler
-│       ├── json_file.js          # JsonFile -- atomic read/write
+│       └── json_file.js          # JsonFile -- atomic read/write
 ├── tests/
 │   ├── test.js                   # jsh 테스트 프레임워크 (suite/test/assert/run)
 │   ├── fixtures.js               # 테스트 DB 접속 정보
@@ -97,37 +97,56 @@ cgi-bin/
    - rows 없음 + `rangeMaxRid == 0n` -> `sleepOrShutdown(pollIntervalMs)`
    - 체크포인트 경로: `cgi-bin/data/{config.id}/{dataTable}.json`
 
-### src/cgi/cgi_util.js — CGI 유틸 (CGI class)
+### src/cgi/handler.js — Handler 클래스
+
+모든 CGI 비즈니스 로직을 담당하는 static 클래스. atomic write (tmp → rename) 내장.
 
 ```js
-CGI.getConfigList()              // conf.d/*.json 목록 (server.json 제외)
-CGI.getConfig(name)           // conf.d/{name}.json, 없으면 null
-CGI.writeConfig(name, config)  // atomic write (tmp -> rename)
-CGI.removeConfig(name)
-CGI.deletePid(name)
-CGI.parseQuery()               // process.env.get('QUERY_STRING') 파싱
-CGI.readBody()                 // process.stdin.read() 로 JSON 파싱
-CGI.reply(data)                // CGI 응답 (Content-Type: application/json + body)
-CGI.installService(name, cb)   // service install
-CGI.getServiceStatus(name, cb) // service status
-CGI.startService(name, cb)     // service start
-CGI.stopService(name, cb)      // service stop
-CGI.uninstallService(name, cb) // service uninstall
-CGI.stopServiceIfRunning(name, cb)
-CGI.restartServiceIfRunning(name, cb)
-CGI.hasInstalledService(name)  // install된 service 정의 파일 존재 여부
-CGI.readCheckpoints(name, config)   // checkpoint 파일 취합 -> { [dataTable]: { lastSuccessRid, hasMore } }
-CGI.deleteCheckpoints(name, config) // 관련 checkpoint 디렉토리 정리
+// 파일 유틸
+Handler.exists(filePath)            // 파일 존재 여부
+Handler._read(filePath)             // JSON 파일 읽기 (실패 시 null)
+Handler._write(filePath, data)      // atomic write (tmp -> rename)
+Handler._delete(filePath)           // 파일 삭제 (ENOENT는 null 반환)
+
+// conf.d CRUD
+Handler.getConfigList()             // conf.d/*.json 목록
+Handler.getConfig(name)             // conf.d/{name}.json, 없으면 null
+Handler.writeConfig(name, config)   // conf.d/{name}.json 저장
+Handler.removeConfig(name)          // conf.d/{name}.json 삭제
+Handler.deletePid(name)             // run/{name}.pid 삭제
+
+// CGI 유틸
+Handler.parseQuery()                // process.env.get('QUERY_STRING') 파싱
+Handler.readBody()                  // process.stdin.read() 로 JSON 파싱
+Handler.reply(data)                 // CGI 응답 (Content-Type: application/json + body)
+
+// service 생명주기
+Handler.installReplicator(name, cb)    // config 검증 후 service install
+Handler.startReplicator(name, cb)      // service start
+Handler.stopReplicator(name, cb)       // service stop + pid 정리
+Handler.uninstallReplicator(name, cb)  // service uninstall
+Handler.getServiceStatus(name, cb)     // service status 조회
+Handler.stopServiceIfRunning(name, cb)
+Handler.restartServiceIfRunning(name, cb)
+Handler.hasInstalledService(name)      // install된 service 정의 파일 존재 여부
+
+// replicator 복합 동작
+Handler.createReplicator(body, cb)     // config 저장 + service install (POST /api/rc)
+Handler.getReplicator(name, cb)        // config 조회 + checkpoint 취합 (GET /api/rc)
+Handler.updateReplicator(name, body, cb) // config 저장 + 실행 중이면 재시작 (PUT /api/rc)
+Handler.deleteReplicator(name, cb)     // stop + uninstall + 파일 정리 (DELETE /api/rc)
+
+// checkpoint
+Handler.readCheckpoints(name, config)   // checkpoint 취합 -> { [dataTable]: { lastSuccessRid, hasMore } }
+Handler.deleteCheckpoints(name, config) // checkpoint 디렉토리 정리
 ```
 
-- ROOT 경로: `_argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length)`
-- `CONF_DIR`: `path.join(ROOT, 'conf.d')`
-- `RUN_DIR`: `path.join(ROOT, 'run')`
-- `DATA_DIR`: `path.join(ROOT, 'data')`
-- service 등록 시 executable은 `cgi-bin/replication.js` 자체를 사용한다.
-- 실제 Machbase Neo service name은 API name 앞에 `"_rpl_"` prefix를 붙여 사용한다.
-- service args에는 `cgi-bin/conf.d/{name}.json` 의 절대경로를 넣는다.
-- service working dir은 `cgi-bin` 부모인 package root다.
+- `APP_DIR`: `process.argv[1].slice(0, .../cgi-bin/...)`
+- `CONF_DIR`: `path.join(APP_DIR, 'conf.d')`
+- `DATA_DIR`: `path.join(APP_DIR, 'data')`
+- service name은 API name 앞에 `"_rpl_"` prefix 사용 (예: `"test"` → `"_rpl_test"`)
+- service executable: `cgi-bin/replication.js`, args: conf.d/{name}.json 절대경로
+- service working dir: `cgi-bin` 부모인 package root
 - 환경변수: `process.env.get('KEY')` (jsh에서 `process.env.KEY` 불가)
 
 ## service lifecycle 구현 메모
