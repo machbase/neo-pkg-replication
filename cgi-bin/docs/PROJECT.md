@@ -2,7 +2,7 @@
 
 **프로젝트**: Machbase TAG / Log 테이블 복제 도구
 **런타임**: machbase-neo jsh (goja 기반 JavaScript 런타임)
-**최종 수정**: 2026-03-31
+**최종 수정**: 2026-04-10
 
 ---
 
@@ -73,9 +73,10 @@ cgi-bin/
 ├── api/
 │   ├── rc.js                     # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
 │   └── rc/
-│       ├── list.js               # CGI: GET 목록 조회 (실행 상태 + 체크포인트 포함)
-│       ├── start.js              # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
-│       └── stop.js               # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+│       ├── install.js            # CGI: POST ?name=xxx -- 기존 config 기준 service install
+│       ├── list.js               # CGI: GET 목록 조회 (config 전체 + installed/running)
+│       ├── start.js              # CGI: POST ?name=xxx -- service 시작
+│       └── stop.js               # CGI: POST ?name=xxx -- service 종료
 ├── conf.d/
 │   └── {name}.json               # replicator별 설정 파일 (ReplicatorConfig 형식)
 ├── data/                         # 런타임 생성 -- replicator별 파티션 cp 파일
@@ -85,7 +86,7 @@ cgi-bin/
 │   │   ├── replicator.js         # Replicator -- discover -> syncMeta -> Workers 루프
 │   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
 │   ├── cgi/
-│   │   └── cgi_util.js           # CGI 유틸 (CGI class) -- conf.d CRUD + parseQuery + readBody + reply
+│   │   └── handler.js            # Handler 클래스 -- conf.d CRUD + service install/start/stop/uninstall + checkpoint 조회/정리
 │   ├── db/
 │   │   ├── client.js             # MachbaseClient -- DB 연결/쿼리 (machcli 래퍼)
 │   │   ├── stream.js             # MachbaseStream -- append 스트림 래퍼
@@ -93,10 +94,9 @@ cgi-bin/
 │   │   ├── checkpoint.js         # CheckpointStore -- cp 파일 load/save
 │   │   └── types.js              # ColumnType, Column, TableSchema (순수 도메인 모델)
 │   └── lib/
-│       ├── logger.js             # Logger -- 날짜 로테이션, stdout/file 출력
+│       ├── logger.js             # Logger -- 크기 기반 로테이션, stdout/file 출력
 │       ├── retry.js              # RetryHandler
-│       ├── json_file.js          # JsonFile -- atomic read/write
-│       └── signal.js             # registerSignals -- SIGTERM/SIGINT 핸들러
+│       └── json_file.js          # JsonFile -- atomic read/write
 └── docs/
     ├── PROJECT.md                # 본 문서
     ├── API.md                    # CGI REST API 명세
@@ -107,8 +107,8 @@ cgi-bin/
 
 ```
 machbase-neo HTTP 서버
-  └─ CGI 요청 -> api/rc.js / api/rc/list.js / api/rc/start.js / api/rc/stop.js
-                   └─ cgi_util.js (CGI class): conf.d 직접 CRUD
+  └─ CGI 요청 -> api/rc.js / api/rc/install.js / api/rc/list.js / api/rc/start.js / api/rc/stop.js
+                   └─ handler.js (Handler class): conf.d CRUD + service 생명주기 관리
 
 사용자 (jsh 직접 실행)
   └─ replication.js <conf.d/{name}.json>
@@ -279,12 +279,14 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
   },
   "checkpoint": {
     "lastSuccessRid": "12345678",
-    "updatedAt": "2026-03-31T12:00:00.000Z"
+    "updatedAt": "2026-03-31T12:00:00.000Z",
+    "hasMore": false
   }
 }
 ```
 
 - `lastSuccessRid`: BigInt를 string으로 직렬화
+- `hasMore`: `rowsRead === queryLimit` 기준으로 다음 작업이 남아있을 가능성 표시
 - `source.dataTable` 불일치 시 손상으로 처리하고 무효화
 - atomic write (`.tmp` -> `renameSync`)
 
@@ -303,32 +305,51 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 - `process.addShutdownHook`: Ctrl+C -> PID 파일 삭제 -> `replicator.shutdown()` -> `process.exit(0)`
 - ROOT 경로: `path.resolve(path.dirname(process.argv[1]))` (jsh에서 `__dirname` 미제공)
 
-### M2. CGI 파일 (api/rc.js, api/rc/list.js, api/rc/start.js, api/rc/stop.js)
+### M2. CGI 파일 (api/rc.js, api/rc/install.js, api/rc/list.js, api/rc/start.js, api/rc/stop.js)
 
-- 모두 `cgi_util.js`의 `CGI` class 사용
-- `'use strict'` 없음 (jsh에서 top-level `return` 사용 시 silent 실패)
-- 조건 분기는 `if/else` (top-level `return` 금지)
+- 모두 `handler.js`의 `Handler` class 사용
+- 지원하지 않는 메서드 접근 시 `{ ok: false, reason: "method not allowed" }` 반환
+- try/catch로 예상치 못한 오류도 JSON으로 응답
 - API 상세는 `docs/API.md` 참조
 
-### M3. cgi_util.js -- CGI 유틸 (CGI class)
+### M3. handler.js -- Handler 클래스
+
+모든 CGI 비즈니스 로직을 담당하는 static 클래스.
 
 ```js
-CGI.listConfigs()              // conf.d/*.json 파일명 목록 (server.json 제외)
-CGI.readConfig(name)           // conf.d/{name}.json 읽기, 없으면 null
-CGI.writeConfig(name, config)  // conf.d/{name}.json atomic write (tmp -> rename)
-CGI.deleteConfig(name)         // conf.d/{name}.json 삭제
-CGI.parseQuery()               // process.env.get('QUERY_STRING') 파싱 -> { key: value }
-CGI.readBody()                 // process.stdin.read() 에서 JSON body 읽기
-CGI.reply(data)                // CGI 응답 출력 (Content-Type: application/json + body)
-CGI.isRunning(name)            // run/{name}.pid 파일 존재 여부
-CGI.readCheckpoints(configId)  // data/{configId}/*.json -> { [dataTable]: lastSuccessRid }
+// CGI 유틸
+Handler.parseQuery()                // process.env.get('QUERY_STRING') 파싱 -> { key: value }
+Handler.readBody()                  // process.stdin.read() 에서 JSON body 읽기
+Handler.reply(data)                 // CGI 응답 출력 (Content-Type: application/json + body)
+
+// conf.d CRUD
+Handler.getConfigList()             // conf.d/*.json 파일명 목록
+Handler.getConfig(name)             // conf.d/{name}.json 읽기, 없으면 null
+Handler.writeConfig(name, config)   // conf.d/{name}.json atomic write (tmp -> rename)
+Handler.removeConfig(name)          // conf.d/{name}.json 삭제
+Handler.deletePid(name)             // run/{name}.pid 삭제
+
+// replicator 복합 동작 (CGI 엔드포인트 대응)
+Handler.createReplicator(body, cb)       // config 저장 + service install (POST /api/rc)
+Handler.getReplicator(name, cb)          // config + checkpoint 조회 (GET /api/rc)
+Handler.updateReplicator(name, body, cb) // config 저장 + 실행 중이면 재시작 (PUT /api/rc)
+Handler.deleteReplicator(name, cb)       // stop + uninstall + 파일 정리 (DELETE /api/rc)
+Handler.installReplicator(name, cb)      // service install만 (POST /api/rc/install)
+Handler.startReplicator(name, cb)        // service start (POST /api/rc/start)
+Handler.stopReplicator(name, cb)         // service stop + pid 정리 (POST /api/rc/stop)
+
+// checkpoint
+Handler.readCheckpoints(name, config)    // { [dataTable]: { lastSuccessRid, hasMore } }
+Handler.deleteCheckpoints(name, config)  // checkpoint 디렉토리 정리
 ```
 
-- ROOT: `_argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length)`
-- `CONF_DIR`: `path.join(ROOT, 'conf.d')`
-- `RUN_DIR`: `path.join(ROOT, 'run')`
-- `DATA_DIR`: `path.join(ROOT, 'data')`
-- 환경변수: `process.env.get('QUERY_STRING')` (jsh에서 `process.env.KEY` 접근 불가)
+- `APP_DIR`: `process.argv[1].slice(0, .../cgi-bin/...)`
+- `CONF_DIR`: `path.join(APP_DIR, 'conf.d')`
+- `DATA_DIR`: `path.join(APP_DIR, 'data')`
+- service name: API `name` 앞에 `"_rpl_"` prefix (예: `"repli-a"` → `"_rpl_repli-a"`)
+- service executable: `cgi-bin/replication.js`, args: conf.d/{name}.json 절대경로
+- service working dir: package root (`cgi-bin` 부모)
+- 환경변수: `process.env.get('KEY')` (jsh에서 `process.env.KEY` 접근 불가)
 
 ### M4. Replicator (`src/replication/replicator.js`)
 
@@ -445,15 +466,6 @@ retry.isExhausted(attempt)               // bool
 retry.shouldRetry(err)                   // bool
 ```
 
-### M10. registerSignals (`src/lib/signal.js`)
-
-```js
-const { registerSignals } = require('./signal.js');
-registerSignals(shutdownFlag, timeoutMs);
-// SIGTERM / SIGINT 수신 -> shutdownFlag.value = true
-// timeoutMs 초과 시 process.exit(1) 강제 종료
-```
-
 ---
 
 ## 5. 핵심 동작 흐름
@@ -462,10 +474,15 @@ registerSignals(shutdownFlag, timeoutMs);
 
 ```
 1. CGI POST /cgi-bin/api/rc  { name, config }
-   -> CGI.writeConfig(name, config)
-   -> conf.d/{name}.json 생성
+   -> Handler.createReplicator()
+   -> conf.d/{name}.json 저장
+   -> service install (machbase-neo service로 등록)
 
-2. 수동 실행:
+2. CGI POST /cgi-bin/api/rc/start?name=xxx
+   -> Handler.startReplicator()
+   -> service start
+
+또는 수동 실행 (서비스 미사용 시):
    ../machbase-neo/machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/{name}.json
 ```
 
@@ -556,7 +573,7 @@ process.addShutdownHook:
 | A-01 | CGI 파일이 conf.d 직접 접근 | jsh `svr.serve()`가 Go 레벨에서 이벤트 루프 블로킹 -> HTTP 서버와 Worker 동시 실행 불가 |
 | A-02 | replicator는 독립 프로세스 | config별 격리, 장애 격리, 단순한 생명주기 |
 | A-03 | `process.addShutdownHook` 으로 종료 처리 | jsh에서 `setTimeout` 기반 signal 처리는 비동기 동작 후 실행되지 않음 |
-| A-04 | start/stop CGI는 503 반환 | jsh `child_process` 미지원, 비동기 exec API 없음. 지원 시 `process.exec()` + PID 파일로 구현 예정 |
+| A-04 | start/stop/install은 JSH `service` 모듈로 제어 | jsh `child_process` 미지원. machbase-neo service lifecycle에 맞춰 `service` 모듈 사용 |
 | B-01 | Worker별 독립 machcli 연결 | 단일 연결에서 동시 query + append 시 충돌 오류 |
 | B-02 | VOLATILE TABLE + JOIN으로 miss row 탐색 | TAG 테이블 JOIN 드라이빙 불가, PK 없음 |
 | B-03 | TIME 값은 `?` 파라미터 바인딩으로 전달 | BigInt 리터럴 SQL 삽입 시 정밀도 손실 |
@@ -569,9 +586,8 @@ process.addShutdownHook:
 
 ## 10. 미결 사항 및 향후 과제
 
-1. **replicator start/stop CGI**: 현재 503 반환 (수동 실행 안내). 데몬 연동 구현 예정.
-2. **onSaveFailure="abort"**: checkpoint 저장 실패 시 abort 동작 미구현 (continue와 동일).
-3. **readBody CONTENT_LENGTH**: 현재 `process.stdin.read()` 전체 읽기 사용 중 (TODO 주석). neo-regress 통과 후 `process.stdin.read(len)` 방식으로 전환 필요.
+1. **onSaveFailure="abort"**: checkpoint 저장 실패 시 abort 동작 미구현 (continue와 동일).
+2. **readBody CONTENT_LENGTH**: 현재 `process.stdin.read()` 전체 읽기 사용 중. neo-regress 통과 후 `process.stdin.read(len)` 방식으로 전환 필요.
 
 ---
 
@@ -589,25 +605,37 @@ process.addShutdownHook:
 
 ### CGI 테스트 (jsh 직접 실행)
 
+service 관련 CGI는 `/etc` mount와 `SERVICE_CONTROLLER` 환경값이 필요하다.
+
 ```bash
-# 실행 위치: /home/machbase/repli
+# 실행 위치: machbase-neo 설치 디렉토리
+# neo-pkg-replication은 public/ 하위에 위치해야 함
 
 # GET 목록
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e REQUEST_METHOD=GET /public/neo-pkg-replication/cgi-bin/api/rc/list.js
 
 # GET 단건
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
+./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
 
-# POST 등록
-echo '{"name":"repli-b","config":{...}}' | \
-  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST cgi-bin/api/rc.js
+# POST 등록 (service install 포함)
+echo '{"name":"repli-a","config":{...}}' | \
+  ./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST /public/neo-pkg-replication/cgi-bin/api/rc.js
+
+# POST install (기존 config 기준 service 등록만)
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/install.js
+
+# POST 시작
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/start.js
+
+# POST 종료
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/stop.js
 
 # PUT 수정
 echo '{...config...}' | \
-  ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
+  ./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
 
 # DELETE 삭제
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
+./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
 ```
 
 ### replicator 실행

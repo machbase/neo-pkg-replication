@@ -16,9 +16,10 @@ cgi-bin/
 ├── api/
 │   ├── rc.js                     # CGI: POST(등록) / GET/PUT/DELETE ?name=xxx
 │   ├── rc/
-│   │   ├── list.js               # CGI: GET 목록 조회 (실행 상태)
-│   │   ├── start.js              # CGI: POST ?name=xxx -- 시작 (데몬 연동 예정)
-│   │   └── stop.js               # CGI: POST ?name=xxx -- 종료 (데몬 연동 예정)
+│   │   ├── install.js            # CGI: POST ?name=xxx -- 기존 config 기준 service install
+│   │   ├── list.js               # CGI: GET 목록 조회 (config 전체 + installed/running)
+│   │   ├── start.js              # CGI: POST ?name=xxx -- service 시작
+│   │   └── stop.js               # CGI: POST ?name=xxx -- service 종료
 │   └── table/
 │       └── columns.js            # CGI: POST 테이블 컬럼 정보 조회
 ├── conf.d/
@@ -30,7 +31,7 @@ cgi-bin/
 │   │   ├── replicator.js         # Replicator -- discover -> syncMeta -> Workers 루프
 │   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
 │   ├── cgi/
-│   │   └── cgi_util.js           # CGI 유틸 (CGI class) -- conf.d CRUD + parseQuery + readBody + reply + isRunning + readCheckpoints
+│   │   └── handler.js            # Handler 클래스 -- conf.d CRUD + service install/start/stop/uninstall + checkpoint 조회/정리
 │   ├── db/
 │   │   ├── client.js             # MachbaseClient -- DB 연결/쿼리 (machcli 래퍼)
 │   │   ├── stream.js             # MachbaseStream -- append 스트림 래퍼
@@ -38,10 +39,9 @@ cgi-bin/
 │   │   ├── checkpoint.js         # CheckpointStore -- cp 파일 load/save
 │   │   └── types.js              # ColumnType, Column, TableSchema (순수 도메인 모델)
 │   └── lib/
-│       ├── logger.js             # Logger -- 날짜 로테이션, stdout/file 출력
+│       ├── logger.js             # Logger -- 크기 기반 로테이션, file 출력 ($HOME/public/logs)
 │       ├── retry.js              # RetryHandler
-│       ├── json_file.js          # JsonFile -- atomic read/write
-│       └── signal.js             # SIGTERM/SIGINT 핸들러 (registerSignals)
+│       └── json_file.js          # JsonFile -- atomic read/write
 ├── tests/
 │   ├── test.js                   # jsh 테스트 프레임워크 (suite/test/assert/run)
 │   ├── fixtures.js               # 테스트 DB 접속 정보
@@ -67,6 +67,7 @@ cgi-bin/
 - `process.addShutdownHook`: Ctrl+C -> PID 파일 삭제 -> `replicator.shutdown()` -> `process.exit(0)`
 - PID 파일: `{ROOT}/run/{configName}.pid` (ROOT = `path.resolve(path.dirname(process.argv[1]))` = cgi-bin/)
 - ROOT: `path.resolve(path.dirname(process.argv[1]))` (`__dirname` 미제공)
+- 로그 디렉토리는 `$HOME/public/logs`로 고정이며 별도 설정 불필요.
 
 ### src/replication/replicator.js — Replicator
 
@@ -87,33 +88,92 @@ cgi-bin/
    - cp 없음 -> startMode 기준 (`full`=0n, `now`=srcMaxRid+1n, `ridAfter`=BigInt)
    - TAG: `srcTable.cacheTagMetaAll()`
 2. **STARTUP_INTEGRITY** (TAG + cp 존재 + `integrity !== false`):
-   - 배치 읽기 -> `dstTable.findFirstMissRow()` -> firstMiss 발견 시 safeCpRid 저장 후 STEADY 진입
+   - 배치 읽기(`ORDER BY _RID`) -> `dstTable.findFirstMissRow()`
+   - source batch 순서대로 target의 `PRIMARY + BASETIME` 존재 여부를 확인
+   - firstMiss 발견 시 safeCpRid 저장 후 STEADY 진입
 3. **STEADY_REPLICATION**:
    - `srcTable.read()` -> `_applyTransform()` -> `dstTable.append()` -> `checkpointStore.save()`
    - rows 없음 + `rangeMaxRid > 0n` (필터 전량 차단) -> checkpoint 진행 후 sleep 없이 continue
    - rows 없음 + `rangeMaxRid == 0n` -> `sleepOrShutdown(pollIntervalMs)`
    - 체크포인트 경로: `cgi-bin/data/{config.id}/{dataTable}.json`
 
-### src/cgi/cgi_util.js — CGI 유틸 (CGI class)
+### src/cgi/handler.js — Handler 클래스
+
+모든 CGI 비즈니스 로직을 담당하는 static 클래스. atomic write (tmp → rename) 내장.
 
 ```js
-CGI.listConfigs()              // conf.d/*.json 목록 (server.json 제외)
-CGI.readConfig(name)           // conf.d/{name}.json, 없으면 null
-CGI.writeConfig(name, config)  // atomic write (tmp -> rename)
-CGI.deleteConfig(name)
-CGI.parseQuery()               // process.env.get('QUERY_STRING') 파싱
-CGI.readBody()                 // process.stdin.read() 로 JSON 파싱
-CGI.reply(data)                // CGI 응답 (Content-Type: application/json + body)
-CGI.isRunning(name)            // run/{name}.pid 파일 존재 여부
-CGI.readCheckpoints(configId)  // data/{configId}/*.json -> { [dataTable]: lastSuccessRid }
-                               //   rc.js GET 단건 조회에서 사용
+// 파일 유틸
+Handler.exists(filePath)            // 파일 존재 여부
+Handler._read(filePath)             // JSON 파일 읽기 (실패 시 null)
+Handler._write(filePath, data)      // atomic write (tmp -> rename)
+Handler._delete(filePath)           // 파일 삭제 (ENOENT는 null 반환)
+
+// conf.d CRUD
+Handler.getConfigList()             // conf.d/*.json 목록
+Handler.getConfig(name)             // conf.d/{name}.json, 없으면 null
+Handler.writeConfig(name, config)   // conf.d/{name}.json 저장
+Handler.removeConfig(name)          // conf.d/{name}.json 삭제
+Handler.deletePid(name)             // run/{name}.pid 삭제
+
+// CGI 유틸
+Handler.parseQuery()                // process.env.get('QUERY_STRING') 파싱
+Handler.readBody()                  // process.stdin.read() 로 JSON 파싱
+Handler.reply(data)                 // CGI 응답 (Content-Type: application/json + body)
+
+// service 생명주기
+Handler.installReplicator(name, cb)    // config 검증 후 service install
+Handler.startReplicator(name, cb)      // service start
+Handler.stopReplicator(name, cb)       // service stop + pid 정리
+Handler.uninstallReplicator(name, cb)  // service uninstall
+Handler.getServiceStatus(name, cb)     // service status 조회
+Handler.stopServiceIfRunning(name, cb)
+Handler.restartServiceIfRunning(name, cb)
+Handler.hasInstalledService(name)      // install된 service 정의 파일 존재 여부
+
+// replicator 복합 동작
+Handler.createReplicator(body, cb)     // config 저장 + service install (POST /api/rc)
+Handler.getReplicator(name, cb)        // config 조회 + checkpoint 취합 (GET /api/rc)
+Handler.updateReplicator(name, body, cb) // config 저장 + 실행 중이면 재시작 (PUT /api/rc)
+Handler.deleteReplicator(name, cb)     // stop + uninstall + 파일 정리 (DELETE /api/rc)
+
+// checkpoint
+Handler.readCheckpoints(name, config)   // checkpoint 취합 -> { [dataTable]: { lastSuccessRid, hasMore } }
+Handler.deleteCheckpoints(name, config) // checkpoint 디렉토리 정리
 ```
 
-- ROOT 경로: `_argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length)`
-- `CONF_DIR`: `path.join(ROOT, 'conf.d')`
-- `RUN_DIR`: `path.join(ROOT, 'run')`
-- `DATA_DIR`: `path.join(ROOT, 'data')`
+- `APP_DIR`: `process.argv[1].slice(0, .../cgi-bin/...)`
+- `CONF_DIR`: `path.join(APP_DIR, 'conf.d')`
+- `DATA_DIR`: `path.join(APP_DIR, 'data')`
+- service name은 API name 앞에 `"_rpl_"` prefix 사용 (예: `"test"` → `"_rpl_test"`)
+- service executable: `cgi-bin/replication.js`, args: conf.d/{name}.json 절대경로
+- service working dir: `cgi-bin` 부모인 package root
 - 환경변수: `process.env.get('KEY')` (jsh에서 `process.env.KEY` 불가)
+
+## service lifecycle 구현 메모
+
+- 등록은 `POST /api/rc` 에서 처리한다.
+  - config 저장
+  - source/target 데이터 컬럼을 순서 기준으로 타입 검증
+  - service install
+- 별도 install은 `POST /api/rc/install?name=...` 에서 처리한다.
+  - 기존 `conf.d/{name}.json` 이 있는 경우 service install만 수행
+- 수정은 `PUT /api/rc?name=...` 에서 처리한다.
+  - config 저장
+  - `source.password`/`target.password`는 각각 키가 누락되었거나 빈 문자열(`""`)인 경우 기존 값 유지
+  - source/target 데이터 컬럼을 순서 기준으로 타입 검증
+  - service가 `RUNNING` 상태일 때만 `stop -> start`
+- 시작/종료는 `POST /api/rc/start`, `POST /api/rc/stop`
+  - JSH `service` 모듈 사용
+- 삭제는 `DELETE /api/rc?name=...`
+  - service가 실행 중이면 stop
+  - service uninstall
+  - service가 이미 없어도 service 정의 파일, config, pid, checkpoint 정리는 계속 시도
+  - 로그 파일은 유지
+- 목록은 `GET /api/rc/list`
+  - `conf.d` 전체를 반환
+  - 각 항목에 `installed`, `running` 포함
+- 직접 JSH로 service-aware CGI를 검증할 때는 `/public`, `/etc` mount 와 `SERVICE_CONTROLLER`가 필요할 수 있다.
+- TAG `NAME` filter(`like`, `in`)는 원본 tag name 기준으로 평가하고, `prefix`/`suffix` 는 filter 통과 후 target에 기록할 때만 적용한다.
 
 ### src/db/client.js — MachbaseClient
 
@@ -146,7 +206,7 @@ table.setSchema(schema)
 table.getDataTables()                      // [{ data_table, table_id }]
 table.loadTagMetaCache(nameFilter?)        // TagMetaCache
 table.append(rows)                         // Error|null
-table.findFirstMissRow(resolved, client, suffix)  // { firstMissIdx, err } -- STARTUP_INTEGRITY 전용
+table.findFirstMissRow(resolved, client, suffix)  // { firstMissIdx, err } -- STARTUP_INTEGRITY 전용, source batch 순서대로 target 존재 여부 확인
 
 // TagDataTable
 dataTable.open() / dataTable.close()
@@ -156,12 +216,14 @@ dataTable.read(startRid, limit, rangeSize, nameRule, sourceColumns, filter)
   // { rows, rangeMaxRid, err }
   //   rows: 복제 대상 행 목록
   //   rangeMaxRid: 쿼리 RID 범위 내 실제 최대 RID (필터로 전량 차단된 경우에도 > 0n)
+  //   source read SQL은 ORDER BY _RID 사용
 dataTable.getMaxRid()                      // BigInt
 
 // LogTable
 logTable.open() / logTable.close()
 logTable.getSchema()
 logTable.read(startRid, limit, rangeSize, filter)  // { rows, rangeMaxRid, err }
+  // source read SQL은 ORDER BY _RID 사용
 logTable.append(rows)
 logTable.getMaxRid()
 ```
@@ -187,11 +249,12 @@ store.save(cp, stats, opts)
 {
   "version": 1,
   "source": { "server": "192.168.1.183", "table": "TAG", "dataTable": "_TAG_DATA_0" },
-  "checkpoint": { "lastSuccessRid": "12345678", "updatedAt": "2026-03-31T..." }
+  "checkpoint": { "lastSuccessRid": "12345678", "updatedAt": "2026-03-31T...", "hasMore": false }
 }
 ```
 
 - `lastSuccessRid`: BigInt <-> string 변환 내장
+- `hasMore`: `rowsRead === queryLimit` 기준으로 다음 작업이 남아있을 가능성 표시
 - atomic write (`.tmp` -> `renameSync`), `fs.mkdirSync({ recursive: true })` 내장
 - `source.dataTable` 불일치 시 손상으로 처리
 
@@ -205,22 +268,15 @@ retry.isExhausted(attempt)              // bool
 retry.shouldRetry(err)                  // bool
 ```
 
-### src/lib/signal.js — registerSignals
-
-```js
-registerSignals(shutdownFlag, timeoutMs)
-// SIGTERM / SIGINT 수신 -> shutdownFlag.value = true -> timeout 초과 시 process.exit(1)
-```
-
 ## conf.d/{name}.json 형식 (ReplicatorConfig)
 
 ```json
 {
   "id": "repli-a",
   "logging": {
+    "disable": false,
     "level": "info",
-    "stdout": true,
-    "file": { "enabled": true, "directory": "/work/logs" }
+    "maxFiles": 10
   },
   "source": {
     "host": "...", "port": 5656, "user": "SYS", "password": "MANAGER",
@@ -254,8 +310,9 @@ registerSignals(shutdownFlag, timeoutMs)
 - `integrity`: TAG 테이블 재시작 시 STARTUP_INTEGRITY 실행 여부. `false`=비활성화, 그 외=활성화
 - `target.autoCreate`: `true`이면 대상 테이블 없을 때 src 스키마로 자동 CREATE
 - `target.table`: `""` + `autoCreate: true` -> source.table 이름 사용
-- `source.columns`: `null`=전체, 배열 지정 시 TAG 테이블은 NAME/TIME 필수 포함
-- `logging.file.directory`: 절대경로 `/work/logs` 사용 권장
+- `source.columns`: `null`=전체, 배열 지정 시 target 데이터 컬럼 순서에 맞춰야 하며 TAG는 key(PRIMARY)/base time(BASETIME) 컬럼 필수 포함
+- 로그 디렉토리: `$HOME/public/logs` 고정 (logger.js 내부에서 결정)
+- `logging.disable: true` 설정 시 디렉토리 생성 및 모든 출력 비활성화
 
 ## 테스트 실행
 
@@ -299,9 +356,9 @@ ntf testsuite/package/replication/replication.ts
 ../machbase-neo/machbase-neo jsh cgi-bin/replication.js cgi-bin/conf.d/repli-a.json
 
 # CGI 테스트 (-e 플래그는 스크립트 파일 앞에 위치)
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js
+../machbase-neo/machbase-neo jsh -v /etc=$(pwd)/etc -e REQUEST_METHOD=GET cgi-bin/api/rc/list.js
 ../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a cgi-bin/api/rc.js
-../machbase-neo/machbase-neo jsh -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/api/rc/start.js
+../machbase-neo/machbase-neo jsh -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a cgi-bin/api/rc/start.js
 ```
 
 ## jsh 환경 제약사항
@@ -341,8 +398,8 @@ conn.close();
 ```
 
 **주의사항**
-- TAG 파티션 `NAME` 컬럼: `typeof number` (tag ID)
-- `TIME` 컬럼: Go `time.Time` 객체 -- `BigInt(row.TIME)` 불가, `?` 파라미터 바인딩으로만 전달
+- TAG 파티션의 key(PRIMARY) 컬럼: `typeof number` (tag ID), 물리 컬럼명은 테이블마다 다를 수 있음
+- TAG 파티션의 base time(BASETIME) 컬럼: Go `time.Time` 객체, 물리 컬럼명은 테이블마다 다를 수 있음. `BigInt(row.TIME)` 불가, `?` 파라미터 바인딩으로만 전달
 - VOLATILE TABLE: append 미지원 -> `exec('INSERT INTO ... VALUES (?,?,?)', ...)` 사용
 - 단일 연결에서 동시 query + append 불가 -> Worker별 독립 연결 사용
 
@@ -353,7 +410,7 @@ conn.close();
 | A-01 | CGI가 conf.d 직접 접근 | jsh `svr.serve()` Go 레벨 블로킹으로 HTTP 서버 + Worker 동시 실행 불가 |
 | A-02 | replicator는 독립 프로세스 | config별 격리, 장애 격리, 단순한 생명주기 |
 | A-03 | `process.addShutdownHook`으로 종료 처리 | setTimeout 기반 signal은 비동기 이후 실행 안 됨 |
-| A-04 | start/stop CGI는 503 반환 | jsh 비동기 exec 미지원. 지원 시 `process.exec()` + PID 파일로 구현 예정 |
+| A-04 | start/stop/register/delete는 JSH `service` 모듈로 제어 | 수동 프로세스 실행 대신 Machbase Neo service lifecycle에 맞춤 |
 | B-01 | Worker별 독립 machcli 연결 | 단일 연결 동시 query + append 충돌 |
 | B-02 | VOLATILE TABLE + JOIN으로 miss row 탐색 | TAG 테이블 JOIN 드라이빙 불가, PK 없음 |
 | B-03 | TIME 값은 `?` 파라미터 바인딩 전달 | BigInt 리터럴 SQL 삽입 시 정밀도 손실 |

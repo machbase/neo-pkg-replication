@@ -1,11 +1,21 @@
 'use strict';
 
+/**
+ * @fileoverview Worker — 파티션 단위 복제 상태 머신
+ *
+ * 상태 전이: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
+ *   - RESOLVE_START: checkpoint 또는 startMode 기준으로 시작 RID를 결정한다.
+ *   - STARTUP_INTEGRITY: 재시작 시 누락 행을 탐색하여 복제 시작점을 조정한다 (TAG 전용).
+ *   - STEADY_REPLICATION: 소스를 주기적으로 읽어 대상에 append한다.
+ */
+
 const path = require('path');
 const CheckpointStore = require('../db/checkpoint.js');
 const RetryHandler = require('../lib/retry.js');
 const { MachbaseClient } = require('../db/client.js');
 const { TagDataTable, TagTable, LogTable } = require('../db/table.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
+const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
 
 const CHECKPOINT_BASE = path.resolve(path.dirname(process.argv[1]));
 const CHECKPOINT_DIRECTORY = path.join(CHECKPOINT_BASE, 'data');
@@ -19,8 +29,11 @@ const INTEGRITY_BATCH_LIMIT = 500;
 
 
 /**
- * transform[] 적용: (value + add) * multiply, prefix/suffix
- * number 타입 컬럼에만 add/multiply 적용, BigInt/null/string은 skip
+ * transform[] 설정을 행 배열에 적용한다.
+ * number 타입 컬럼에만 `(value + add) * multiply`를 적용하며, BigInt/null/string은 건너뛴다.
+ * @param {Array<object>} rows
+ * @param {Array<{ column: string, add: number, multiply: number }>|null} transform
+ * @returns {Array<object>}
  */
 function _applyTransform(rows, transform) {
   if (!transform || transform.length === 0) return rows;
@@ -37,7 +50,16 @@ function _applyTransform(rows, transform) {
 }
 
 /**
- * 공통 retry 루프
+ * 공통 retry 루프. fn이 `{ done: true }` 를 반환할 때까지 재시도한다.
+ * @param {object} opts
+ * @param {function(): { done: boolean, value?: any, retryable?: boolean, msg?: string }} opts.fn
+ * @param {RetryHandler} opts.retry
+ * @param {{ value: boolean }} opts.shutdownFlag
+ * @param {object} opts.logCtx
+ * @param {string} opts.exhaustedMsg
+ * @param {string} [opts.retryMsg]
+ * @param {string} [opts.phase]
+ * @returns {Promise<{ ok: boolean, value?: any }>}
  */
 async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retryMsg, phase }) {
   const ctx = phase ? { ...logCtx, phase } : logCtx;
@@ -95,6 +117,13 @@ async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
  *   RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
  */
 class Worker {
+  /**
+   * @param {object} config - workerConfig (id, source, target, queryLimit, ridRangeSize, ...)
+   * @param {string} dataTable - 담당 파티션 테이블명 (예: _TAG_DATA_0)
+   * @param {import('../db/types.js').TableSchema} srcSchema - 소스 스키마
+   * @param {import('../db/types.js').TableSchema} dstSchema - 대상 스키마
+   * @param {{ value: boolean }} shutdownFlag - 외부 종료 요청 플래그
+   */
   constructor(config, dataTable, srcSchema, dstSchema, shutdownFlag) {
     this.config = config;
     this.dataTable = dataTable;
@@ -104,7 +133,9 @@ class Worker {
   }
 
   /**
-   * 연결 생성 + 전체 실행
+   * DB 연결을 열고 상태 머신을 실행한다.
+   * @param {AbortSignal} signal - 외부 취소 신호
+   * @returns {Promise<void>}
    */
   async run(signal) {
     const logCtx = {
@@ -156,19 +187,53 @@ class Worker {
   }
 
   /**
-   * 상태 머신: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
+   * 상태 머신을 실행한다: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
+   * @param {{ srcTable: object, dstTable: object, shutdownFlag: { value: boolean } }} opts
+   * @returns {Promise<void>}
    */
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
     const batchSize      = this.config.queryLimit;
     const ridRangeSize   = this.config.ridRangeSize;
     const pollIntervalMs = this.config.pollIntervalMs;
     const sourceColumns  = this.config.source.columns;
+    const sourceDataCols = this.srcSchema.columns
+      .filter((c) => !(c.flag & FLAG_METADATA))
+      .map((c) => c.name);
+    const targetDataCols = this.dstSchema.columns
+      .filter((c) => !(c.flag & FLAG_METADATA))
+      .map((c) => c.name);
+    const sourceOrder = Array.isArray(this.config.columnOrder?.source) && this.config.columnOrder.source.length > 0
+      ? this.config.columnOrder.source
+      : (Array.isArray(sourceColumns) && sourceColumns.length > 0 ? sourceColumns : sourceDataCols);
+    const targetOrder = Array.isArray(this.config.columnOrder?.target) && this.config.columnOrder.target.length > 0
+      ? this.config.columnOrder.target
+      : targetDataCols;
+    const logCtx = { job_id: this.config.id, partition: this.dataTable };
     const filter    = this.config.source.filter    ?? null;
     const transform = this.config.source.transform ?? null;
     const nameRule  = transform?.find(t => t.column === 'NAME') ?? null;
+    const sourcePrimaryCol = this.srcSchema.columns.find((c) => c.flag & FLAG_PRIMARY);
+    const sourceBaseTimeCol = this.srcSchema.columns.find((c) => c.flag & FLAG_BASETIME);
+    if (this.srcSchema.tableType === 'TAG' && (!sourcePrimaryCol || !sourceBaseTimeCol)) {
+      getLogger().error('worker', { ...logCtx, msg: 'PRIMARY/BASETIME column not found in source schema' });
+      return;
+    }
+    const sourcePrimaryColName = sourcePrimaryCol ? sourcePrimaryCol.name : null;
+    const sourceBaseTimeColName = sourceBaseTimeCol ? sourceBaseTimeCol.name : null;
     const retry = new RetryHandler(this.config.retry ?? {});
     const checkpointStore = new CheckpointStore(path.join(CHECKPOINT_DIRECTORY, this.config.id), this.dataTable);
-    const logCtx = { job_id: this.config.id, partition: this.dataTable };
+    const remapRowsByOrder = (rows) => {
+      if (!rows || rows.length === 0) return rows;
+      const width = Math.min(sourceOrder.length, targetOrder.length);
+      if (width === 0) return rows;
+      return rows.map((row) => {
+        const mapped = { ...row };
+        for (let i = 0; i < width; i++) {
+          mapped[targetOrder[i]] = row[sourceOrder[i]];
+        }
+        return mapped;
+      });
+    };
 
     // ═══════════════════════════════════════════════════════════
     // RESOLVE_START — 시작 RID 결정
@@ -195,6 +260,18 @@ class Worker {
         startRid = 0n; // 'full'
       }
       getLogger().info('worker', { ...logCtx, startMode, startRid: String(startRid), msg: 'worker start' });
+
+      // 파티션 파일이 없는 경우에도 checkpoint 파일을 만들어 관리 대상 파티션을 명시한다.
+      const initialCpRid = startRid > 0n ? (startRid - 1n) : -1n;
+      checkpointStore.save({
+        lastSuccessRid: initialCpRid,
+        sourceHost: this.config.source.host,
+        sourceTable: this.config.source.table,
+      }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 }, {
+        onSaveFailure: this.config.onSaveFailure,
+        queryLimit: batchSize,
+        initializedOnly: true,
+      });
     }
 
     // TAG alias cache 로드
@@ -227,6 +304,8 @@ class Worker {
         shutdownFlag,
         logCtx,
         checkpointStore,
+        sourcePrimaryColName,
+        sourceBaseTimeColName,
       });
       if (result === null) return;
       startRid = result.startRid;
@@ -257,7 +336,7 @@ class Worker {
             sourceHost:   this.config.source.host,
             sourceTable:    this.config.source.table,
           }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 },
-          { onSaveFailure: this.config.onSaveFailure });
+          { onSaveFailure: this.config.onSaveFailure, queryLimit: batchSize });
           startRid = rangeMaxRid + 1n;
           continue;
         }
@@ -270,18 +349,19 @@ class Worker {
         rows.map(row => row.data),
         transform
       );
+      const mappedOutRows = remapRowsByOrder(outRows);
       const droppedNoMeta = 0;
 
       if (shutdownFlag.value) return;
 
-      if (outRows.length > 0) {
-        const ok = await _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx);
+      if (mappedOutRows.length > 0) {
+        const ok = await _appendRows(dstTable, mappedOutRows, retry, shutdownFlag, logCtx);
         if (!ok) return;
       }
 
       const batchStats = {
         rowsRead:      rows.length,
-        rowsWritten:   outRows.length,
+        rowsWritten:   mappedOutRows.length,
         droppedNoMeta,
         skippedExists: 0,
       };
@@ -289,7 +369,7 @@ class Worker {
         lastSuccessRid: rangeMaxRid,
         sourceHost:   this.config.source.host,
         sourceTable:    this.config.source.table,
-      }, batchStats, { onSaveFailure: this.config.onSaveFailure });
+      }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: batchSize });
 
       startRid = rangeMaxRid + 1n;
     }
@@ -312,6 +392,8 @@ class Worker {
     shutdownFlag,
     logCtx,
     checkpointStore,
+    sourcePrimaryColName,
+    sourceBaseTimeColName,
   }) {
     getLogger().info('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
     let integrityRid = startRid;
@@ -338,7 +420,7 @@ class Worker {
               sourceHost:     this.config.source.host,
               sourceTable:    this.config.source.table,
             }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 },
-            { onSaveFailure: this.config.onSaveFailure });
+            { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
             integrityRid = batchRangeMaxRid + 1n;
           } else {
             startRid = integrityRid;
@@ -347,7 +429,21 @@ class Worker {
           }
           break;
         }
-        const resolved = rows.map(row => ({ rid: row.rid, canonical: row.data.NAME, time: row.data.TIME }));
+        const resolved = rows.map((row) => ({
+          rid: row.rid,
+          canonical: sourcePrimaryColName ? row.data[sourcePrimaryColName] : row.data.NAME,
+          time: sourceBaseTimeColName ? row.data[sourceBaseTimeColName] : row.data.TIME,
+        }));
+        const invalidResolved = resolved.find((r) => r.canonical == null || r.time == null);
+        if (invalidResolved) {
+          getLogger().error('worker', {
+            ...logCtx,
+            phase: 'STARTUP_INTEGRITY',
+            rid: String(invalidResolved.rid),
+            msg: 'missing TAG key columns in read result',
+          });
+          outcome = 'return'; break;
+        }
 
         if (shutdownFlag.value) { outcome = 'return'; break; }
 
@@ -384,7 +480,7 @@ class Worker {
             lastSuccessRid: safeCpRid,
             sourceHost:     this.config.source.host,
             sourceTable:    this.config.source.table,
-          }, batchStats, { onSaveFailure: this.config.onSaveFailure });
+          }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
           startRid = firstMissRid;
           getLogger().info('worker', { ...logCtx, firstMissRid: String(firstMissRid), safeCpRid: String(safeCpRid), msg: 'integrity check: first missing row found' });
           outcome = 'break'; break;
@@ -394,7 +490,7 @@ class Worker {
           lastSuccessRid: batchRangeMaxRid,
           sourceHost:   this.config.source.host,
           sourceTable:    this.config.source.table,
-        }, batchStats, { onSaveFailure: this.config.onSaveFailure });
+        }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
         integrityRid = batchRangeMaxRid + 1n;
         getLogger().debug('worker', { ...logCtx, nextRid: String(integrityRid), msg: 'integrity check: batch confirmed' });
       } finally {

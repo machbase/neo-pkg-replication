@@ -99,9 +99,15 @@ function RuleBadge({ label, value }) {
 }
 
 function SourceDetailCard({ src }) {
+    const isAllColumns = src.columns === null || src.columns === undefined;
     const columns = src.columns || [];
     const filter = src.filter || [];
     const transform = src.transform || [];
+
+    // Collect all column names that have rules (for "All columns" mode)
+    const ruleColumns = isAllColumns
+        ? [...new Set([...filter.map((r) => r.column), ...transform.map((r) => r.column)])]
+        : [];
 
     const hasStringRule = (name) => {
         const f = filter.find((r) => r.column === name);
@@ -114,17 +120,19 @@ function SourceDetailCard({ src }) {
         return f?.min != null || f?.max != null || t?.add != null || t?.multiply != null;
     };
 
-    const stringRows = columns.filter(hasStringRule).map((name) => ({
+    const colsForRules = isAllColumns ? ruleColumns : columns;
+    const stringRows = colsForRules.filter(hasStringRule).map((name) => ({
         name,
         filter: filter.find((r) => r.column === name),
         transform: transform.find((r) => r.column === name),
     }));
-    const numericRows = columns.filter(hasNumericRule).map((name) => ({
+    const numericRows = colsForRules.filter(hasNumericRule).map((name) => ({
         name,
         filter: filter.find((r) => r.column === name),
         transform: transform.find((r) => r.column === name),
     }));
-    const plainCols = columns.filter((name) => !hasStringRule(name) && !hasNumericRule(name));
+    const plainCols = isAllColumns ? [] : columns.filter((name) => !hasStringRule(name) && !hasNumericRule(name));
+    const hasRules = stringRows.length > 0 || numericRows.length > 0;
 
     return (
         <section className="form-card">
@@ -144,9 +152,9 @@ function SourceDetailCard({ src }) {
                 </div>
             </div>
 
-            {columns.length > 0 ? (
+            {(columns.length > 0 || hasRules) ? (
                 <div className="space-y-16 mt-16">
-                    <span className="text-xs text-on-surface-tertiary">Total Columns ({columns.length})</span>
+                    <span className="text-xs text-on-surface-tertiary">{isAllColumns ? "All columns" : `Total Columns (${columns.length})`}</span>
                     {stringRows.length > 0 && (
                         <div className="columns-table-wrap">
                             <div className="columns-table-info">
@@ -227,7 +235,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                 if (data) {
                     setLastUpdated(new Date());
                     const cp = data.checkpoints || {};
-                    prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+                    prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
                 }
             });
         }
@@ -239,7 +247,7 @@ export default function DashboardPage({ jobs, onDelete }) {
             if (!data) return;
             setLastUpdated(new Date());
             const cp = data.checkpoints || {};
-            const currentTotal = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+            const currentTotal = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
             if (prevTotalRowsRef.current !== null) {
                 const diff = currentTotal - prevTotalRowsRef.current;
                 const rate = Math.max(0, diff / 5);
@@ -250,9 +258,10 @@ export default function DashboardPage({ jobs, onDelete }) {
         });
     }, [selectedJobId, fetchJobDetail]);
 
+    const AUTO_REFRESH_DASHBOARD = true;
     useEffect(() => {
-        if (!selectedJobId) return;
-        const id = setInterval(refreshReplicationInfo, 5000);
+        if (!AUTO_REFRESH_DASHBOARD || !selectedJobId) return;
+        const id = setInterval(refreshReplicationInfo, 10000);
         return () => clearInterval(id);
     }, [selectedJobId, refreshReplicationInfo]);
 
@@ -286,6 +295,7 @@ export default function DashboardPage({ jobs, onDelete }) {
 
     const checkpoints = jobDetail.checkpoints && Object.keys(jobDetail.checkpoints).length > 0 ? jobDetail.checkpoints : {};
     const cpEntries = Object.entries(checkpoints);
+    const allDone = cpEntries.length > 0 && cpEntries.every(([, v]) => !v.hasMore);
 
     return (
         <div className="page">
@@ -333,36 +343,35 @@ export default function DashboardPage({ jobs, onDelete }) {
                                         if (!data) return;
                                         setLastUpdated(new Date());
                                         const cp = data.checkpoints || {};
-                                        prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v), 0);
+                                        prevTotalRowsRef.current = Object.values(cp).reduce((sum, v) => sum + Number(v.lastSuccessRid || 0), 0);
                                         setRowsPerSec(null);
                                         setConsecutiveZero(0);
                                     });
                                 }}
                                 className={`${lastUpdated ? "" : "ml-auto"} p-4 hover:bg-surface-hover rounded-base transition-colors tooltip`}
-                                data-tooltip="Refresh (auto every 5s)"
+                                data-tooltip="Refresh (auto every 10s)"
                             >
                                 <Icon name="refresh" className="icon-sm" />
                             </button>
                         </div>
                         {(() => {
-                            const totalRows = cpEntries.reduce((sum, [, rid]) => sum + Number(rid), 0);
-                            const leftIconColor =
-                                cpEntries?.length === 0 || rowsPerSec === null
-                                    ? "var(--color-on-surface-disabled)"
-                                    : listJob.status === "running"
-                                    ? "var(--color-success)"
-                                    : "var(--color-error)";
+                            const totalRows = cpEntries.reduce((sum, [, v]) => sum + Number(v.lastSuccessRid || 0), 0);
+                            const leftIconColor = listJob.status === "running" ? "var(--color-success)" : "var(--color-error)";
                             const rightIconColor =
                                 cpEntries?.length === 0 || rowsPerSec === null
+                                    ? "var(--color-on-surface-disabled)"
+                                    : allDone
                                     ? "var(--color-on-surface-disabled)"
                                     : rowsPerSec > 0
                                     ? "var(--color-success)"
                                     : "var(--color-error)";
-                            const isFlowing = rowsPerSec !== null && rowsPerSec > 0;
+                            const hasAnyMore = cpEntries.length > 0 && cpEntries.some(([, v]) => v.hasMore);
+                            const isFlowing = hasAnyMore && listJob.status !== "stopped";
                             return (
                                 <div className="flex items-center justify-center gap-24">
                                     {/* Left DB icon — status color */}
                                     <div className="flex flex-col items-center shrink-0">
+                                        <span className="font-mono text-sm text-on-surface-secondary font-medium mb-4">{src.table || "—"}</span>
                                         <Icon name="database" className="shrink-0" style={{ fontSize: "120px", color: leftIconColor }} />
                                         <span className="font-mono text-xs text-on-surface-disabled mt-2">
                                             {src.host}:{src.port}
@@ -380,13 +389,13 @@ export default function DashboardPage({ jobs, onDelete }) {
                                             </thead>
                                             <tbody>
                                                 {cpEntries?.length > 0 ? (
-                                                    cpEntries.map(([partition, rid]) => (
+                                                    cpEntries.map(([partition, v]) => (
                                                         <tr key={partition} className="border-t border-border">
                                                             <td className="py-6 pl-12">
                                                                 <span className="text-sm text-on-surface">{partition}</span>
                                                             </td>
                                                             <td className="py-6 pr-12 text-right">
-                                                                <span className="font-mono text-sm text-on-surface-secondary">{Number(rid).toLocaleString()}</span>
+                                                                <span className="font-mono text-sm text-on-surface-secondary">{v.lastSuccessRid ? Number(v.lastSuccessRid).toLocaleString() : "—"}</span>
                                                             </td>
                                                         </tr>
                                                     ))
@@ -423,6 +432,7 @@ export default function DashboardPage({ jobs, onDelete }) {
 
                                     {/* Right DB icon — rate color */}
                                     <div className="flex flex-col items-center shrink-0">
+                                        <span className="font-mono text-sm text-on-surface-secondary font-medium mb-4">{tgt.table || "—"}</span>
                                         <Icon name="database" className="shrink-0" style={{ fontSize: "120px", color: rightIconColor }} />
                                         <span className="font-mono text-xs text-on-surface-disabled mt-2">
                                             {tgt.host}:{tgt.port}

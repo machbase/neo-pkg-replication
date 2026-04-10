@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * @fileoverview TagTable / TagDataTable / filter 통합 테스트
+ *
+ * 실제 DB(192.168.1.183:5656)에 접속하여 테이블 클래스 API와 필터링 동작을 검증한다.
+ * 사용법: jsh cgi-bin/tests/table.test.js
+ */
+
 const process = require('process');
 const path = require('path');
 const TESTS_DIR = path.resolve(path.dirname(process.argv[1]));
@@ -111,7 +118,11 @@ suite('TagDataTable - filter', () => {
 
   let dataTableName, schema;
 
-  // 공통 setup: 파티션 이름과 스키마 준비
+  /**
+   * TagDataTable 인스턴스를 열어 반환하는 헬퍼 함수.
+   * 첫 번째 파티션 이름과 스키마를 준비하고 TAG META 캐시를 로드한다.
+   * @returns {TagDataTable}
+   */
   function openDataTable() {
     const tagTable = new TagTable(SRC, SRC_TABLE);
     tagTable.open();

@@ -7,63 +7,39 @@
 
 const path = require('path');
 const process = require('process');
-const _argv = process.argv[1];
-const ROOT = _argv.slice(0, _argv.lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
-const CGI = require(path.join(ROOT, 'src', 'cgi', 'cgi_util.js'));
+const ROOT = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
+const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 
-const { name } = CGI.parseQuery();
+const { name } = Handler.parseQuery();
 
 function POST() {
-  const body = CGI.readBody();
-  if (!body.name) {
-    CGI.reply({ ok: false, reason: 'name is required' });
-  } else if (!body.config) {
-    CGI.reply({ ok: false, reason: 'config is required' });
-  } else if (CGI.readConfig(body.name)) {
-    CGI.reply({ ok: false, reason: `replicator '${body.name}' already exists` });
-  } else {
-    CGI.writeConfig(body.name, body.config);
-    CGI.reply({ ok: true, data: { name: body.name } });
-  }
+  Handler.createReplicator(Handler.readBody(), (err, data) => {
+    Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
+  });
 }
 
 function GET() {
-  if (!name) return CGI.reply({ ok: false, reason: 'name is required' });
-  const config = CGI.readConfig(name);
-  if (!config) {
-    CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
-  } else {
-    const safeSource = { ...config.source };
-    delete safeSource.password;
-    const safeTarget = { ...config.target };
-    delete safeTarget.password;
-    const safeConfig = { ...config, source: safeSource, target: safeTarget };
-    const configId = config.id || `${config.source?.table}_${config.target?.table}`;
-    const checkpoints = CGI.readCheckpoints(configId);
-    CGI.reply({ ok: true, data: { name, config: safeConfig, checkpoints } });
-  }
+  Handler.getReplicator(name, (err, data) => {
+    Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
+  });
 }
 
 function PUT() {
-  if (!name) return CGI.reply({ ok: false, reason: 'name is required' });
-  if (!CGI.readConfig(name)) {
-    CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
-  } else {
-    CGI.writeConfig(name, CGI.readBody());
-    CGI.reply({ ok: true, data: { name } });
-  }
+  Handler.updateReplicator(name, Handler.readBody(), (err) => {
+    Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data: { name } });
+  });
 }
 
 function DELETE() {
-  if (!name) return CGI.reply({ ok: false, reason: 'name is required' });
-  if (!CGI.readConfig(name)) {
-    CGI.reply({ ok: false, reason: `replicator '${name}' not found` });
-  } else {
-    CGI.deleteConfig(name);
-    CGI.reply({ ok: true });
-  }
+  Handler.deleteReplicator(name, (err) => {
+    Handler.reply(err ? { ok: false, reason: err.message } : { ok: true });
+  });
 }
 
 const handlers = { POST, GET, PUT, DELETE };
 const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
-(handlers[method] || (() => CGI.reply({ ok: false, reason: 'method not allowed' })))();
+try {
+  (handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))();
+} catch (err) {
+  Handler.reply({ ok: false, reason: err.message });
+}

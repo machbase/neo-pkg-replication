@@ -2,10 +2,10 @@ import { request } from './client'
 
 const RC = '/cgi-bin/api/rc'
 
-// list 응답: [{ name, running }]
+// list 응답: [{ name, installed, running }]
 function mapListItem(j) {
   const { checkpoints, ...rest } = j
-  return { ...rest, id: j.name, status: j.running ? 'running' : 'stopped' }
+  return { ...rest, id: j.name, installed: j.installed, status: j.running ? 'running' : 'stopped' }
 }
 
 export const listJobs = async () => {
@@ -13,10 +13,10 @@ export const listJobs = async () => {
   return data.map(mapListItem)
 }
 
-// 단건 응답: { name, config: { ... } }
+// 단건 응답: { name, config: { ... }, checkpoints: { ... } }
 export const getJob = async (name) => {
   const data = await request('GET', `${RC}?name=${encodeURIComponent(name)}`)
-  return { name: data.name, ...data.config }
+  return { name: data.name, ...data.config, checkpoints: data.checkpoints }
 }
 
 // 생성: { name, config }
@@ -35,6 +35,15 @@ export const startJob = (name) =>
 
 export const stopJob = (name) =>
   request('POST', `${RC}/stop?name=${encodeURIComponent(name)}`)
+
+export const recoverJob = (name) =>
+  request('POST', `${RC}/recover?name=${encodeURIComponent(name)}`)
+
+export const overwriteJob = (name) =>
+  request('POST', `${RC}/overwrite?name=${encodeURIComponent(name)}`)
+
+export const installJob = (name) =>
+  request('POST', `${RC}/install?name=${encodeURIComponent(name)}`)
 
 export const fetchTableColumns = ({ host, port, user, password, table }) =>
   request('POST', '/cgi-bin/api/table/columns', { host, port: Number(port), user, password, table })

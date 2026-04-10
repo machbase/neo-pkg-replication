@@ -3,7 +3,7 @@ import { useApp } from "../../context/AppContext";
 import Icon from "../common/Icon";
 import JobListItem from "../jobs/JobListItem";
 
-export default function Sidebar({ jobs, onToggleJob, onRefresh }) {
+export default function Sidebar({ jobs, onToggleJob, onInstallJob, onRefresh }) {
     const navigate = useNavigate();
     const location = useLocation();
     const { selectedJobId, setSelectedJobId } = useApp();
@@ -45,6 +45,7 @@ export default function Sidebar({ jobs, onToggleJob, onRefresh }) {
                                 if (location.pathname !== "/") navigate("/");
                             }}
                             onToggle={() => onToggleJob(job)}
+                            onInstall={() => onInstallJob(job)}
                         />
                     ))}
                     {jobs.length === 0 && <p className="side-empty">No jobs</p>}

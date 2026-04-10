@@ -6,12 +6,12 @@ import JobFormPage from './pages/JobFormPage'
 import Toast from './components/common/Toast'
 
 export default function IndexApp() {
-  const { jobs, toggleJob, removeJob, refreshJobs } = useJobs()
+  const { jobs, toggleJob, installJob, removeJob, refreshJobs } = useJobs()
 
   return (
     <>
       <div className="flex flex-col lg:flex-row overflow-hidden bg-surface-alt text-on-surface antialiased">
-        <Sidebar jobs={jobs} onToggleJob={toggleJob} onRefresh={refreshJobs} />
+        <Sidebar jobs={jobs} onToggleJob={toggleJob} onInstallJob={installJob} onRefresh={refreshJobs} />
         <main className="flex-1 h-screen overflow-y-auto bg-surface-alt lg:ml-64">
           <Routes>
             <Route path="/" element={

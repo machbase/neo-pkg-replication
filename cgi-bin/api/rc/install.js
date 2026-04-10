@@ -1,5 +1,5 @@
 /**
- * POST /cgi-bin/api/rc/start?name=xxx  -- replicator service 시작
+ * POST /cgi-bin/api/rc/install?name=xxx  -- 기존 config로 replicator service 등록
  */
 
 const path = require('path');
@@ -10,7 +10,7 @@ const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 const { name } = Handler.parseQuery();
 
 function POST() {
-  Handler.startReplicator(name, (err) => {
+  Handler.installReplicator(name, (err) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data: { name } });
   });
 }

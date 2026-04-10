@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * @fileoverview MachbaseClient 통합 테스트
+ *
+ * 실제 DB(192.168.1.183:5656)에 접속하여 클라이언트 API를 검증한다.
+ * 사용법: jsh cgi-bin/tests/client.test.js
+ */
+
 const process = require('process');
 const path = require('path');
 const TESTS_DIR = path.resolve(path.dirname(process.argv[1]));

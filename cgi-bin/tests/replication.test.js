@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * @fileoverview Replicator 통합 테스트
+ *
+ * 실제 DB(192.168.1.183:5656)에 접속하여 discover / replication / syncMeta를 검증한다.
+ * 사용법: jsh cgi-bin/tests/replication.test.js
+ */
+
 const fs = require('fs');
 const process = require('process');
 const path = require('path');
@@ -11,7 +18,11 @@ const { MachbaseClient } = require(ROOT + '/src/db/client.js');
 const { Replicator } = require(ROOT + '/src/replication/replicator.js');
 const { SRC, DST, SRC_TABLE, DST_TABLE } = require(TESTS_DIR + '/fixtures.js');
 
-// 테스트용 config 기본값
+/**
+ * 테스트용 ReplicatorConfig 기본값을 생성한다.
+ * @param {object} [overrides={}] - 덮어쓸 필드
+ * @returns {object}
+ */
 function makeConfig(overrides = {}) {
   return {
     source: { ...SRC, table: SRC_TABLE, columns: null, filter: null, transform: null },
@@ -28,7 +39,9 @@ function makeConfig(overrides = {}) {
   };
 }
 
-// DST_TABLE 초기화 (있으면 drop)
+/**
+ * DST_TABLE이 존재하면 DROP하여 초기화한다.
+ */
 function dropDstTable() {
   const client = new MachbaseClient(DST);
   try {
@@ -42,8 +55,11 @@ function dropDstTable() {
   }
 }
 
-// replicator id 기준 체크포인트 디렉토리 삭제
-// 체크포인트 경로: /work/data/{replicatorId}/{dataTable}.json
+/**
+ * replicator id에 해당하는 checkpoint 디렉토리와 파일을 삭제한다.
+ * checkpoint 경로: /work/data/{replicatorId}/{dataTable}.json
+ * @param {string} replicatorId
+ */
 function dropCheckpoints(replicatorId) {
   const dir = ROOT + '/../data/' + replicatorId;
   if (!fs.existsSync(dir)) return;
@@ -53,7 +69,11 @@ function dropCheckpoints(replicatorId) {
   try { fs.rmdirSync(dir); } catch (_) {}
 }
 
-// makeConfig()에서 id 미설정 시 Replicator 자동 생성 규칙과 동일
+/**
+ * makeConfig() 기준으로 Replicator가 자동 생성하는 id를 도출한다.
+ * @param {object} [overrides={}]
+ * @returns {string}
+ */
 function deriveId(overrides = {}) {
   const cfg = makeConfig(overrides);
   if (cfg.id) return cfg.id;

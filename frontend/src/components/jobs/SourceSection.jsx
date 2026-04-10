@@ -55,7 +55,7 @@ export default function SourceSection({ form, update, isEdit }) {
     };
 
     const handleTableChange = (e) => {
-        update("source.table", e.target.value);
+        update("source.table", koToEn(e.target.value).replace(/[^a-zA-Z0-9_]/g, ""));
         // table name changed → clear fetched columns
         setFetchedColumns(null);
         setTableType(null);
@@ -236,10 +236,11 @@ export default function SourceSection({ form, update, isEdit }) {
                     <input
                         type="text"
                         autoComplete="off"
-                        required
+                        required={!isEdit}
                         value={form.source.password}
                         onChange={(e) => update("source.password", koToEn(e.target.value))}
                         className="w-full input-masked"
+                        placeholder={isEdit ? "Leave blank to keep current password" : ""}
                     />
                 </div>
 

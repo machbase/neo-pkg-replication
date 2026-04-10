@@ -1,20 +1,46 @@
 'use strict';
 
+/**
+ * @fileoverview CheckpointStore — 파티션별 복제 진행 위치(RID) 저장/로드
+ *
+ * 저장 파일 형식 (cgi-bin/data/{replicatorId}/{dataTable}.json):
+ * {
+ *   "version": 1,
+ *   "source": { "server": "...", "table": "...", "dataTable": "..." },
+ *   "checkpoint": { "lastSuccessRid": "12345", "updatedAt": "...", "hasMore": false }
+ * }
+ */
+
 const { getInstance: getLogger } = require('../lib/logger.js');
 
 const fs = require('fs');
 const path = require('path');
 
+/** @type {Set<string>} BigInt로 복원해야 하는 JSON 키 집합 */
 const BIGINT_KEYS = new Set(['lastSuccessRid']);
 
-// goja(jsh)에서 typeof bigint === 'bigint'가 동작하지 않으므로 별도 판별
+/**
+ * goja(jsh)에서 `typeof v === 'bigint'`가 올바르게 동작하지 않으므로 별도 판별한다.
+ * @param {*} v
+ * @returns {boolean}
+ */
 function _isBigInt(v) {
   return typeof v === 'bigint' || (v !== null && typeof v === 'object' && v.constructor && v.constructor.name === 'BigInt');
 }
 
 // ─── CheckpointStore ──────────────────────────────────────────────────────────
 
+/**
+ * 파티션 단위 checkpoint 파일 저장소
+ *
+ * 하나의 인스턴스가 하나의 파티션(dataTable) 파일을 관리한다.
+ * 파일 경로: {directory}/{dataTable}.json
+ */
 class CheckpointStore {
+  /**
+   * @param {string} directory - checkpoint 파일 저장 디렉토리 (cgi-bin/data/{replicatorId})
+   * @param {string} dataTable - 파티션 테이블명 (예: _TAG_DATA_0)
+   */
   constructor(directory, dataTable) {
     if (!directory) throw new Error('directory is required');
     if (!dataTable)  throw new Error('dataTable is required');
@@ -32,7 +58,7 @@ class CheckpointStore {
     let data;
     try {
       data = JSON.parse(fs.readFileSync(filePath, 'utf-8'), (key, value) => {
-        if (BIGINT_KEYS.has(key) && typeof value === 'string' && /^\d+$/.test(value)) {
+        if (BIGINT_KEYS.has(key) && typeof value === 'string' && /^-?\d+$/.test(value)) {
           return BigInt(value);
         }
         return value;
@@ -63,6 +89,10 @@ class CheckpointStore {
       });
       return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
     }
+    if (cp.initializedOnly === true) {
+      // placeholder checkpoint는 "resume 가능한 checkpoint"로 취급하지 않는다.
+      return { cp: null, exists: false, err: null };
+    }
 
     return { cp, exists: true, err: null };
   }
@@ -71,7 +101,7 @@ class CheckpointStore {
    * 체크포인트 저장 (atomic write)
    * @param {{ lastSuccessRid: bigint, sourceServer?: string, sourceTable?: string }} cp
    * @param {{ rowsRead: number, rowsWritten: number, droppedNoMeta: number, skippedExists: number }} stats
-   * @param {{ onSaveFailure?: 'continue'|'abort' }} [opts]
+   * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number, initializedOnly?: boolean }} [opts]
    * @returns {Error|null}
    */
   save(cp, stats, opts) {
@@ -80,12 +110,25 @@ class CheckpointStore {
     }
 
     const { filePath, dataTable } = this;
+    const rowsRead = stats?.rowsRead ?? 0;
+    const rowsWritten = stats?.rowsWritten ?? 0;
+    const droppedNoMeta = stats?.droppedNoMeta ?? 0;
+    const skippedExists = stats?.skippedExists ?? 0;
+    const queryLimit = opts?.queryLimit;
+    const hasMore = typeof queryLimit === 'number'
+      && queryLimit > 0
+      && rowsRead === queryLimit;
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       const content = JSON.stringify({
         version: 1,
         source:     { server: cp.sourceServer || '', table: cp.sourceTable || '', dataTable },
-        checkpoint: { lastSuccessRid: cp.lastSuccessRid, updatedAt: new Date().toISOString() },
+        checkpoint: {
+          lastSuccessRid: cp.lastSuccessRid,
+          updatedAt: new Date().toISOString(),
+          hasMore,
+          initializedOnly: opts?.initializedOnly === true ? true : undefined,
+        },
       }, (_key, value) => (_isBigInt(value) ? value.toString() : value), 2);
 
       const tmpPath = `${filePath}.${Date.now()}.tmp`;
@@ -94,10 +137,11 @@ class CheckpointStore {
       getLogger().info('checkpoint_saved', {
         dataTable,
         lastSuccessRid: cp.lastSuccessRid.toString(),
-        rowsRead:      stats?.rowsRead      ?? 0,
-        rowsWritten:   stats?.rowsWritten   ?? 0,
-        droppedNoMeta: stats?.droppedNoMeta ?? 0,
-        skippedExists: stats?.skippedExists ?? 0,
+        rowsRead,
+        rowsWritten,
+        droppedNoMeta,
+        skippedExists,
+        hasMore,
       });
       return null;
     } catch (err) {

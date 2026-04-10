@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router";
 import { useApp } from "../context/AppContext";
 import * as jobsApi from "../api/jobs";
 import Icon from "../components/common/Icon";
+import { koToEn } from "../utils/korean";
 import SourceSection from "../components/jobs/SourceSection";
 import TargetSection from "../components/jobs/TargetSection";
 import ExecutionSection from "../components/jobs/ExecutionSection";
@@ -10,7 +11,7 @@ import AdvancedSection from "../components/jobs/AdvancedSection";
 
 const DEFAULTS = {
     id: "",
-    source: { host: "", port: 5656, user: "SYS", password: "", table: "", columns: null, filter: null, transform: null },
+    source: { host: "127.0.0.1", port: 5656, user: "SYS", password: "", table: "", columns: null, filter: null, transform: null },
     target: { host: "", port: 5656, user: "SYS", password: "", table: "", autoCreate: false },
     startMode: "full",
     ridAfter: "",
@@ -32,6 +33,7 @@ export default function JobFormPage({ onRefresh }) {
 
     const [form, setForm] = useState(DEFAULTS);
     const [saving, setSaving] = useState(false);
+    const [conflictJob, setConflictJob] = useState(null);
 
     const applyData = (data) => {
         setForm({
@@ -75,6 +77,28 @@ export default function JobFormPage({ onRefresh }) {
             obj[keys[keys.length - 1]] = value;
             return next;
         });
+    };
+
+    const handleConflictAction = async (action) => {
+        const name = conflictJob;
+        setConflictJob(null);
+        setSaving(true);
+        try {
+            if (action === "recover") {
+                await jobsApi.recoverJob(name);
+                notify("서비스 재등록 완료", "success");
+            } else {
+                await jobsApi.overwriteJob(name);
+                notify("Config 재생성 완료", "success");
+            }
+            if (onRefresh) await onRefresh();
+            clearJobDetail();
+            goBack();
+        } catch (e) {
+            notify(e.reason || e.message, "error");
+        } finally {
+            setSaving(false);
+        }
     };
 
     const handleSubmit = async (e) => {
@@ -130,6 +154,11 @@ export default function JobFormPage({ onRefresh }) {
             clearJobDetail();
             goBack();
         } catch (e) {
+            if (!isEdit && e.data?.hasConfig === true && e.data?.installed === false) {
+                notify(e.reason || e.message, "error");
+                setConflictJob(form.id);
+                return;
+            }
             notify(e.reason || e.message, "error");
         } finally {
             setSaving(false);
@@ -169,12 +198,16 @@ export default function JobFormPage({ onRefresh }) {
                                         Job Identity
                                     </div>
                                     <div>
-                                        <label className="form-label">Job ID (optional)</label>
+                                        <label className="form-label">Job ID</label>
                                         <input
                                             type="text"
                                             disabled={isEdit}
                                             value={form.id}
-                                            onChange={(e) => update("id", e.target.value)}
+                                            onChange={(e) => {
+                                                const v = koToEn(e.target.value).replace(/[^a-zA-Z0-9_-]/g, "");
+                                                update("id", v);
+                                            }}
+                                            pattern="^[a-zA-Z0-9_-]*$"
                                             className="w-full disabled:opacity-50"
                                             placeholder="Auto-generated from table names if empty"
                                         />
@@ -188,12 +221,35 @@ export default function JobFormPage({ onRefresh }) {
                             {/* Right column: Source / Target Database */}
                             <div className="space-y-4">
                                 <SourceSection form={form} update={update} isEdit={isEdit} />
-                                <TargetSection form={form} update={update} />
+                                <TargetSection form={form} update={update} isEdit={isEdit} />
                             </div>
                         </div>
                     </form>
                 </div>
             </div>
+
+            {conflictJob && (
+                <div className="modal-overlay" onClick={() => setConflictJob(null)}>
+                    <div className="modal" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-title">Job Conflict</div>
+                        <div className="modal-body">
+                            <p>기존 설정 파일이 존재하지만 서비스가 등록되어 있지 않습니다.</p>
+                            <p className="mt-8 text-secondary">아래 옵션 중 하나를 선택하세요.</p>
+                        </div>
+                        <div className="modal-footer">
+                            <button onClick={() => setConflictJob(null)} className="btn btn-content btn-ghost">
+                                Cancel
+                            </button>
+                            <button onClick={() => handleConflictAction("recover")} disabled={saving} className="btn btn-content btn-primary">
+                                서비스 재등록
+                            </button>
+                            <button onClick={() => handleConflictAction("overwrite")} disabled={saving} className="btn btn-content btn-danger">
+                                Config 재생성
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

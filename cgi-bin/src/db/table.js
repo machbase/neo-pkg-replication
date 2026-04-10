@@ -9,68 +9,39 @@ const { getInstance: getLogger } = require('../lib/logger.js');
 
 
 /**
- * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환.
- * LogTable.findFirstMissRow 와 TagTable.findFirstMissRow 에서 공유하는 공통 구현.
+ * source batch 순서대로 target 존재 여부를 확인하여 첫 번째 miss row의 0-based 인덱스를 반환.
+ * startup integrity에서만 사용한다.
  *
  * @param {string} logicalTable - 논리 테이블명
- * @param {TableSchema} schema  - NAME 컬럼을 포함하는 스키마
+ * @param {TableSchema} schema
  * @param {Array<{ canonical: string, time: bigint }>} rows
- * @param {MachbaseClient} client - 배치마다 신규 생성된 독립 연결
- * @param {string} suffix - VOLATILE TABLE 이름 suffix (Worker별 고유값, 충돌 방지)
+ * @param {MachbaseClient} client - target 독립 연결
  * @returns {{ firstMissIdx: number|null, err: Error|null }}
  */
-function _findFirstMissRow(logicalTable, schema, rows, client, suffix) {
+function _findFirstMissRow(logicalTable, schema, rows, client) {
   if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
 
-  const chk = `_repli_chk_${suffix}`;
-  const lkp = `_repli_lkp_${suffix}`;
-  const nameCol = schema.columns.find(c => c.name === 'NAME');
-  if (!nameCol) return { firstMissIdx: null, err: new Error(`findFirstMissRow: NAME column not found in schema for '${logicalTable}'`) };
-  const nameDdlType = nameCol.sqlType();
+  const keyCol = schema.columns.find(c => c.flag & FLAG_PRIMARY);
+  const baseTimeCol = schema.columns.find(c => c.flag & FLAG_BASETIME);
+  if (!keyCol || !baseTimeCol) {
+    return { firstMissIdx: null, err: new Error(`findFirstMissRow: PRIMARY/BASETIME column not found in schema for '${logicalTable}'`) };
+  }
+  const sql =
+    `SELECT 1 AS EXISTS_ROW FROM ${logicalTable} ` +
+    `WHERE ${keyCol.name} = ? AND ${baseTimeCol.name} = ? LIMIT 1`;
 
   try {
-    client.execute(`CREATE VOLATILE TABLE ${chk} (IDX INT, NAME ${nameDdlType}, TIME DATETIME)`);
-    client.execute(`CREATE VOLATILE TABLE ${lkp} (NAME ${nameDdlType}, TIME DATETIME)`);
-
-    // VOLATILE TABLE은 append 불가 → INSERT 문으로 데이터 삽입 (TIME 객체 그대로 바인딩)
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      client.execute(`INSERT INTO ${chk} (IDX, NAME, TIME) VALUES (?, ?, ?)`, i, r.canonical, r.time);
-    }
-
-    client.execute(
-      `INSERT INTO ${lkp} ` +
-      `SELECT t.NAME, t.TIME FROM ${logicalTable} t, ${chk} c ` +
-      `WHERE t.NAME = c.NAME AND t.TIME = c.TIME`
-    );
-
-    let result;
-    try {
-      result = client.query(
-        `SELECT IDX FROM (` +
-          `SELECT c.IDX, t.NAME AS T_NAME ` +
-          `FROM ${chk} c LEFT OUTER JOIN ${lkp} t ON c.NAME = t.NAME AND c.TIME = t.TIME` +
-        `) WHERE T_NAME IS NULL ORDER BY IDX ASC LIMIT 1`
-      );
-    } finally {
-      try {
-        client.execute(`DROP TABLE ${lkp}`);
-      } catch (e) {
-        getLogger().warn('table', { msg: `DROP ${lkp} failed: ${e.message}` });
+      const foundRows = client.query(sql, [r.canonical, r.time]);
+      if (!foundRows || foundRows.length === 0) {
+        return { firstMissIdx: i, err: null };
       }
     }
-
-    if (!result || result.length === 0) return { firstMissIdx: null, err: null };
-    return { firstMissIdx: result[0].IDX, err: null };
-
+    return { firstMissIdx: null, err: null };
   } catch (err) {
     getLogger().error('table', { table: logicalTable, msg: err.message });
     return { firstMissIdx: null, err };
-  } finally {
-    try { client.execute(`DROP TABLE ${chk}`); } catch (e) {
-      getLogger().warn('table', { msg: `DROP ${chk} failed: ${e.message}` });
-    }
-    try { client.execute(`DROP TABLE ${lkp}`); } catch (_) {/* 이미 DROP됨 */}
   }
 }
 
@@ -85,10 +56,10 @@ const _STRING_TYPES = new Set([ColumnType.VARCHAR, ColumnType.TEXT]);
 
 /**
  * 행 데이터가 VALUE filter 조건을 통과하는지 검사
- * NAME 컬럼은 aliasCache 해석 후 별도 처리하므로 여기서는 건너뜀
+ * TAG key(name) 필터는 aliasCache 해석 후 별도 처리하므로 여기서는 건너뜀
  *
  * @param {object} data
- * @param {string[]} colNames - 실제 읽는 컬럼 목록 (NAME 제외)
+ * @param {string[]} colNames - 실제 읽는 컬럼 목록 (key 제외)
  * @param {Array|null} filter
  * @param {import('./types.js').TableSchema|null} schema
  * @returns {boolean}
@@ -228,7 +199,7 @@ class LogTable {
     const colNames = this.schema.columns.map(c => c.name);
     const endRid = startRid + BigInt(rangeSize);
     const colList = ['_RID', ...colNames].join(', ');
-    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.logicalTable} WHERE _RID >= ${startRid} LIMIT ${limit}`;
+    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.logicalTable} WHERE _RID >= ${startRid} ORDER BY _RID LIMIT ${limit}`;
     try {
       const sqlRows = this.client.query(sql) || [];
       let rangeMaxRid = 0n;
@@ -278,14 +249,14 @@ class LogTable {
   }
 
   /**
-   * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
+   * source batch 순서대로 target 존재 여부를 확인하여 첫 번째 miss row의 0-based 인덱스를 반환
    * @param {Array<{ canonical: string, time: bigint }>} rows
    * @param {MachbaseClient} client
    * @param {string} suffix
    * @returns {{ firstMissIdx: number|null, err: Error|null }}
    */
   findFirstMissRow(rows, client, suffix) {
-    return _findFirstMissRow(this.logicalTable, this.schema, rows, client, suffix);
+    return _findFirstMissRow(this.logicalTable, this.schema, rows, client);
   }
 }
 
@@ -301,6 +272,12 @@ class TagMetaCache {
 
   get size() { return this._map.size; }
 
+  /**
+   * tagId에 대한 이름과 메타 정보를 캐시에 등록한다.
+   * @param {number|bigint} tagId
+   * @param {string} name
+   * @param {object} [meta={}]
+   */
   set(tagId, name, meta = {}) {
     if (name.includes('\x00')) {
       throw new Error(`tag name contains null byte: ${JSON.stringify(name)}`);
@@ -308,17 +285,34 @@ class TagMetaCache {
     this._map.set(BigInt(tagId), { name, meta });
   }
 
+  /**
+   * tagId에 해당하는 이름을 반환한다. 없으면 undefined를 반환한다.
+   * @param {number|bigint} tagId
+   * @returns {string|undefined}
+   */
   get(tagId) {
     return this._map.get(BigInt(tagId))?.name;
   }
 
+  /**
+   * tagId를 이름으로 변환하고 nameRule을 적용한다.
+   * @param {number|bigint} tagId
+   * @param {{ prefix?: string, suffix?: string }|null} nameRule
+   * @returns {{ name: string|null, canonical: string|null, meta: object, status: 'ok'|'drop_not_found' }}
+   */
   resolve(tagId, nameRule) {
     const entry = this._map.get(BigInt(tagId));
-    if (entry === undefined) return { canonical: null, meta: {}, status: 'drop_not_found' };
+    if (entry === undefined) return { name: null, canonical: null, meta: {}, status: 'drop_not_found' };
     const canonical = TagMetaCache._applyNameRule(entry.name, nameRule);
-    return { canonical, meta: entry.meta, status: 'ok' };
+    return { name: entry.name, canonical, meta: entry.meta, status: 'ok' };
   }
 
+  /**
+   * tagName에 nameRule의 prefix/suffix를 적용한다.
+   * @param {string} tagName
+   * @param {{ prefix?: string, suffix?: string }|null} nameRule
+   * @returns {string}
+   */
   static _applyNameRule(tagName, nameRule) {
     if (!nameRule) return tagName;
     let name = tagName;
@@ -478,14 +472,14 @@ class TagTable {
   }
 
   /**
-   * VOLATILE TABLE + JOIN 방식으로 배치 내 첫 번째 miss row의 0-based 인덱스를 반환
+   * source batch 순서대로 target 존재 여부를 확인하여 첫 번째 miss row의 0-based 인덱스를 반환
    * @param {Array<{ canonical: string, time: bigint }>} rows
    * @param {MachbaseClient} client
    * @param {string} suffix
    * @returns {{ firstMissIdx: number|null, err: Error|null }}
    */
   findFirstMissRow(rows, client, suffix) {
-    return _findFirstMissRow(this.logicalTable, this.schema, rows, client, suffix);
+    return _findFirstMissRow(this.logicalTable, this.schema, rows, client);
   }
 
   /**
@@ -636,12 +630,14 @@ class TagDataTable {
       ? cols.filter(c => sourceColumns.includes(c.name))
       : cols;
     const colNames = filtered.map(c => c.name);
-    const valueColNames = colNames.filter(n => n !== 'NAME');
+    const keyCol = cols.find(c => c.flag & FLAG_PRIMARY);
+    const keyColName = keyCol ? keyCol.name : 'NAME';
+    const valueColNames = colNames.filter(n => n !== keyColName);
 
     const endRid = startRid + BigInt(rangeSize);
 
     const colList = ['_RID', ...colNames].join(', ');
-    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE _RID >= ${startRid} LIMIT ${limit}`;
+    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE _RID >= ${startRid} ORDER BY _RID LIMIT ${limit}`;
     try {
       const sqlRows = this.client.query(sql) || [];
       let rangeMaxRid = 0n;
@@ -661,20 +657,21 @@ class TagDataTable {
         if (!_passesValueFilter(data, valueColNames, filter, this.schema)) continue;
 
         if (this.aliasCache) {
-          const tagId = data.NAME;
-          let { canonical, meta, status } = this.aliasCache.resolve(tagId, nameRule);
+          const tagId = data[keyColName];
+          let { name, canonical, meta, status } = this.aliasCache.resolve(tagId, nameRule);
           if (status === 'drop_not_found') {
             const found = this.cacheTagMetaByTagID(tagId);
             if (!found) continue;
-            ({ canonical, meta } = this.aliasCache.resolve(tagId, nameRule));
+            ({ name, canonical, meta } = this.aliasCache.resolve(tagId, nameRule));
           }
           const nameFilterEntry = filter?.find(f => f.column === 'NAME') ?? null;
           if (nameFilterEntry) {
-            if (nameFilterEntry.in && !nameFilterEntry.in.includes(canonical)) continue;
+            if (nameFilterEntry.in && !nameFilterEntry.in.includes(name)) continue;
             if (nameFilterEntry.like && !new RegExp(
               `^${nameFilterEntry.like.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.')}$`, 'i'
-            ).test(canonical)) continue;
+            ).test(name)) continue;
           }
+          data[keyColName] = canonical;
           data.NAME = canonical;
           Object.assign(data, meta);
         }
