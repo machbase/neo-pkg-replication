@@ -405,7 +405,7 @@ class Handler {
   static buildServiceInstallConfig(name) {
     return {
       name: Handler.serviceName(name),
-      enable: true,
+      enable: false,
       working_dir: APP_DIR,
       executable: path.join(APP_DIR, 'replication.js'),
       args: [name],
