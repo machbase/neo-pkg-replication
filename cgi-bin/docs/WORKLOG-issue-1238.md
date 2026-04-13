@@ -43,3 +43,18 @@
     - `POST/GET/PUT/DELETE /api/server`
     - `POST /api/table/columns` with `server`
     - `POST /api/rc/dryrun`
+
+- 2026-04-13 phase 2
+  - Replaced runtime read loop with `maxRid -> endRid -> read -> transform/map -> metadata insert -> checkpoint=endRid`
+  - Removed runtime dependence on `ridRangeSize`
+  - Removed runtime `autoCreate` behavior; target must already exist
+  - Added query-stage SQL filter generation for `rep_target_cond` and transform `expr.type == filter`
+  - Changed TAG source read to resolve primary key ids back to original tag names before transform evaluation
+  - Added target TAG metadata insert path for newly seen names
+  - Added checkpoint `hasMore` override support
+  - Service-start validation now prepares runtime config through the same validation path used by API
+  - Deploy verification:
+    - created temp server profile `issue1238_local`
+    - created temp replicator `issue1238_phase2`
+    - `start -> running:true -> checkpoint created -> stop -> delete`
+    - deleted temp server profile and confirmed cleanup

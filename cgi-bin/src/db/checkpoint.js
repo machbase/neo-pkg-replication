@@ -101,7 +101,7 @@ class CheckpointStore {
    * 체크포인트 저장 (atomic write)
    * @param {{ lastSuccessRid: bigint, sourceServer?: string, sourceTable?: string }} cp
    * @param {{ rowsRead: number, rowsWritten: number, droppedNoMeta: number, skippedExists: number }} stats
-   * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number, initializedOnly?: boolean }} [opts]
+   * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number, initializedOnly?: boolean, hasMore?: boolean }} [opts]
    * @returns {Error|null}
    */
   save(cp, stats, opts) {
@@ -115,9 +115,11 @@ class CheckpointStore {
     const droppedNoMeta = stats?.droppedNoMeta ?? 0;
     const skippedExists = stats?.skippedExists ?? 0;
     const queryLimit = opts?.queryLimit;
-    const hasMore = typeof queryLimit === 'number'
-      && queryLimit > 0
-      && rowsRead === queryLimit;
+    const hasMore = typeof opts?.hasMore === 'boolean'
+      ? opts.hasMore
+      : (typeof queryLimit === 'number'
+        && queryLimit > 0
+        && rowsRead === queryLimit);
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       const content = JSON.stringify({

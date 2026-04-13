@@ -78,6 +78,13 @@ function _validateServerProfile(profile) {
   return normalized;
 }
 
+function _resolveTagAlias(sourceInfo, column) {
+  if (sourceInfo.tableType !== 'TAG') return column;
+  if (column === 'NAME' && sourceInfo.primaryColumn) return sourceInfo.primaryColumn.NAME;
+  if (column === 'TIME' && sourceInfo.baseTimeColumn) return sourceInfo.baseTimeColumn.NAME;
+  return column;
+}
+
 function _validateTargetOrder(mapping, actualColumns, label) {
   const actualNames = actualColumns.map((column) => column.NAME);
   const presentNames = mapping.filter((name) => !!name);
@@ -166,7 +173,7 @@ function _validateCondition(condition, sourceInfo, label) {
     return { column: condition.column || null, op: 'ALL', value: [] };
   }
 
-  const column = normalizeColumnName(condition.column);
+  const column = _resolveTagAlias(sourceInfo, normalizeColumnName(condition.column));
   if (!column) {
     throw new Error(`${label}.column is required`);
   }
@@ -216,7 +223,7 @@ function _validateTransformRules(transform, sourceInfo) {
       if (!isObject(item)) {
         throw new Error(`source.transform[${i}].expr[${j}] must be an object`);
       }
-      const column = normalizeColumnName(item.column);
+      const column = _resolveTagAlias(sourceInfo, normalizeColumnName(item.column));
       if (!column) {
         throw new Error(`source.transform[${i}].expr[${j}].column is required`);
       }

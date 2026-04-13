@@ -173,6 +173,17 @@ class MachbaseClient {
   }
 
   /**
+   * TAG META에 name 기준 단건 존재 여부를 조회한다.
+   * @param {string} logicalTable
+   * @param {string} name
+   * @returns {{ _ID: bigint, name: string }|null}
+   */
+  selectTagName(logicalTable, name) {
+    const rows = this.query(`SELECT _ID, name FROM _${logicalTable}_META WHERE NAME = ?`, [name]);
+    return rows?.[0] ?? null;
+  }
+
+  /**
    * TAG META 테이블 조회 (_ID, name + metadata columns)
    * @param {string} logicalTable - 논리 테이블명
    * @param {string[]} metaColNames - metadata column 이름 목록
@@ -197,6 +208,16 @@ class MachbaseClient {
     this.execute(
       `UPDATE ${logicalTable} METADATA SET ${setClauses} WHERE NAME = ${esc(oldName)}`
     );
+  }
+
+  /**
+   * TAG META에 신규 name/metadata를 등록한다.
+   * @param {string} logicalTable
+   * @param {Array<any>} values - [name, ...metaValues]
+   */
+  insertTagMeta(logicalTable, values) {
+    const placeholders = values.map(() => '?').join(', ');
+    this.execute(`INSERT INTO ${logicalTable} METADATA VALUES (${placeholders})`, ...values);
   }
 
   /**

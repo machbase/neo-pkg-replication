@@ -4,9 +4,6 @@
  * @fileoverview Worker — 파티션 단위 복제 상태 머신
  *
  * 상태 전이: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
- *   - RESOLVE_START: checkpoint 또는 startMode 기준으로 시작 RID를 결정한다.
- *   - STARTUP_INTEGRITY: 재시작 시 누락 행을 탐색하여 복제 시작점을 조정한다 (TAG 전용).
- *   - STEADY_REPLICATION: 소스를 주기적으로 읽어 대상에 append한다.
  */
 
 const path = require('path');
@@ -16,51 +13,12 @@ const { MachbaseClient } = require('../db/client.js');
 const { TagDataTable, TagTable, LogTable } = require('../db/table.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
+const { applyTransformRules, collectReferencedColumns } = require('./rules.js');
 
 const CHECKPOINT_BASE = path.resolve(path.dirname(process.argv[1]));
 const CHECKPOINT_DIRECTORY = path.join(CHECKPOINT_BASE, 'data');
-
-// ─── 상수 ────────────────────────────────────────────────────────────────────
-
-// STARTUP_INTEGRITY 배치 크기 상한: VOLATILE TABLE에 한 번에 INSERT할 행 수 제한
 const INTEGRITY_BATCH_LIMIT = 500;
 
-// ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
-
-
-/**
- * transform[] 설정을 행 배열에 적용한다.
- * number 타입 컬럼에만 `(value + add) * multiply`를 적용하며, BigInt/null/string은 건너뛴다.
- * @param {Array<object>} rows
- * @param {Array<{ column: string, add: number, multiply: number }>|null} transform
- * @returns {Array<object>}
- */
-function _applyTransform(rows, transform) {
-  if (!transform || transform.length === 0) return rows;
-  return rows.map(row => {
-    const out = { ...row };
-    for (const t of transform) {
-      const val = out[t.column];
-      if (typeof val === 'number') {
-        out[t.column] = (val + t.add) * t.multiply;
-      }
-    }
-    return out;
-  });
-}
-
-/**
- * 공통 retry 루프. fn이 `{ done: true }` 를 반환할 때까지 재시도한다.
- * @param {object} opts
- * @param {function(): { done: boolean, value?: any, retryable?: boolean, msg?: string }} opts.fn
- * @param {RetryHandler} opts.retry
- * @param {{ value: boolean }} opts.shutdownFlag
- * @param {object} opts.logCtx
- * @param {string} opts.exhaustedMsg
- * @param {string} [opts.retryMsg]
- * @param {string} [opts.phase]
- * @returns {Promise<{ ok: boolean, value?: any }>}
- */
 async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retryMsg, phase }) {
   const ctx = phase ? { ...logCtx, phase } : logCtx;
   let attempt = 0;
@@ -88,10 +46,6 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
   }
 }
 
-/**
- * dstTable.append 을 retry 포함하여 호출
- * @returns {Promise<boolean>} true on success, false on exhausted/shutdown
- */
 async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
   const result = await _withRetry({
     fn: () => {
@@ -108,22 +62,25 @@ async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
   return result.ok;
 }
 
-// ─── Worker 클래스 ────────────────────────────────────────────────────────────
+function _uniqueNames(values) {
+  const seen = {};
+  const result = [];
+  for (const value of values || []) {
+    if (!value || seen[value]) continue;
+    seen[value] = true;
+    result.push(value);
+  }
+  return result;
+}
 
-/**
- * data_table 단위 복제 Worker
- *
- * 상태 전이:
- *   RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
- */
+function _isDuplicateMetadataError(err) {
+  const message = err && err.message ? String(err.message).toLowerCase() : '';
+  return message.indexOf('duplicate') >= 0
+    || message.indexOf('already exists') >= 0
+    || message.indexOf('unique') >= 0;
+}
+
 class Worker {
-  /**
-   * @param {object} config - workerConfig (id, source, target, queryLimit, ridRangeSize, ...)
-   * @param {string} dataTable - 담당 파티션 테이블명 (예: _TAG_DATA_0)
-   * @param {import('../db/types.js').TableSchema} srcSchema - 소스 스키마
-   * @param {import('../db/types.js').TableSchema} dstSchema - 대상 스키마
-   * @param {{ value: boolean }} shutdownFlag - 외부 종료 요청 플래그
-   */
   constructor(config, dataTable, srcSchema, dstSchema, shutdownFlag) {
     this.config = config;
     this.dataTable = dataTable;
@@ -132,11 +89,6 @@ class Worker {
     this.shutdownFlag = shutdownFlag;
   }
 
-  /**
-   * DB 연결을 열고 상태 머신을 실행한다.
-   * @param {AbortSignal} signal - 외부 취소 신호
-   * @returns {Promise<void>}
-   */
   async run(signal) {
     const logCtx = {
       src: `${this.config.source.host}:${this.config.source.port}/${this.config.source.table}`,
@@ -150,7 +102,8 @@ class Worker {
       get value() { return signal.aborted || shutdownFlag.value; },
     };
 
-    let srcTable, dstTable;
+    let srcTable;
+    let dstTable;
     if (this.srcSchema.tableType === 'TAG') {
       srcTable = new TagDataTable(this.dataTable, this.config.source);
       srcTable.setSchema(this.srcSchema);
@@ -166,339 +119,397 @@ class Worker {
     try {
       srcTable.open();
       dstTable.open();
-
       await this._runStateMachine({
         srcTable,
         dstTable,
         shutdownFlag: effectiveShutdownFlag,
       });
     } finally {
-      try {
-        dstTable.close();
-      } catch (err) {
+      try { dstTable.close(); } catch (err) {
         getLogger().error('worker', { ...logCtx, msg: `dstTable.close failed: ${err.message}` });
       }
-      try {
-        srcTable.close();
-      } catch (err) {
+      try { srcTable.close(); } catch (err) {
         getLogger().error('worker', { ...logCtx, msg: `srcTable.close failed: ${err.message}` });
       }
     }
   }
 
-  /**
-   * 상태 머신을 실행한다: RESOLVE_START → [STARTUP_INTEGRITY] → STEADY_REPLICATION
-   * @param {{ srcTable: object, dstTable: object, shutdownFlag: { value: boolean } }} opts
-   * @returns {Promise<void>}
-   */
+  _buildPlan() {
+    const sourceColumns = Array.isArray(this.config.source.columns) ? this.config.source.columns.slice() : [];
+    const targetColumns = Array.isArray(this.config.target.columns) ? this.config.target.columns.slice() : [];
+    const sourceMeta = Array.isArray(this.config.source.meta) ? this.config.source.meta.slice() : [];
+    const targetMeta = Array.isArray(this.config.target.meta) ? this.config.target.meta.slice() : [];
+    const repTargetCond = this.config.source.rep_target_cond || null;
+    const transform = Array.isArray(this.config.source.transform) ? this.config.source.transform : [];
+
+    const sourcePrimaryCol = this.srcSchema.columns.find((column) => column.flag & FLAG_PRIMARY) || null;
+    const sourceBaseTimeCol = this.srcSchema.columns.find((column) => column.flag & FLAG_BASETIME) || null;
+    const targetPrimaryCol = this.dstSchema.columns.find((column) => column.flag & FLAG_PRIMARY) || null;
+    const targetBaseTimeCol = this.dstSchema.columns.find((column) => column.flag & FLAG_BASETIME) || null;
+    const sourceDataCols = this.srcSchema.columns.filter((column) => !(column.flag & FLAG_METADATA)).map((column) => column.name);
+    const targetDataCols = this.dstSchema.columns.filter((column) => !(column.flag & FLAG_METADATA)).map((column) => column.name);
+    const targetMetaCols = this.dstSchema.columns.filter((column) => column.flag & FLAG_METADATA).map((column) => column.name);
+    const referencedColumns = collectReferencedColumns(repTargetCond, transform);
+    const readColumns = _uniqueNames(
+      sourceColumns.filter((name) => !!name)
+        .concat(referencedColumns)
+        .concat(sourcePrimaryCol ? [sourcePrimaryCol.name] : [])
+        .concat(sourceBaseTimeCol ? [sourceBaseTimeCol.name] : [])
+    );
+
+    return {
+      sourceColumns,
+      targetColumns,
+      sourceMeta,
+      targetMeta,
+      repTargetCond,
+      transform,
+      readColumns,
+      sourcePrimaryColName: sourcePrimaryCol ? sourcePrimaryCol.name : null,
+      sourceBaseTimeColName: sourceBaseTimeCol ? sourceBaseTimeCol.name : null,
+      targetPrimaryColName: targetPrimaryCol ? targetPrimaryCol.name : null,
+      targetBaseTimeColName: targetBaseTimeCol ? targetBaseTimeCol.name : null,
+      targetDataCols,
+      targetMetaCols,
+      isTag: this.srcSchema.tableType === 'TAG',
+    };
+  }
+
+  _buildTargetRow(sourceRow, plan) {
+    const out = {};
+    for (const name of plan.targetDataCols) {
+      out[name] = null;
+    }
+    for (let i = 0; i < plan.targetColumns.length; i++) {
+      const targetName = plan.targetColumns[i];
+      if (!targetName) continue;
+      const sourceName = plan.sourceColumns[i];
+      out[targetName] = sourceName ? sourceRow[sourceName] : null;
+    }
+    return out;
+  }
+
+  _buildTargetMetaValues(sourceRow, plan) {
+    const values = [];
+    for (let i = 0; i < plan.targetMeta.length; i++) {
+      const targetName = plan.targetMeta[i];
+      if (!targetName) continue;
+      const sourceName = plan.sourceMeta[i];
+      values.push(sourceName ? sourceRow[sourceName] : null);
+    }
+    return values;
+  }
+
+  _processRows(rows, plan, logCtx) {
+    const targetRows = [];
+    const resolved = [];
+    const pendingMetaByName = {};
+
+    for (const item of rows) {
+      const transformed = applyTransformRules(item.data, plan.transform);
+      if (transformed.dropped) continue;
+
+      const targetRow = this._buildTargetRow(transformed.row, plan);
+      if (plan.isTag) {
+        const canonical = targetRow[plan.targetPrimaryColName];
+        const time = targetRow[plan.targetBaseTimeColName];
+        if (canonical == null || time == null) {
+          getLogger().warn('worker', { ...logCtx, rid: String(item.rid), msg: 'target key columns resolved to null, row skipped' });
+          continue;
+        }
+        resolved.push({ rid: item.rid, canonical, time });
+        if (!pendingMetaByName[canonical]) {
+          pendingMetaByName[canonical] = this._buildTargetMetaValues(transformed.row, plan);
+        }
+      }
+      targetRows.push(targetRow);
+    }
+
+    const metadataRows = Object.keys(pendingMetaByName).map((name) => ({
+      name,
+      values: pendingMetaByName[name],
+    }));
+
+    return { targetRows, resolved, metadataRows };
+  }
+
+  _saveCheckpoint(checkpointStore, rid, stats, hasMore, queryLimit) {
+    checkpointStore.save({
+      lastSuccessRid: rid,
+      sourceServer: this.config.source.host,
+      sourceTable: this.config.source.table,
+    }, stats, {
+      onSaveFailure: this.config.onSaveFailure,
+      queryLimit,
+      hasMore,
+    });
+  }
+
+  async _getMaxRid(srcTable, retry, shutdownFlag, logCtx, phase) {
+    const result = await _withRetry({
+      fn: () => {
+        try {
+          return { done: true, value: srcTable.getMaxRid() };
+        } catch (err) {
+          return {
+            done: false,
+            retryable: retry.shouldRetry(err),
+            msg: `non-retryable getMaxRid error: ${err.message}`,
+          };
+        }
+      },
+      retry,
+      shutdownFlag,
+      logCtx,
+      exhaustedMsg: 'getMaxRid retry exhausted, stopping worker',
+      retryMsg: 'getMaxRid retry',
+      phase,
+    });
+    return result.ok ? result.value : null;
+  }
+
+  async _ensureTagMetadata(metaClient, targetMetaNames, metadataRows, retry, shutdownFlag, logCtx) {
+    if (!metaClient || !Array.isArray(metadataRows) || metadataRows.length === 0) return true;
+
+    for (const row of metadataRows) {
+      if (shutdownFlag.value) return false;
+      if (targetMetaNames[row.name]) continue;
+      const ok = await _withRetry({
+        fn: () => {
+          try {
+            metaClient.insertTagMeta(this.config.target.table, [row.name].concat(row.values));
+            targetMetaNames[row.name] = true;
+            return { done: true, value: true };
+          } catch (err) {
+            if (_isDuplicateMetadataError(err)) {
+              targetMetaNames[row.name] = true;
+              return { done: true, value: true };
+            }
+            return {
+              done: false,
+              retryable: retry.shouldRetry(err),
+              msg: `non-retryable metadata insert error: ${err.message}`,
+            };
+          }
+        },
+        retry,
+        shutdownFlag,
+        logCtx: { ...logCtx, tag_name: row.name },
+        exhaustedMsg: 'metadata insert retry exhausted, stopping worker',
+        retryMsg: 'metadata insert retry',
+        phase: 'METADATA',
+      });
+      if (!ok.ok) return false;
+    }
+    return true;
+  }
+
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
-    const batchSize      = this.config.queryLimit;
-    const ridRangeSize   = this.config.ridRangeSize;
+    const batchSize = this.config.queryLimit;
     const pollIntervalMs = this.config.pollIntervalMs;
-    const sourceColumns  = this.config.source.columns;
-    const sourceDataCols = this.srcSchema.columns
-      .filter((c) => !(c.flag & FLAG_METADATA))
-      .map((c) => c.name);
-    const targetDataCols = this.dstSchema.columns
-      .filter((c) => !(c.flag & FLAG_METADATA))
-      .map((c) => c.name);
-    const sourceOrder = Array.isArray(this.config.columnOrder?.source) && this.config.columnOrder.source.length > 0
-      ? this.config.columnOrder.source
-      : (Array.isArray(sourceColumns) && sourceColumns.length > 0 ? sourceColumns : sourceDataCols);
-    const targetOrder = Array.isArray(this.config.columnOrder?.target) && this.config.columnOrder.target.length > 0
-      ? this.config.columnOrder.target
-      : targetDataCols;
     const logCtx = { job_id: this.config.id, partition: this.dataTable };
-    const filter    = this.config.source.filter    ?? null;
-    const transform = this.config.source.transform ?? null;
-    const nameRule  = transform?.find(t => t.column === 'NAME') ?? null;
-    const sourcePrimaryCol = this.srcSchema.columns.find((c) => c.flag & FLAG_PRIMARY);
-    const sourceBaseTimeCol = this.srcSchema.columns.find((c) => c.flag & FLAG_BASETIME);
-    if (this.srcSchema.tableType === 'TAG' && (!sourcePrimaryCol || !sourceBaseTimeCol)) {
-      getLogger().error('worker', { ...logCtx, msg: 'PRIMARY/BASETIME column not found in source schema' });
+    const retry = new RetryHandler(this.config.retry || {});
+    const checkpointStore = new CheckpointStore(path.join(CHECKPOINT_DIRECTORY, this.config.id), this.dataTable);
+    const plan = this._buildPlan();
+
+    if (plan.isTag && (!plan.sourcePrimaryColName || !plan.sourceBaseTimeColName || !plan.targetPrimaryColName || !plan.targetBaseTimeColName)) {
+      getLogger().error('worker', { ...logCtx, msg: 'TAG key columns not found in source/target schema' });
       return;
     }
-    const sourcePrimaryColName = sourcePrimaryCol ? sourcePrimaryCol.name : null;
-    const sourceBaseTimeColName = sourceBaseTimeCol ? sourceBaseTimeCol.name : null;
-    const retry = new RetryHandler(this.config.retry ?? {});
-    const checkpointStore = new CheckpointStore(path.join(CHECKPOINT_DIRECTORY, this.config.id), this.dataTable);
-    const remapRowsByOrder = (rows) => {
-      if (!rows || rows.length === 0) return rows;
-      const width = Math.min(sourceOrder.length, targetOrder.length);
-      if (width === 0) return rows;
-      return rows.map((row) => {
-        const mapped = { ...row };
-        for (let i = 0; i < width; i++) {
-          mapped[targetOrder[i]] = row[sourceOrder[i]];
-        }
-        return mapped;
-      });
-    };
 
-    // ═══════════════════════════════════════════════════════════
-    // RESOLVE_START — 시작 RID 결정
-    // ═══════════════════════════════════════════════════════════
+    let metaClient = null;
+    let targetMetaNames = {};
 
     const { cp, exists: cpExists } = checkpointStore.load();
     let startRid;
-
     if (cpExists && cp) {
       startRid = cp.lastSuccessRid + 1n;
       getLogger().info('worker', { ...logCtx, startRid: String(startRid), msg: 'resume from checkpoint' });
     } else {
       const startMode = this.config.startMode;
       if (startMode === 'now') {
-        try {
-          startRid = srcTable.getMaxRid() + 1n;
-        } catch (err) {
-          getLogger().error('worker', { ...logCtx, msg: `getMaxRid failed (startMode=now): ${err.message}` });
-          return;
-        }
+        const maxRid = await this._getMaxRid(srcTable, retry, shutdownFlag, logCtx, 'RESOLVE_START');
+        if (maxRid == null) return;
+        startRid = maxRid + 1n;
       } else if (startMode === 'ridAfter') {
         startRid = BigInt(this.config.ridAfter);
       } else {
-        startRid = 0n; // 'full'
+        startRid = 0n;
       }
-      getLogger().info('worker', { ...logCtx, startMode, startRid: String(startRid), msg: 'worker start' });
-
-      // 파티션 파일이 없는 경우에도 checkpoint 파일을 만들어 관리 대상 파티션을 명시한다.
+      getLogger().info('worker', { ...logCtx, startMode: this.config.startMode, startRid: String(startRid), msg: 'worker start' });
       const initialCpRid = startRid > 0n ? (startRid - 1n) : -1n;
-      checkpointStore.save({
-        lastSuccessRid: initialCpRid,
-        sourceHost: this.config.source.host,
-        sourceTable: this.config.source.table,
-      }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 }, {
-        onSaveFailure: this.config.onSaveFailure,
-        queryLimit: batchSize,
-        initializedOnly: true,
-      });
+      this._saveCheckpoint(checkpointStore, initialCpRid, {
+        rowsRead: 0,
+        rowsWritten: 0,
+        droppedNoMeta: 0,
+        skippedExists: 0,
+      }, false, batchSize);
     }
 
-    // TAG alias cache 로드
-    if (this.srcSchema.tableType === 'TAG') {
+    if (plan.isTag) {
       const loadErr = srcTable.cacheTagMetaAll();
       if (loadErr) {
         getLogger().warn('worker', { ...logCtx, msg: `loadTagMetaCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // STARTUP_INTEGRITY
-    // ═══════════════════════════════════════════════════════════
-
-    const doIntegrity = this.srcSchema.tableType === 'TAG'
-      && cpExists
-      && this.config.integrity !== false;
-
-    if (doIntegrity) {
-      const result = await this._runStartupIntegrity({
-        startRid,
-        srcTable,
-        dstTable,
-        nameRule,
-        sourceColumns,
-        filter,
-        batchSize,
-        ridRangeSize,
-        retry,
-        shutdownFlag,
-        logCtx,
-        checkpointStore,
-        sourcePrimaryColName,
-        sourceBaseTimeColName,
-      });
-      if (result === null) return;
-      startRid = result.startRid;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // STEADY_REPLICATION — 메인 복제 루프
-    // ═══════════════════════════════════════════════════════════
-
-    while (!shutdownFlag.value) {
-      let readResult;
-      if (this.srcSchema.tableType === 'TAG') {
-        readResult = srcTable.read(startRid, batchSize, ridRangeSize, nameRule, sourceColumns, filter);
-      } else {
-        readResult = srcTable.read(startRid, batchSize, ridRangeSize, filter);
-      }
-      const { rows, rangeMaxRid, err: readErr } = readResult;
-      if (readErr) {
-        getLogger().error('worker', { ...logCtx, phase: 'STEADY', msg: `read failed: ${readErr.message}` });
+      metaClient = new MachbaseClient(this.config.target);
+      try {
+        metaClient.connect();
+        const rows = metaClient.selectTagNames(this.config.target.table);
+        for (const row of (rows || [])) {
+          targetMetaNames[row.name] = true;
+        }
+      } catch (err) {
+        getLogger().error('worker', { ...logCtx, msg: `target metadata preload failed: ${err.message}` });
         return;
       }
+    }
 
-      if (rows.length === 0) {
-        if (rangeMaxRid > 0n) {
-          // 배치 내 모든 행이 필터로 차단됨 — checkpoint만 진행
-          checkpointStore.save({
-            lastSuccessRid: rangeMaxRid,
-            sourceHost:   this.config.source.host,
-            sourceTable:    this.config.source.table,
-          }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 },
-          { onSaveFailure: this.config.onSaveFailure, queryLimit: batchSize });
-          startRid = rangeMaxRid + 1n;
+    try {
+      const doIntegrity = plan.isTag && cpExists && this.config.integrity !== false;
+      if (doIntegrity) {
+        const result = await this._runStartupIntegrity({
+          startRid,
+          srcTable,
+          dstTable,
+          retry,
+          shutdownFlag,
+          logCtx,
+          checkpointStore,
+          plan,
+        });
+        if (result === null) return;
+        startRid = result.startRid;
+      }
+
+      while (!shutdownFlag.value) {
+        const maxRid = await this._getMaxRid(srcTable, retry, shutdownFlag, logCtx, 'STEADY_MAXRID');
+        if (maxRid == null) return;
+
+        if (startRid > maxRid) {
+          const idleCpRid = startRid > 0n ? (startRid - 1n) : -1n;
+          this._saveCheckpoint(checkpointStore, idleCpRid, {
+            rowsRead: 0,
+            rowsWritten: 0,
+            droppedNoMeta: 0,
+            skippedExists: 0,
+          }, false, batchSize);
+          const signal = await retry.sleepOrShutdown(pollIntervalMs, shutdownFlag);
+          if (signal === 'shutdown') return;
           continue;
         }
-        const signal = await retry.sleepOrShutdown(pollIntervalMs, shutdownFlag);
-        if (signal === 'shutdown') return;
-        continue;
+
+        let endRid = startRid + BigInt(batchSize) - 1n;
+        if (endRid > maxRid) endRid = maxRid;
+
+        const readResult = srcTable.read(startRid, endRid, batchSize, {
+          selectColumns: plan.readColumns,
+          repTargetCond: plan.repTargetCond,
+          transform: plan.transform,
+        });
+        if (readResult.err) {
+          getLogger().error('worker', { ...logCtx, phase: 'STEADY', msg: `read failed: ${readResult.err.message}` });
+          return;
+        }
+
+        const processed = this._processRows(readResult.rows, plan, logCtx);
+        if (shutdownFlag.value) return;
+
+        if (plan.isTag) {
+          const metadataOk = await this._ensureTagMetadata(metaClient, targetMetaNames, processed.metadataRows, retry, shutdownFlag, logCtx);
+          if (!metadataOk) return;
+        }
+
+        if (processed.targetRows.length > 0) {
+          const ok = await _appendRows(dstTable, processed.targetRows, retry, shutdownFlag, logCtx);
+          if (!ok) return;
+        }
+
+        this._saveCheckpoint(checkpointStore, endRid, {
+          rowsRead: readResult.rows.length,
+          rowsWritten: processed.targetRows.length,
+          droppedNoMeta: 0,
+          skippedExists: 0,
+        }, endRid < maxRid, batchSize);
+
+        startRid = endRid + 1n;
       }
-
-      const outRows = _applyTransform(
-        rows.map(row => row.data),
-        transform
-      );
-      const mappedOutRows = remapRowsByOrder(outRows);
-      const droppedNoMeta = 0;
-
-      if (shutdownFlag.value) return;
-
-      if (mappedOutRows.length > 0) {
-        const ok = await _appendRows(dstTable, mappedOutRows, retry, shutdownFlag, logCtx);
-        if (!ok) return;
-      }
-
-      const batchStats = {
-        rowsRead:      rows.length,
-        rowsWritten:   mappedOutRows.length,
-        droppedNoMeta,
-        skippedExists: 0,
-      };
-      checkpointStore.save({
-        lastSuccessRid: rangeMaxRid,
-        sourceHost:   this.config.source.host,
-        sourceTable:    this.config.source.table,
-      }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: batchSize });
-
-      startRid = rangeMaxRid + 1n;
+    } finally {
+      try { metaClient && metaClient.close(); } catch (_) {}
     }
   }
 
-  /**
-   * STARTUP_INTEGRITY 단계 실행
-   * @returns {Promise<{ startRid: BigInt }|null>}
-   */
-  async _runStartupIntegrity({
-    startRid,
-    srcTable,
-    dstTable,
-    nameRule,
-    sourceColumns,
-    filter,
-    batchSize,
-    ridRangeSize,
-    retry,
-    shutdownFlag,
-    logCtx,
-    checkpointStore,
-    sourcePrimaryColName,
-    sourceBaseTimeColName,
-  }) {
+  async _runStartupIntegrity({ startRid, srcTable, dstTable, retry, shutdownFlag, logCtx, checkpointStore, plan }) {
     getLogger().info('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
+
     let integrityRid = startRid;
-    const integrityBatchSize = Math.min(batchSize, INTEGRITY_BATCH_LIMIT);
+    const integrityBatchSize = Math.min(this.config.queryLimit, INTEGRITY_BATCH_LIMIT);
 
     while (!shutdownFlag.value) {
-      const intConn = new MachbaseClient(this.config.target);
-      let outcome = 'continue';
+      const maxRid = await this._getMaxRid(srcTable, retry, shutdownFlag, logCtx, 'STARTUP_MAXRID');
+      if (maxRid == null) return null;
+      if (integrityRid > maxRid) {
+        startRid = integrityRid;
+        break;
+      }
 
+      let endRid = integrityRid + BigInt(integrityBatchSize) - 1n;
+      if (endRid > maxRid) endRid = maxRid;
+
+      const readResult = srcTable.read(integrityRid, endRid, integrityBatchSize, {
+        selectColumns: plan.readColumns,
+        repTargetCond: plan.repTargetCond,
+        transform: plan.transform,
+      });
+      if (readResult.err) {
+        getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readResult.err.message}` });
+        return null;
+      }
+
+      const processed = this._processRows(readResult.rows, plan, logCtx);
+      if (processed.resolved.length === 0) {
+        this._saveCheckpoint(checkpointStore, endRid, {
+          rowsRead: 0,
+          rowsWritten: 0,
+          droppedNoMeta: 0,
+          skippedExists: 0,
+        }, endRid < maxRid, integrityBatchSize);
+        integrityRid = endRid + 1n;
+        continue;
+      }
+
+      const intConn = new MachbaseClient(this.config.target);
       try {
         intConn.connect();
-
-        const { rows, rangeMaxRid: batchRangeMaxRid, err: readErr } = srcTable.read(integrityRid, integrityBatchSize, ridRangeSize, nameRule, sourceColumns, filter);
-        if (readErr) {
-          getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readErr.message}` });
-          outcome = 'return'; break;
+        const result = dstTable.findFirstMissRow(processed.resolved, intConn, this.dataTable);
+        if (result.err) {
+          getLogger().error('worker', { ...logCtx, msg: `findFirstMissRow failed: ${result.err.message}` });
+          return null;
         }
 
-        if (rows.length === 0) {
-          if (batchRangeMaxRid > 0n) {
-            // 모든 행이 필터로 차단됨 — checkpoint 진행 후 계속
-            checkpointStore.save({
-              lastSuccessRid: batchRangeMaxRid,
-              sourceHost:     this.config.source.host,
-              sourceTable:    this.config.source.table,
-            }, { rowsRead: 0, rowsWritten: 0, droppedNoMeta: 0, skippedExists: 0 },
-            { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
-            integrityRid = batchRangeMaxRid + 1n;
-          } else {
-            startRid = integrityRid;
-            getLogger().debug('worker', { ...logCtx, toRid: String(integrityRid), msg: 'integrity check: all rows confirmed' });
-            outcome = 'break';
-          }
+        if (result.firstMissIdx !== null) {
+          const firstMissRid = processed.resolved[result.firstMissIdx].rid;
+          const safeCpRid = firstMissRid > 0n ? firstMissRid - 1n : 0n;
+          this._saveCheckpoint(checkpointStore, safeCpRid, {
+            rowsRead: readResult.rows.length,
+            rowsWritten: 0,
+            droppedNoMeta: 0,
+            skippedExists: result.firstMissIdx,
+          }, true, integrityBatchSize);
+          getLogger().info('worker', { ...logCtx, firstMissRid: String(firstMissRid), safeCpRid: String(safeCpRid), msg: 'integrity check: first missing row found' });
+          startRid = firstMissRid;
           break;
         }
-        const resolved = rows.map((row) => ({
-          rid: row.rid,
-          canonical: sourcePrimaryColName ? row.data[sourcePrimaryColName] : row.data.NAME,
-          time: sourceBaseTimeColName ? row.data[sourceBaseTimeColName] : row.data.TIME,
-        }));
-        const invalidResolved = resolved.find((r) => r.canonical == null || r.time == null);
-        if (invalidResolved) {
-          getLogger().error('worker', {
-            ...logCtx,
-            phase: 'STARTUP_INTEGRITY',
-            rid: String(invalidResolved.rid),
-            msg: 'missing TAG key columns in read result',
-          });
-          outcome = 'return'; break;
-        }
 
-        if (shutdownFlag.value) { outcome = 'return'; break; }
-
-        const { firstMissIdx, err: batchErr } = resolved.length === 0
-          ? { firstMissIdx: null, err: null }
-          : dstTable.findFirstMissRow(resolved, intConn, this.dataTable);
-
-        if (batchErr) {
-          getLogger().error('worker', { ...logCtx, msg: `findFirstMissRow failed: ${batchErr.message}` });
-          outcome = 'return'; break;
-        }
-        if (shutdownFlag.value) { outcome = 'return'; break; }
-
-        let firstMissRid = null;
-        let skippedExists = 0;
-        if (firstMissIdx !== null) {
-          firstMissRid = resolved[firstMissIdx].rid;
-          skippedExists = firstMissIdx;
-        } else {
-          skippedExists = resolved.length;
-        }
-        if (shutdownFlag.value) { outcome = 'return'; break; }
-
-        const batchStats = {
-          rowsRead:      rows.length,
-          rowsWritten:   0,
+        this._saveCheckpoint(checkpointStore, endRid, {
+          rowsRead: readResult.rows.length,
+          rowsWritten: 0,
           droppedNoMeta: 0,
-          skippedExists,
-        };
-
-        if (firstMissRid !== null) {
-          const safeCpRid = firstMissRid > 0n ? firstMissRid - 1n : 0n;
-          checkpointStore.save({
-            lastSuccessRid: safeCpRid,
-            sourceHost:     this.config.source.host,
-            sourceTable:    this.config.source.table,
-          }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
-          startRid = firstMissRid;
-          getLogger().info('worker', { ...logCtx, firstMissRid: String(firstMissRid), safeCpRid: String(safeCpRid), msg: 'integrity check: first missing row found' });
-          outcome = 'break'; break;
-        }
-
-        checkpointStore.save({
-          lastSuccessRid: batchRangeMaxRid,
-          sourceHost:   this.config.source.host,
-          sourceTable:    this.config.source.table,
-        }, batchStats, { onSaveFailure: this.config.onSaveFailure, queryLimit: integrityBatchSize });
-        integrityRid = batchRangeMaxRid + 1n;
-        getLogger().debug('worker', { ...logCtx, nextRid: String(integrityRid), msg: 'integrity check: batch confirmed' });
+          skippedExists: processed.resolved.length,
+        }, endRid < maxRid, integrityBatchSize);
+        integrityRid = endRid + 1n;
       } finally {
         try { intConn.close(); } catch (_) {}
       }
-
-      if (outcome === 'return') return null;
-      if (outcome === 'break')  break;
     }
 
     if (shutdownFlag.value) return null;

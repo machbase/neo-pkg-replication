@@ -4,6 +4,7 @@ const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_ME
 const { MachbaseClient } = require('./client.js');
 const { MachbaseStream } = require('./stream.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
+const { buildQueryFilterSql } = require('../replication/rules.js');
 
 // ─── 내부 헬퍼 ───────────────────────────────────────────────────────────────
 
@@ -46,51 +47,24 @@ function _findFirstMissRow(logicalTable, schema, rows, client) {
 }
 
 
-const _NUMERIC_TYPES = new Set([
-  ColumnType.SHORT, ColumnType.USHORT,
-  ColumnType.INTEGER, ColumnType.UINTEGER,
-  ColumnType.LONG, ColumnType.ULONG,
-  ColumnType.FLOAT, ColumnType.DOUBLE,
-]);
-const _STRING_TYPES = new Set([ColumnType.VARCHAR, ColumnType.TEXT]);
+function _buildSelectColumns(schema, requestedColumns) {
+  const seen = {};
+  const result = [];
+  const ordered = schema.columns
+    .filter((column) => !(column.flag & FLAG_METADATA))
+    .map((column) => column.name);
 
-/**
- * 행 데이터가 VALUE filter 조건을 통과하는지 검사
- * TAG key(name) 필터는 aliasCache 해석 후 별도 처리하므로 여기서는 건너뜀
- *
- * @param {object} data
- * @param {string[]} colNames - 실제 읽는 컬럼 목록 (key 제외)
- * @param {Array|null} filter
- * @param {import('./types.js').TableSchema|null} schema
- * @returns {boolean}
- */
-function _passesValueFilter(data, colNames, filter, schema) {
-  if (!filter || filter.length === 0) return true;
-  const schemaColMap = schema
-    ? new Map(schema.columns.map(c => [c.name, c]))
-    : new Map();
-  for (const f of filter) {
-    if (f.column === 'NAME') continue;
-    if (!colNames.includes(f.column)) continue;
-    const schemaCol = schemaColMap.get(f.column);
-    if (!schemaCol) continue;
-    const colType = schemaCol.columnType;
-    const val = data[f.column];
-    if (_NUMERIC_TYPES.has(colType)) {
-      if (f.min !== undefined && Number.isFinite(f.min) && typeof val === 'number' && val < f.min) return false;
-      if (f.max !== undefined && Number.isFinite(f.max) && typeof val === 'number' && val > f.max) return false;
-    }
-    if (_STRING_TYPES.has(colType)) {
-      if (f.in !== undefined && f.in.length > 0 && !f.in.includes(val)) return false;
-      if (f.like !== undefined) {
-        const pattern = new RegExp(
-          `^${f.like.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.')}$`, 'i'
-        );
-        if (!pattern.test(String(val ?? ''))) return false;
-      }
+  if (!Array.isArray(requestedColumns) || requestedColumns.length === 0) {
+    return ordered;
+  }
+
+  for (const columnName of ordered) {
+    if (requestedColumns.includes(columnName) && !seen[columnName]) {
+      seen[columnName] = true;
+      result.push(columnName);
     }
   }
-  return true;
+  return result;
 }
 
 /**
@@ -190,19 +164,26 @@ class LogTable {
   /**
    * RID 기반 배치 읽기
    * @param {bigint} startRid
+   * @param {bigint} endRid
    * @param {number} [limit=1000]
-   * @param {number} [rangeSize=50000]
-   * @param {Array|null} [filter=null]
-   * @returns {{ rows: Array<{ rid: bigint, data: object }>, rangeMaxRid: bigint, err: Error|null }}
+   * @param {{ selectColumns?: string[], repTargetCond?: object|null, transform?: Array|null }} [options]
+   * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
    */
-  read(startRid, limit = 1000, rangeSize = 50000, filter = null) {
-    const colNames = this.schema.columns.map(c => c.name);
-    const endRid = startRid + BigInt(rangeSize);
+  read(startRid, endRid, limit = 1000, options) {
+    const colNames = _buildSelectColumns(this.schema, options?.selectColumns);
+    const filterSql = buildQueryFilterSql(options?.repTargetCond, options?.transform, {
+      tableType: 'LOG',
+      logicalTable: this.logicalTable,
+      primaryColumnName: null,
+    });
     const colList = ['_RID', ...colNames].join(', ');
-    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.logicalTable} WHERE _RID >= ${startRid} ORDER BY _RID LIMIT ${limit}`;
+    const where = [`_RID >= ${startRid}`, `_RID <= ${endRid}`];
+    if (filterSql.sql !== '1=1') {
+      where.push(filterSql.sql);
+    }
+    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.logicalTable} WHERE ${where.join(' AND ')} ORDER BY _RID LIMIT ${limit}`;
     try {
-      const sqlRows = this.client.query(sql) || [];
-      let rangeMaxRid = 0n;
+      const sqlRows = this.client.query(sql, filterSql.params) || [];
       const result = [];
       for (const row of sqlRows) {
         if (row._RID == null) {
@@ -210,16 +191,14 @@ class LogTable {
           continue;
         }
         const rid = BigInt(row._RID);
-        if (rid > rangeMaxRid) rangeMaxRid = rid;
         const data = {};
         for (const col of colNames) data[col] = row[col];
-        if (!_passesValueFilter(data, colNames, filter, this.schema)) continue;
         result.push({ rid, data });
       }
-      return { rows: result, rangeMaxRid, err: null };
+      return { rows: result, err: null };
     } catch (err) {
       getLogger().error('table', { table: this.logicalTable, msg: err.message });
-      return { rows: [], rangeMaxRid: 0n, err };
+      return { rows: [], err };
     }
   }
 
@@ -617,30 +596,30 @@ class TagDataTable {
    * RID 기반 배치 읽기
    *
    * @param {bigint} startRid
+   * @param {bigint} endRid
    * @param {number} [limit=1000]
-   * @param {number} [rangeSize=50000]
-   * @param {{ prefix?: string, suffix?: string }|null} [nameRule=null]
-   * @param {string[]|null} [sourceColumns=null]
-   * @param {Array|null} [filter=null]
-   * @returns {{ rows: Array<{ rid: bigint, data: object }>, rangeMaxRid: bigint, err: Error|null }}
+   * @param {{ selectColumns?: string[], repTargetCond?: object|null, transform?: Array|null }} [options]
+   * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
    */
-  read(startRid, limit = 1000, rangeSize = 50000, nameRule = null, sourceColumns = null, filter = null) {
+  read(startRid, endRid, limit = 1000, options) {
     const cols = this.schema.columns.filter(c => !(c.flag & FLAG_METADATA));
-    const filtered = sourceColumns
-      ? cols.filter(c => sourceColumns.includes(c.name))
-      : cols;
-    const colNames = filtered.map(c => c.name);
+    const colNames = _buildSelectColumns(this.schema, options?.selectColumns);
     const keyCol = cols.find(c => c.flag & FLAG_PRIMARY);
-    const keyColName = keyCol ? keyCol.name : 'NAME';
-    const valueColNames = colNames.filter(n => n !== keyColName);
-
-    const endRid = startRid + BigInt(rangeSize);
+    const keyColName = keyCol ? keyCol.name : null;
+    const filterSql = buildQueryFilterSql(options?.repTargetCond, options?.transform, {
+      tableType: 'TAG',
+      logicalTable: this.logicalTable,
+      primaryColumnName: keyColName,
+    });
 
     const colList = ['_RID', ...colNames].join(', ');
-    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE _RID >= ${startRid} ORDER BY _RID LIMIT ${limit}`;
+    const where = [`_RID >= ${startRid}`, `_RID <= ${endRid}`];
+    if (filterSql.sql !== '1=1') {
+      where.push(filterSql.sql);
+    }
+    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE ${where.join(' AND ')} ORDER BY _RID LIMIT ${limit}`;
     try {
-      const sqlRows = this.client.query(sql) || [];
-      let rangeMaxRid = 0n;
+      const sqlRows = this.client.query(sql, filterSql.params) || [];
       const result = [];
       for (const row of sqlRows) {
         if (row._RID == null) {
@@ -648,40 +627,29 @@ class TagDataTable {
           continue;
         }
         const rid = BigInt(row._RID);
-        if (rid > rangeMaxRid) rangeMaxRid = rid;
 
         const data = {};
         for (const col of colNames) data[col] = row[col];
 
-        // VALUE filter (post-processing)
-        if (!_passesValueFilter(data, valueColNames, filter, this.schema)) continue;
-
-        if (this.aliasCache) {
+        if (this.aliasCache && keyColName && Object.prototype.hasOwnProperty.call(data, keyColName)) {
           const tagId = data[keyColName];
-          let { name, canonical, meta, status } = this.aliasCache.resolve(tagId, nameRule);
-          if (status === 'drop_not_found') {
+          let entry = this.aliasCache._map.get(BigInt(tagId));
+          if (!entry) {
             const found = this.cacheTagMetaByTagID(tagId);
             if (!found) continue;
-            ({ name, canonical, meta } = this.aliasCache.resolve(tagId, nameRule));
+            entry = this.aliasCache._map.get(BigInt(tagId));
           }
-          const nameFilterEntry = filter?.find(f => f.column === 'NAME') ?? null;
-          if (nameFilterEntry) {
-            if (nameFilterEntry.in && !nameFilterEntry.in.includes(name)) continue;
-            if (nameFilterEntry.like && !new RegExp(
-              `^${nameFilterEntry.like.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.')}$`, 'i'
-            ).test(name)) continue;
-          }
-          data[keyColName] = canonical;
-          data.NAME = canonical;
-          Object.assign(data, meta);
+          if (!entry) continue;
+          data[keyColName] = entry.name;
+          Object.assign(data, entry.meta);
         }
         result.push({ rid, data });
       }
 
-      return { rows: result, rangeMaxRid, err: null };
+      return { rows: result, err: null };
     } catch (err) {
       getLogger().error('table', { table: this.dataTable, msg: err.message });
-      return { rows: [], rangeMaxRid: 0n, err };
+      return { rows: [], err };
     }
   }
 }
