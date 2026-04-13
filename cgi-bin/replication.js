@@ -31,7 +31,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const configName = process.argv[2];
 if (!configName) {
-  getLogger().error('app', { msg: 'config name is required: replication.js <name>' });
+  getLogger().error('app', { stdout: true, msg: 'config name is required: replication.js <name>' });
   process.exit(1);
 }
 
@@ -52,17 +52,17 @@ try {
 
   process.addShutdownHook(() => {
     try { fs.unlinkSync(pidFile); } catch (_) {}
-    try { getLogger().info('app', { msg: 'shutdown requested' }); } catch (_) {}
+    try { getLogger().info('app', { stdout: true, msg: 'shutdown requested' }); } catch (_) {}
     replicator.shutdown();
   });
 
   replicator.start().then(() => {
     process.exit(0);
   }).catch(err => {
-    getLogger().error('app', { msg: err.message });
+    getLogger().error('app', { stdout: true, msg: err.message });
     process.exit(1);
   });
 } catch (err) {
-  getLogger().error('app', { msg: err.message });
+  getLogger().error('app', { stdout: true, msg: err.message });
   process.exit(1);
 }

@@ -58,3 +58,14 @@
     - created temp replicator `issue1238_phase2`
     - `start -> running:true -> checkpoint created -> stop -> delete`
     - deleted temp server profile and confirmed cleanup
+
+- 2026-04-13 phase 3
+  - Updated logger path to `/work/public/logs/neo-pkg-replication`
+  - Kept 10MB rotation and `level`/`maxFiles` config shape
+  - Added `stdout:true` opt-in mirroring for service lifecycle logs
+  - Rewrote `docs/API.md` to current schema/API set
+  - Rewrote `CLAUDE.md` to current runtime/config behavior
+  - Deploy verification:
+    - created temp replicator `issue1238_phase3`
+    - confirmed log file creation at `/home/thlee/machbase-neo/public/logs/neo-pkg-replication/repli.log`
+    - confirmed checkpoint update and final cleanup of temp replication/server profile

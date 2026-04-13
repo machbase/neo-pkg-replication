@@ -176,7 +176,7 @@ class Replicator {
   }
 
   async start() {
-    getLogger().info('replicator', { ...this.logCtx, msg: 'start' });
+    getLogger().info('replicator', { ...this.logCtx, stdout: true, msg: 'start' });
 
     while (!this.shutdownFlag.value) {
       const discovered = this.discover();
@@ -191,7 +191,7 @@ class Replicator {
       if (this.shutdownFlag.value) break;
     }
 
-    getLogger().info('replicator', { ...this.logCtx, msg: 'stopped' });
+    getLogger().info('replicator', { ...this.logCtx, stdout: true, msg: 'stopped' });
   }
 }
 
