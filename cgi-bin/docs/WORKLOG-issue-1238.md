@@ -69,3 +69,7 @@
     - created temp replicator `issue1238_phase3`
     - confirmed log file creation at `/home/thlee/machbase-neo/public/logs/neo-pkg-replication/repli.log`
     - confirmed checkpoint update and final cleanup of temp replication/server profile
+    - created temp target table `HOME_COPY_ISSUE1238`
+    - verified actual append path with `startMode=ridAfter`, short prefix `I.`
+    - observed `_HOME_COPY_ISSUE1238_DATA_0` row count `25`, `_HOME_COPY_ISSUE1238_META` prefixed rows `28`
+    - noted one negative smoke result: long prefix `ISSUE1238.` can exceed target `VARCHAR(25)` and fail during metadata insert
