@@ -23,7 +23,8 @@ const ROOT = path.resolve(path.dirname(process.argv[1]));
 
 const { init: initLogger, getInstance: getLogger } = require(path.join(ROOT, 'src', 'lib', 'logger.js'));
 const { Replicator } = require(path.join(ROOT, 'src', 'replication', 'replicator.js'));
-const { CONF_DIR, DATA_DIR } = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
+const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
+const { CONF_DIR, DATA_DIR } = Handler;
 
 fs.mkdirSync(CONF_DIR, { recursive: true });
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -37,8 +38,9 @@ if (!configName) {
 const configPath = path.join(CONF_DIR, `${configName}.json`);
 
 try {
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  initLogger(config.logging);
+  const storedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  initLogger(storedConfig.logging);
+  const config = Handler.resolveRuntimeConfig(storedConfig);
 
   const pidFile = path.join(ROOT, `${configName}.pid`);
   fs.mkdirSync(path.dirname(pidFile), { recursive: true });

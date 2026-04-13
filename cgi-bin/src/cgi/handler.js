@@ -6,12 +6,25 @@ const process = require('process');
 const service = require('service');
 const { MachbaseClient, ColumnType } = require('../db/client.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME, FLAG_SUMMARIZED } = require('../db/types.js');
-
-const SERVICE_NAME_PREFIX = '_rpl_';
-
-const APP_DIR = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
-const CONF_DIR = path.join(APP_DIR, 'conf.d');
-const DATA_DIR = path.join(APP_DIR, 'data');
+const {
+  APP_DIR,
+  CONF_DIR,
+  DATA_DIR,
+  SERVER_CONF_DIR,
+  SERVICE_NAME_PREFIX,
+  normalizeTableName,
+  normalizeColumnName,
+  normalizeServerProfileForSave,
+  sanitizeServerProfile,
+  normalizeReplicatorConfigForSave,
+  resolveEndpointConnection,
+  resolveReplicatorRuntimeConfig,
+  sanitizeReplicatorConfig,
+} = require('./config.js');
+const {
+  prepareReplicatorConfig,
+  validateServerProfile,
+} = require('./validation.js');
 
 /**
  * CGI 핸들러 — replicator 설정/서비스 생명주기 관리
@@ -113,7 +126,7 @@ class Handler {
    */
   static writeConfig(name, config) {
     const filePath = path.join(CONF_DIR, `${name}.json`);
-    const normalized = Handler.normalizeConfigForSave(config);
+    const normalized = normalizeReplicatorConfigForSave(config);
     const data = JSON.stringify(normalized, null, 2);
     Handler._write(filePath, data);
   }
@@ -138,172 +151,106 @@ class Handler {
     return Handler.exists(filePath);
   }
 
-  // ── 정규화 / 검증 ─────────────────────────────────────────────────────────
-
   /**
-   * 테이블명을 trim 후 대문자로 정규화한다.
-   * @param {string} value
-   * @returns {string}
+   * server profile 목록을 반환한다.
+   * @returns {string[]}
    */
-  static normalizeTableName(value) {
-    if (typeof value !== 'string') return value;
-    const table = value.trim();
-    return table ? table.toUpperCase() : table;
+  static getServerConfigList() {
+    try {
+      return fs.readdirSync(SERVER_CONF_DIR)
+        .filter((fileName) => fileName.endsWith('.json'))
+        .map((fileName) => fileName.replace(/\.json$/, ''));
+    } catch (_) {
+      return [];
+    }
   }
 
   /**
-   * 컬럼명을 trim 후 대문자로 정규화한다.
-   * @param {string} value
-   * @returns {string}
+   * server profile을 읽어 반환한다.
+   * @param {string} name
+   * @returns {object|null}
    */
-  static normalizeColumnName(value) {
-    if (typeof value !== 'string') return value;
-    const col = value.trim();
-    return col ? col.toUpperCase() : col;
+  static getServerConfig(name) {
+    const filePath = path.join(SERVER_CONF_DIR, `${name}.json`);
+    return Handler._read(filePath);
   }
 
   /**
-   * 저장 전 config 정규화 (테이블명 대문자, autoCreate 불리언 변환)
+   * server profile을 저장한다.
+   * @param {string} name
+   * @param {object} profile
+   */
+  static writeServerConfig(name, profile) {
+    fs.mkdirSync(SERVER_CONF_DIR, { recursive: true });
+    const filePath = path.join(SERVER_CONF_DIR, `${name}.json`);
+    const normalized = normalizeServerProfileForSave(profile);
+    Handler._write(filePath, JSON.stringify(normalized, null, 2));
+  }
+
+  /**
+   * server profile을 삭제한다.
+   * @param {string} name
+   * @returns {Error|null}
+   */
+  static removeServerConfig(name) {
+    const filePath = path.join(SERVER_CONF_DIR, `${name}.json`);
+    return Handler._delete(filePath);
+  }
+
+  /**
+   * server profile 존재 여부를 반환한다.
+   * @param {string} name
+   * @returns {boolean}
+   */
+  static existsServerConfig(name) {
+    const filePath = path.join(SERVER_CONF_DIR, `${name}.json`);
+    return Handler.exists(filePath);
+  }
+
+  /**
+   * 저장/실행용 replication config를 준비하고 검증한다.
+   * @param {object} config
+   * @returns {{ storedConfig: object, runtimeConfig: object, sourceInfo: object, targetInfo: object }}
+   */
+  static prepareReplicatorConfig(config) {
+    return prepareReplicatorConfig(config, (serverName) => Handler.getServerConfig(serverName));
+  }
+
+  /**
+   * server profile을 정규화/검증한다.
+   * @param {object} profile
+   * @returns {object}
+   */
+  static validateServerProfile(profile) {
+    return validateServerProfile(profile);
+  }
+
+  /**
+   * replication config를 runtime 연결정보까지 해석한다.
    * @param {object} config
    * @returns {object}
    */
-  static normalizeConfigForSave(config) {
-    if (!config || typeof config !== 'object') return config;
-
-    const normalized = { ...config };
-    if (config.source && typeof config.source === 'object') {
-      normalized.source = { ...config.source };
-      normalized.source.table = Handler.normalizeTableName(normalized.source.table);
-    }
-    if (config.target && typeof config.target === 'object') {
-      normalized.target = { ...config.target };
-      normalized.target.table = Handler.normalizeTableName(normalized.target.table);
-      normalized.target.autoCreate = Handler.isAutoCreateEnabled(normalized.target.autoCreate);
-    }
-    return normalized;
+  static resolveRuntimeConfig(config) {
+    return resolveReplicatorRuntimeConfig(config, (serverName) => Handler.getServerConfig(serverName));
   }
 
   /**
-   * autoCreate 설정값을 boolean으로 변환한다.
-   * @param {boolean|number|string} value
-   * @returns {boolean}
+   * server profile을 참조하는 replication 이름 목록을 반환한다.
+   * @param {string} serverName
+   * @returns {string[]}
    */
-  static isAutoCreateEnabled(value) {
-    if (value === true || value === 1) return true;
-    if (typeof value === 'string') {
-      const normalized = value.trim().toLowerCase();
-      return normalized === 'true' || normalized === '1';
+  static findReplicatorsUsingServer(serverName) {
+    const usedBy = [];
+    for (const name of Handler.getConfigList()) {
+      const config = Handler.getConfig(name);
+      if (!config) continue;
+      const sourceServer = config?.source?.server;
+      const targetServer = config?.target?.server;
+      if (sourceServer === serverName || targetServer === serverName) {
+        usedBy.push(name);
+      }
     }
-    return false;
-  }
-
-  /**
-   * 내부 컬럼(_로 시작)과 메타데이터 컬럼을 제외한 데이터 컬럼을 순서대로 반환한다.
-   * @param {MachbaseClient} client
-   * @param {string} tableName
-   * @returns {object[]}
-   */
-  static dataColumnsByOrder(client, tableName) {
-    return client.selectColumnsByTableName(tableName)
-      .filter((c) => !c.NAME.startsWith('_') && !(c.FLAG & FLAG_METADATA));
-  }
-
-  /**
-   * source/target 데이터 컬럼을 순서 기준으로 타입을 검증한다. 불일치 시 throw한다.
-   * @param {object} config - ReplicatorConfig
-   * @throws {Error}
-   */
-  static validateColumnOrderTypes(config) {
-    const normalized = Handler.normalizeConfigForSave(config);
-    const source = normalized?.source;
-    const target = normalized?.target;
-    const autoCreateEnabled = Handler.isAutoCreateEnabled(target?.autoCreate);
-    if (!source || !target) {
-      throw new Error('source/target config is required');
-    }
-    if (!source.table) {
-      throw new Error('source.table is required');
-    }
-    const effectiveTargetTable = Handler.normalizeTableName(target.table) || Handler.normalizeTableName(source.table);
-    if (!effectiveTargetTable) {
-      throw new Error('target.table is required');
-    }
-
-    let srcClient = null;
-    let dstClient = null;
-    try {
-      srcClient = new MachbaseClient(source);
-      dstClient = new MachbaseClient(target);
-      srcClient.connect();
-      dstClient.connect();
-
-      const sourceCols = Handler.dataColumnsByOrder(srcClient, source.table);
-      const sourceType = srcClient.selectTableType(source.table).type;
-      const targetType = dstClient.selectTableType(effectiveTargetTable).type;
-      let targetCols;
-
-      if (targetType === 'UNSUPPORTED') {
-        if (autoCreateEnabled) {
-          targetCols = sourceCols.slice();
-        } else {
-          throw new Error(`target table '${effectiveTargetTable}' not found`);
-        }
-      } else {
-        targetCols = Handler.dataColumnsByOrder(dstClient, effectiveTargetTable);
-      }
-
-      if (sourceCols.length === 0) {
-        throw new Error(`source table '${source.table}' has no data columns`);
-      }
-      if (targetCols.length === 0) {
-        throw new Error(`target table '${effectiveTargetTable}' has no data columns`);
-      }
-
-      const sourceByName = {};
-      for (const col of sourceCols) {
-        sourceByName[col.NAME] = col;
-      }
-
-      let effectiveSourceCols;
-      if (Array.isArray(source.columns) && source.columns.length > 0) {
-        effectiveSourceCols = source.columns.map(Handler.normalizeColumnName);
-        const unknown = effectiveSourceCols.filter((name) => !sourceByName[name]);
-        if (unknown.length > 0) {
-          throw new Error(`source.columns contains unknown columns: ${unknown.join(', ')}`);
-        }
-        if (sourceType === 'TAG') {
-          const requiredCols = sourceCols
-            .filter((c) => (c.FLAG & FLAG_METADATA) === 0 && ((c.FLAG & FLAG_PRIMARY) || (c.FLAG & FLAG_BASETIME)))
-            .map((c) => c.NAME);
-          const missing = requiredCols.filter((c) => !effectiveSourceCols.includes(c));
-          if (missing.length > 0) {
-            throw new Error(`source.columns missing required TAG key columns: ${missing.join(', ')}`);
-          }
-        }
-      } else {
-        effectiveSourceCols = sourceCols.map((c) => c.NAME);
-      }
-
-      if (effectiveSourceCols.length !== targetCols.length) {
-        throw new Error(
-          `column count mismatch: source(${effectiveSourceCols.length}) != target(${targetCols.length})`
-        );
-      }
-
-      for (let i = 0; i < targetCols.length; i++) {
-        const sourceName = effectiveSourceCols[i];
-        const sourceCol = sourceByName[sourceName];
-        const targetCol = targetCols[i];
-        if (sourceCol.TYPE !== targetCol.TYPE) {
-          throw new Error(
-            `column type mismatch at index ${i}: source.${sourceName}(TYPE=${sourceCol.TYPE}) != target.${targetCol.NAME}(TYPE=${targetCol.TYPE})`
-          );
-        }
-      }
-    } finally {
-      try { srcClient && srcClient.close(); } catch (_) {}
-      try { dstClient && dstClient.close(); } catch (_) {}
-    }
+    return usedBy;
   }
 
   // ── CGI I/O ──────────────────────────────────────────────────────────────
@@ -795,7 +742,17 @@ class Handler {
   // ── 비즈니스 로직 ─────────────────────────────────────────────────────────
 
   /**
-   * nextConfig에서 password가 누락되거나 빈 문자열인 경우 currentConfig의 값으로 채운다.
+   * 객체가 key를 직접 가지는지 확인한다.
+   * @param {object} obj
+   * @param {string} key
+   * @returns {boolean}
+   */
+  static _hasOwn(obj, key) {
+    return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  /**
+   * nextConfig에서 inline password가 누락되거나 비어 있으면 currentConfig 값을 유지한다.
    * @param {object} nextConfig
    * @param {object} currentConfig
    * @returns {object}
@@ -805,19 +762,111 @@ class Handler {
 
     const nextSource = nextConfig.source;
     const nextTarget = nextConfig.target;
-    const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
-
     if (nextSource && typeof nextSource === 'object') {
-      if ((!hasOwn(nextSource, 'password') || nextSource.password === '') && hasOwn(currentConfig?.source, 'password')) {
+      if (!nextSource.server && (!Handler._hasOwn(nextSource, 'password') || nextSource.password == null || nextSource.password === '') && Handler._hasOwn(currentConfig?.source, 'password')) {
         nextSource.password = currentConfig.source.password;
       }
     }
     if (nextTarget && typeof nextTarget === 'object') {
-      if ((!hasOwn(nextTarget, 'password') || nextTarget.password === '') && hasOwn(currentConfig?.target, 'password')) {
+      if (!nextTarget.server && (!Handler._hasOwn(nextTarget, 'password') || nextTarget.password == null || nextTarget.password === '') && Handler._hasOwn(currentConfig?.target, 'password')) {
         nextTarget.password = currentConfig.target.password;
       }
     }
     return nextConfig;
+  }
+
+  /**
+   * server profile PUT 시 password가 누락/null/빈문자열이면 기존 값을 유지한다.
+   * @param {object} nextProfile
+   * @param {object} currentProfile
+   * @returns {object}
+   */
+  static _applyServerPasswordFallback(nextProfile, currentProfile) {
+    if (!nextProfile || typeof nextProfile !== 'object') return nextProfile;
+    if ((!Handler._hasOwn(nextProfile, 'password') || nextProfile.password == null || nextProfile.password === '') && Handler._hasOwn(currentProfile, 'password')) {
+      nextProfile.password = currentProfile.password;
+    }
+    return nextProfile;
+  }
+
+  /**
+   * server profile을 생성한다.
+   * @param {object} body
+   * @param {function(Error|null, { name: string }=): void} callback
+   */
+  static createServerProfile(body, callback) {
+    if (!body || !body.name) { callback(new Error('name is required')); return; }
+    if (Handler.getServerConfig(body.name)) { callback(new Error(`server '${body.name}' already exists`)); return; }
+    try {
+      const profile = Handler.validateServerProfile(body);
+      Handler.writeServerConfig(profile.name, profile);
+      callback(null, { name: profile.name });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  /**
+   * server profile을 조회한다.
+   * @param {string} name
+   * @param {function(Error|null, object=): void} callback
+   */
+  static getServerProfile(name, callback) {
+    if (!name) { callback(new Error('name is required')); return; }
+    const profile = Handler.getServerConfig(name);
+    if (!profile) { callback(new Error(`server '${name}' not found`)); return; }
+    callback(null, sanitizeServerProfile(profile));
+  }
+
+  /**
+   * server profile을 수정한다.
+   * @param {string} name
+   * @param {object} body
+   * @param {function(Error|null, { name: string }=): void} callback
+   */
+  static updateServerProfile(name, body, callback) {
+    if (!name) { callback(new Error('name is required')); return; }
+    const currentProfile = Handler.getServerConfig(name);
+    if (!currentProfile) { callback(new Error(`server '${name}' not found`)); return; }
+    try {
+      const nextProfile = Handler._applyServerPasswordFallback({ ...(body || {}), name }, currentProfile);
+      const profile = Handler.validateServerProfile(nextProfile);
+      Handler.writeServerConfig(name, profile);
+      callback(null, { name });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  /**
+   * server profile을 삭제한다.
+   * @param {string} name
+   * @param {function(Error|null): void} callback
+   */
+  static deleteServerProfile(name, callback) {
+    if (!name) { callback(new Error('name is required')); return; }
+    if (!Handler.getServerConfig(name)) { callback(new Error(`server '${name}' not found`)); return; }
+    const usedBy = Handler.findReplicatorsUsingServer(name);
+    if (usedBy.length > 0) {
+      callback(new Error(`server '${name}' is referenced by replicators: ${usedBy.join(', ')}`));
+      return;
+    }
+    callback(Handler.removeServerConfig(name));
+  }
+
+  /**
+   * server profile 목록을 반환한다.
+   * @param {function(Error|null, Array=): void} callback
+   */
+  static listServerProfiles(callback) {
+    const names = Handler.getServerConfigList();
+    const data = [];
+    for (const name of names) {
+      const profile = Handler.getServerConfig(name);
+      if (!profile) continue;
+      data.push(sanitizeServerProfile(profile));
+    }
+    callback(null, data);
   }
 
   /**
@@ -830,12 +879,12 @@ class Handler {
     if (!body.config) { callback(new Error('config is required')); return; }
     if (Handler.getConfig(body.name)) { callback(new Error(`replicator '${body.name}' already exists`)); return; }
     try {
-      Handler.validateColumnOrderTypes(body.config);
+      const prepared = Handler.prepareReplicatorConfig(body.config);
+      Handler.writeConfig(body.name, prepared.storedConfig);
     } catch (err) {
       callback(err);
       return;
     }
-    Handler.writeConfig(body.name, body.config);
     Handler.installService(body.name, (err) => {
       if (err) {
         Handler.removeConfig(body.name);
@@ -847,6 +896,39 @@ class Handler {
   }
 
   /**
+   * dry-run 검증을 수행한다.
+   * @param {object} body
+   * @param {function(Error|null, object=): void} callback
+   */
+  static dryRunReplicator(body, callback) {
+    const config = body && body.config ? body.config : body;
+    if (!config || typeof config !== 'object') {
+      callback(new Error('config is required'));
+      return;
+    }
+    try {
+      const prepared = Handler.prepareReplicatorConfig(config);
+      callback(null, {
+        source: {
+          table: prepared.sourceInfo.table,
+          tableType: prepared.sourceInfo.tableType,
+          dataColumns: prepared.sourceInfo.dataColumns.map((column) => column.NAME),
+          metaColumns: prepared.sourceInfo.metaColumns.map((column) => column.NAME),
+        },
+        target: {
+          table: prepared.targetInfo.table,
+          tableType: prepared.targetInfo.tableType,
+          dataColumns: prepared.targetInfo.dataColumns.map((column) => column.NAME),
+          metaColumns: prepared.targetInfo.metaColumns.map((column) => column.NAME),
+        },
+        normalized: sanitizeReplicatorConfig(prepared.storedConfig),
+      });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  /**
    * replicator 설정과 checkpoint 정보를 반환한다. password는 제거된다.
    * @param {string} name
    * @param {function(Error|null, { name: string, config: object, checkpoints: object }=): void} callback
@@ -855,15 +937,17 @@ class Handler {
     if (!name) { callback(new Error('name is required')); return; }
     const config = Handler.getConfig(name);
     if (!config) { callback(new Error(`replicator '${name}' not found`)); return; }
-    const safeSource = { ...config.source };
-    delete safeSource.password;
-    const safeTarget = { ...config.target };
-    delete safeTarget.password;
-    const safeConfig = { ...config, source: safeSource, target: safeTarget };
+    const safeConfig = sanitizeReplicatorConfig(normalizeReplicatorConfigForSave(config));
+    let runtimeConfig = null;
+    try {
+      runtimeConfig = Handler.resolveRuntimeConfig(config);
+    } catch (_) {
+      runtimeConfig = config;
+    }
     const sourceTable = config.source?.table || '';
     const targetTable = config.target?.table || sourceTable;
     const replicatorId = config.id || (sourceTable && targetTable ? `${sourceTable}_${targetTable}` : '');
-    const checkpoints = Handler.readCheckpoints(replicatorId, config);
+    const checkpoints = Handler.readCheckpoints(replicatorId, runtimeConfig);
     callback(null, { name, config: safeConfig, checkpoints });
   }
 
@@ -879,12 +963,12 @@ class Handler {
     if (!currentConfig) { callback(new Error(`replicator '${name}' not found`)); return; }
     const nextConfig = Handler._applyPasswordFallback(body, currentConfig);
     try {
-      Handler.validateColumnOrderTypes(nextConfig);
+      const prepared = Handler.prepareReplicatorConfig(nextConfig);
+      Handler.writeConfig(name, prepared.storedConfig);
     } catch (err) {
       callback(err);
       return;
     }
-    Handler.writeConfig(name, nextConfig);
     Handler.restartServiceIfRunning(name, callback);
   }
 
@@ -992,17 +1076,21 @@ class Handler {
 
   /**
    * 지정한 서버/테이블의 컬럼 정보를 조회한다.
-   * @param {{ host: string, port: number|string, user: string, password: string, table: string }} body
+   * @param {{ server?: string, host?: string, port?: number|string, user?: string, password?: string, type?: string, table: string }} body
    * @param {function(Error|null, { table: string, tableType: string, columns: Array }=): void} callback
    */
   static getTableColumns(body, callback) {
-    const { host, port, user, password, table } = body;
-    if (!host)     { callback(new Error('host is required')); return; }
-    if (!port)     { callback(new Error('port is required')); return; }
-    if (!user)     { callback(new Error('user is required')); return; }
-    if (!password) { callback(new Error('password is required')); return; }
+    const { table } = body;
     if (!table)    { callback(new Error('table is required')); return; }
-    const client = new MachbaseClient({ host, port: parseInt(port, 10), user, password });
+    let endpoint;
+    try {
+      endpoint = resolveEndpointConnection(body, (serverName) => Handler.getServerConfig(serverName), 'server');
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    const client = new MachbaseClient(endpoint);
     try {
       client.connect();
       const { type: tableType } = client.selectTableType(table.toUpperCase());
@@ -1035,3 +1123,4 @@ class Handler {
 module.exports = Handler;
 module.exports.CONF_DIR = CONF_DIR;
 module.exports.DATA_DIR = DATA_DIR;
+module.exports.SERVER_CONF_DIR = SERVER_CONF_DIR;
