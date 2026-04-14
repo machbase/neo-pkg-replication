@@ -10,3 +10,5 @@ logs/
 .env
 .env.local
 .env.production.local
+cgi-bin/docs/TESTLOG-2026-04-14-curl.md
+cgi-bin/docs/WORKLOG-issue-1238.md
