@@ -659,7 +659,7 @@ class Handler {
    * checkpoint 파일이 없는 파티션도 빈 값으로 포함한다.
    * @param {string} name - replicator name
    * @param {object} config - replicator config
-   * @returns {{ [dataTable: string]: { lastSuccessRid: string, hasMore: boolean } }}
+   * @returns {{ [dataTable: string]: { lastSuccessRid: string, totalRowsWritten: string, hasMore: boolean } }}
    */
   static readCheckpoints(name, config) {
     const result = {};
@@ -680,7 +680,7 @@ class Handler {
           const dataTable = value.trim();
           if (!dataTable || seen[dataTable]) return;
           seen[dataTable] = true;
-          result[dataTable] = { lastSuccessRid: '', hasMore: false };
+          result[dataTable] = { lastSuccessRid: '', totalRowsWritten: '0', hasMore: false };
         };
         if (tableType === 'TAG') {
           for (const part of client.selectTagDataTables(normalizedTable)) {
@@ -712,16 +712,19 @@ class Handler {
           const d = JSON.parse(fs.readFileSync(filePath, 'utf8'));
           const dataTable = d.source?.dataTable;
           const lastSuccessRid = d.checkpoint?.lastSuccessRid;
+          const totalRowsWritten = d.checkpoint?.totalRowsWritten;
           if (!dataTable || lastSuccessRid === undefined) continue;
           const updatedAt = d.checkpoint?.updatedAt || '';
           const initializedOnly = d.checkpoint?.initializedOnly === true;
           const ridText = String(lastSuccessRid);
+          const totalRowsWrittenText = totalRowsWritten === undefined ? '0' : String(totalRowsWritten);
           const isNegativeRid = /^-/.test(ridText);
           const hasMore = !initializedOnly && !isNegativeRid && d.checkpoint?.hasMore === true;
           const prev = records[dataTable];
           if (!prev || updatedAt >= prev.updatedAt) {
             records[dataTable] = {
               lastSuccessRid: initializedOnly || isNegativeRid ? '' : ridText,
+              totalRowsWritten: totalRowsWrittenText,
               hasMore,
               updatedAt,
             };
@@ -731,6 +734,7 @@ class Handler {
       for (const dataTable in records) {
         result[dataTable] = {
           lastSuccessRid: records[dataTable].lastSuccessRid,
+          totalRowsWritten: records[dataTable].totalRowsWritten || '0',
           hasMore: records[dataTable].hasMore === true,
         };
       }

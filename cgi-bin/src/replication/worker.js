@@ -233,9 +233,10 @@ class Worker {
     return { targetRows, resolved, metadataRows };
   }
 
-  _saveCheckpoint(checkpointStore, rid, stats, hasMore, queryLimit) {
+  _saveCheckpoint(checkpointStore, rid, totalRowsWritten, stats, hasMore, queryLimit) {
     checkpointStore.save({
       lastSuccessRid: rid,
+      totalRowsWritten,
       sourceServer: this.config.source.host,
       sourceTable: this.config.source.table,
     }, stats, {
@@ -322,6 +323,7 @@ class Worker {
 
     const { cp, exists: cpExists } = checkpointStore.load();
     let startRid;
+    let totalRowsWritten = cpExists && cp && cp.totalRowsWritten != null ? BigInt(String(cp.totalRowsWritten)) : 0n;
     if (cpExists && cp) {
       startRid = cp.lastSuccessRid + 1n;
       getLogger().info('worker', { ...logCtx, startRid: String(startRid), msg: 'resume from checkpoint' });
@@ -338,7 +340,7 @@ class Worker {
       }
       getLogger().info('worker', { ...logCtx, startMode: this.config.startMode, startRid: String(startRid), msg: 'worker start' });
       const initialCpRid = startRid > 0n ? (startRid - 1n) : -1n;
-      this._saveCheckpoint(checkpointStore, initialCpRid, {
+      this._saveCheckpoint(checkpointStore, initialCpRid, totalRowsWritten, {
         rowsRead: 0,
         rowsWritten: 0,
         droppedNoMeta: 0,
@@ -369,6 +371,7 @@ class Worker {
       if (doIntegrity) {
         const result = await this._runStartupIntegrity({
           startRid,
+          totalRowsWritten,
           srcTable,
           dstTable,
           retry,
@@ -379,6 +382,7 @@ class Worker {
         });
         if (result === null) return;
         startRid = result.startRid;
+        totalRowsWritten = result.totalRowsWritten;
       }
 
       while (!shutdownFlag.value) {
@@ -387,7 +391,7 @@ class Worker {
 
         if (startRid > maxRid) {
           const idleCpRid = startRid > 0n ? (startRid - 1n) : -1n;
-          this._saveCheckpoint(checkpointStore, idleCpRid, {
+          this._saveCheckpoint(checkpointStore, idleCpRid, totalRowsWritten, {
             rowsRead: 0,
             rowsWritten: 0,
             droppedNoMeta: 0,
@@ -424,7 +428,8 @@ class Worker {
           if (!ok) return;
         }
 
-        this._saveCheckpoint(checkpointStore, endRid, {
+        totalRowsWritten += BigInt(processed.targetRows.length);
+        this._saveCheckpoint(checkpointStore, endRid, totalRowsWritten, {
           rowsRead: readResult.rows.length,
           rowsWritten: processed.targetRows.length,
           droppedNoMeta: 0,
@@ -438,7 +443,7 @@ class Worker {
     }
   }
 
-  async _runStartupIntegrity({ startRid, srcTable, dstTable, retry, shutdownFlag, logCtx, checkpointStore, plan }) {
+  async _runStartupIntegrity({ startRid, totalRowsWritten, srcTable, dstTable, retry, shutdownFlag, logCtx, checkpointStore, plan }) {
     getLogger().info('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
 
     let integrityRid = startRid;
@@ -467,7 +472,7 @@ class Worker {
 
       const processed = this._processRows(readResult.rows, plan, logCtx);
       if (processed.resolved.length === 0) {
-        this._saveCheckpoint(checkpointStore, endRid, {
+        this._saveCheckpoint(checkpointStore, endRid, totalRowsWritten, {
           rowsRead: 0,
           rowsWritten: 0,
           droppedNoMeta: 0,
@@ -489,7 +494,8 @@ class Worker {
         if (result.firstMissIdx !== null) {
           const firstMissRid = processed.resolved[result.firstMissIdx].rid;
           const safeCpRid = firstMissRid > 0n ? firstMissRid - 1n : 0n;
-          this._saveCheckpoint(checkpointStore, safeCpRid, {
+          totalRowsWritten += BigInt(result.firstMissIdx);
+          this._saveCheckpoint(checkpointStore, safeCpRid, totalRowsWritten, {
             rowsRead: readResult.rows.length,
             rowsWritten: 0,
             droppedNoMeta: 0,
@@ -500,7 +506,8 @@ class Worker {
           break;
         }
 
-        this._saveCheckpoint(checkpointStore, endRid, {
+        totalRowsWritten += BigInt(processed.targetRows.length);
+        this._saveCheckpoint(checkpointStore, endRid, totalRowsWritten, {
           rowsRead: readResult.rows.length,
           rowsWritten: 0,
           droppedNoMeta: 0,
@@ -513,7 +520,7 @@ class Worker {
     }
 
     if (shutdownFlag.value) return null;
-    return { startRid };
+    return { startRid, totalRowsWritten };
   }
 }
 

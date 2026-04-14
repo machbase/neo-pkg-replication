@@ -192,6 +192,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 - 모든 로그 파일 경로는 `/work/public/logs/neo-pkg-replication`
 - 파일당 최대 크기 10MB
 - `stdout:true` 로 기록한 service lifecycle 로그는 stdout에도 함께 출력
+- `logging.level` 이 `trace` 이면 source data read에 사용하는 SQL과 바인딩 파라미터를 로그에 남긴다.
 
 ## Replication API
 
@@ -233,6 +234,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
     "checkpoints": {
       "_HOME_DATA_0": {
         "lastSuccessRid": "2799971",
+        "totalRowsWritten": "2799972",
         "hasMore": false
       }
     }

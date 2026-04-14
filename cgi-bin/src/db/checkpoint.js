@@ -7,7 +7,7 @@
  * {
  *   "version": 1,
  *   "source": { "server": "...", "table": "...", "dataTable": "..." },
- *   "checkpoint": { "lastSuccessRid": "12345", "updatedAt": "...", "hasMore": false }
+ *   "checkpoint": { "lastSuccessRid": "12345", "totalRowsWritten": "12345", "updatedAt": "...", "hasMore": false }
  * }
  */
 
@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 
 /** @type {Set<string>} BigInt로 복원해야 하는 JSON 키 집합 */
-const BIGINT_KEYS = new Set(['lastSuccessRid']);
+const BIGINT_KEYS = new Set(['lastSuccessRid', 'totalRowsWritten']);
 
 /**
  * goja(jsh)에서 `typeof v === 'bigint'`가 올바르게 동작하지 않으므로 별도 판별한다.
@@ -89,6 +89,15 @@ class CheckpointStore {
       });
       return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
     }
+    if (cp.totalRowsWritten === undefined) {
+      cp.totalRowsWritten = 0n;
+    } else if (typeof cp.totalRowsWritten !== 'bigint') {
+      getLogger().error('checkpoint_io', {
+        dataTable,
+        msg: `invalid checkpoint structure (totalRowsWritten wrong type), invalidating`,
+      });
+      return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
+    }
     if (cp.initializedOnly === true) {
       // placeholder checkpoint는 "resume 가능한 checkpoint"로 취급하지 않는다.
       return { cp: null, exists: false, err: null };
@@ -99,7 +108,7 @@ class CheckpointStore {
 
   /**
    * 체크포인트 저장 (atomic write)
-   * @param {{ lastSuccessRid: bigint, sourceServer?: string, sourceTable?: string }} cp
+   * @param {{ lastSuccessRid: bigint, totalRowsWritten?: bigint, sourceServer?: string, sourceTable?: string }} cp
    * @param {{ rowsRead: number, rowsWritten: number, droppedNoMeta: number, skippedExists: number }} stats
    * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number, initializedOnly?: boolean, hasMore?: boolean }} [opts]
    * @returns {Error|null}
@@ -107,6 +116,10 @@ class CheckpointStore {
   save(cp, stats, opts) {
     if (!_isBigInt(cp.lastSuccessRid)) {
       throw new TypeError(`lastSuccessRid must be BigInt, got ${typeof cp.lastSuccessRid}`);
+    }
+    const totalRowsWritten = cp.totalRowsWritten === undefined ? 0n : cp.totalRowsWritten;
+    if (!_isBigInt(totalRowsWritten)) {
+      throw new TypeError(`totalRowsWritten must be BigInt, got ${typeof totalRowsWritten}`);
     }
 
     const { filePath, dataTable } = this;
@@ -127,6 +140,7 @@ class CheckpointStore {
         source:     { server: cp.sourceServer || '', table: cp.sourceTable || '', dataTable },
         checkpoint: {
           lastSuccessRid: cp.lastSuccessRid,
+          totalRowsWritten,
           updatedAt: new Date().toISOString(),
           hasMore,
           initializedOnly: opts?.initializedOnly === true ? true : undefined,
@@ -139,6 +153,7 @@ class CheckpointStore {
       getLogger().info('checkpoint_saved', {
         dataTable,
         lastSuccessRid: cp.lastSuccessRid.toString(),
+        totalRowsWritten: totalRowsWritten.toString(),
         rowsRead,
         rowsWritten,
         droppedNoMeta,

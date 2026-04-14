@@ -46,6 +46,14 @@ function _findFirstMissRow(logicalTable, schema, rows, client) {
   }
 }
 
+function _stringifyParams(params) {
+  try {
+    return JSON.stringify(Array.isArray(params) ? params : []);
+  } catch (_) {
+    return '[]';
+  }
+}
+
 
 function _buildSelectColumns(schema, requestedColumns) {
   const seen = {};
@@ -178,11 +186,15 @@ class LogTable {
     });
     const hintEndRid = endRid + 1n;
     const colList = ['_RID', ...colNames].join(', ');
-    const where = [`_RID >= ${startRid}`, `_RID <= ${endRid}`];
-    if (filterSql.sql !== '1=1') {
-      where.push(filterSql.sql);
-    }
-    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.logicalTable} WHERE ${where.join(' AND ')} ORDER BY _RID LIMIT ${limit}`;
+    const whereClause = filterSql.sql !== '1=1' ? ` WHERE ${filterSql.sql}` : '';
+    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.logicalTable}${whereClause} ORDER BY _RID LIMIT ${limit}`;
+    getLogger().trace('table_read_query', {
+      table: this.logicalTable,
+      startRid: String(startRid),
+      endRid: String(endRid),
+      sql,
+      params: _stringifyParams(filterSql.params),
+    });
     try {
       const sqlRows = this.client.query(sql, filterSql.params) || [];
       const result = [];
@@ -615,11 +627,16 @@ class TagDataTable {
 
     const hintEndRid = endRid + 1n;
     const colList = ['_RID', ...colNames].join(', ');
-    const where = [`_RID >= ${startRid}`, `_RID <= ${endRid}`];
-    if (filterSql.sql !== '1=1') {
-      where.push(filterSql.sql);
-    }
-    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.dataTable} WHERE ${where.join(' AND ')} ORDER BY _RID LIMIT ${limit}`;
+    const whereClause = filterSql.sql !== '1=1' ? ` WHERE ${filterSql.sql}` : '';
+    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.dataTable}${whereClause} ORDER BY _RID LIMIT ${limit}`;
+    getLogger().trace('table_read_query', {
+      table: this.logicalTable,
+      dataTable: this.dataTable,
+      startRid: String(startRid),
+      endRid: String(endRid),
+      sql,
+      params: _stringifyParams(filterSql.params),
+    });
     try {
       const sqlRows = this.client.query(sql, filterSql.params) || [];
       const result = [];

@@ -99,15 +99,17 @@
    - source/target mapping 기준으로 append payload 구성
    - 신규 TAG metadata insert
    - append
-   - checkpoint `lastSuccessRid = endRid`
+   - checkpoint `lastSuccessRid = endRid`, `totalRowsWritten += 성공 append row 수`
 
 ## checkpoint 규칙
 
 - 파일: `data/{replicatorId}/{dataTable}.json`
 - `lastSuccessRid` 는 문자열로 저장되며 load 시 `BigInt` 로 복원
+- `totalRowsWritten` 는 파티션별 누적 전송 성공 row 수이며 문자열로 저장 후 load 시 `BigInt` 로 복원
 - `hasMore` 는 runtime이 직접 override 한다
   - `true`: 현재 batch 이후 읽을 RID 구간이 남음
   - `false`: 현재 시점 maxRid까지 따라잡음
+- startup integrity로 재시작 지점을 앞당길 때도 target에서 존재가 확인된 row 수만큼 `totalRowsWritten` 을 함께 올린다
 
 ## logging 규칙
 
@@ -117,6 +119,7 @@
 - config에서 실제 사용하는 logging 필드는 `level`, `maxFiles`
 - `stdout:true` 로 기록한 로그만 파일 + stdout 동시 출력
 - 현재 service lifecycle 로그(`app`, `replicator start/stopped`)는 stdout으로도 출력한다
+- `logging.level=trace` 이면 source data read SQL과 바인딩 파라미터를 `table_read_query` 로그로 남긴다
 
 ## 파일별 역할
 
