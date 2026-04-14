@@ -132,12 +132,13 @@ function _validateRuntimeOptions(storedConfig) {
 
 function _describeTable(client, tableName) {
   const normalizedTable = normalizeColumnName(tableName);
-  const { type: tableType } = client.selectTableType(normalizedTable);
+  const qualified = client.splitQualifiedTableName(normalizedTable);
+  const { type: tableType } = client.selectTableTypeQualified(normalizedTable);
   if (tableType === 'UNSUPPORTED') {
     throw new Error(`table '${normalizedTable}' not found`);
   }
 
-  const rows = client.selectColumnsByTableName(normalizedTable)
+  const rows = client.selectColumnsByQualifiedTableName(normalizedTable)
     .filter((column) => !column.NAME.startsWith('_'));
   const dataColumns = rows.filter((column) => (column.FLAG & FLAG_METADATA) === 0);
   const metaColumns = rows.filter((column) => (column.FLAG & FLAG_METADATA) !== 0);
@@ -147,7 +148,8 @@ function _describeTable(client, tableName) {
   for (const column of metaColumns) metaByName[column.NAME] = column;
 
   return {
-    table: normalizedTable,
+    table: qualified.owner ? `${qualified.owner}.${qualified.table}` : qualified.table,
+    logicalTable: qualified.table,
     tableType,
     rows,
     dataColumns,

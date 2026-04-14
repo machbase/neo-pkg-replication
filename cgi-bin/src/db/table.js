@@ -86,7 +86,8 @@ class LogTable {
    * @param {object} config - MachbaseClient 접속 설정
    */
   constructor(logicalTable, config) {
-    this.logicalTable = logicalTable;
+    this.qualifiedTable = logicalTable;
+    this.logicalTable = (new MachbaseClient(config)).splitQualifiedTableName(logicalTable).table;
     this.config = config;
     this.client = null;
     /** @type {TableSchema|null} */
@@ -100,7 +101,7 @@ class LogTable {
    * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
    */
   getColumns() {
-    return this.client.selectColumnsByTableName(this.logicalTable);
+    return this.client.selectColumnsByQualifiedTableName(this.qualifiedTable);
   }
 
   /**
@@ -138,7 +139,7 @@ class LogTable {
     this.stream = new MachbaseStream();
     return this.stream.open(
       this.client,
-      this.logicalTable,
+      this.qualifiedTable,
       this.schema.columns.map(c => ({ name: c.name, type: c.sqlType() }))
     );
   }
@@ -165,7 +166,7 @@ class LogTable {
    * @returns {bigint}
    */
   getMaxRid() {
-    return this.client.selectMaxRid(this.logicalTable);
+    return this.client.selectMaxRid(this.qualifiedTable);
   }
 
 
@@ -187,7 +188,7 @@ class LogTable {
     const hintEndRid = endRid + 1n;
     const colList = ['_RID', ...colNames].join(', ');
     const whereClause = filterSql.sql !== '1=1' ? ` WHERE ${filterSql.sql}` : '';
-    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.logicalTable}${whereClause} ORDER BY _RID LIMIT ${limit}`;
+    const sql = `SELECT /*+ RID_RANGE(${this.qualifiedTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.qualifiedTable}${whereClause} ORDER BY _RID LIMIT ${limit}`;
     getLogger().trace('table_read_query', {
       table: this.logicalTable,
       startRid: String(startRid),
@@ -323,7 +324,8 @@ class TagTable {
    * @param {string} logicalTable - 논리 테이블명
    */
   constructor(config, logicalTable) {
-    this.logicalTable = logicalTable;
+    this.qualifiedTable = logicalTable;
+    this.logicalTable = (new MachbaseClient(config)).splitQualifiedTableName(logicalTable).table;
     this.config = config;
     this.client = null;
     /** @type {TableSchema|null} */
@@ -337,7 +339,7 @@ class TagTable {
    * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
    */
   getColumns() {
-    return this.client.selectColumnsByTableName(this.logicalTable);
+    return this.client.selectColumnsByQualifiedTableName(this.qualifiedTable);
   }
 
   /**
@@ -392,7 +394,7 @@ class TagTable {
     this.stream = new MachbaseStream();
     return this.stream.open(
       this.client,
-      this.logicalTable,
+      this.qualifiedTable,
       this.schema.columns.map(c => ({ name: c.name, type: c.sqlType() }))
     );
   }
@@ -421,7 +423,7 @@ class TagTable {
   read() {
     const colNames = this.schema.columns.map(c => c.name);
     const colList = colNames.join(', ');
-    const sql = `SELECT ${colList} FROM ${this.logicalTable}`;
+    const sql = `SELECT ${colList} FROM ${this.qualifiedTable}`;
     try {
       const rows = this.client.query(sql);
       return (rows || []).map(row => {

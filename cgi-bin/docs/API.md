@@ -304,7 +304,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | `POST` | `/api/table/list.js` | 테이블 목록 조회 |
 | `POST` | `/api/table/columns.js` | 테이블 컬럼 정보 조회 |
 
-요청은 아래 두 방식 중 하나를 사용한다.
+요청은 아래 두 방식 중 하나를 사용한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
 
 1. server profile 참조
 
@@ -337,6 +337,9 @@ curl -sS -X POST -H 'Content-Type: application/json' \
     "tableType": "TAG",
     "columns": [
       { "name": "NAME", "type": "VARCHAR(25)", "isPrimary": true, "isBasetime": false, "isSummarized": false, "isMetadata": false }
+    ],
+    "meta": [
+      { "name": "EQPID", "type": "VARCHAR(20)", "isPrimary": false, "isBasetime": false, "isSummarized": false, "isMetadata": true }
     ]
   }
 }

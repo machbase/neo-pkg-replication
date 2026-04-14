@@ -673,7 +673,7 @@ class Handler {
         const normalizedTable = String(logicalTable).toUpperCase();
         client = new MachbaseClient({ ...source, table: normalizedTable });
         client.connect();
-        const tableType = client.selectTableType(normalizedTable).type;
+        const tableType = client.selectTableTypeQualified(normalizedTable).type;
         const seen = {};
         const push = (value) => {
           if (typeof value !== 'string') return;
@@ -1082,7 +1082,7 @@ class Handler {
   /**
    * 지정한 서버/테이블의 컬럼 정보를 조회한다.
    * @param {{ server?: string, host?: string, port?: number|string, user?: string, password?: string, type?: string, table: string }} body
-   * @param {function(Error|null, { table: string, tableType: string, columns: Array }=): void} callback
+   * @param {function(Error|null, { table: string, tableType: string, columns: Array, meta: Array }=): void} callback
    */
   static getTableColumns(body, callback) {
     const { table } = body;
@@ -1098,13 +1098,17 @@ class Handler {
     const client = new MachbaseClient(endpoint);
     try {
       client.connect();
-      const { type: tableType } = client.selectTableType(table.toUpperCase());
+      const qualified = client.splitQualifiedTableName(table);
+      const { type: tableType } = client.selectTableTypeQualified(table.toUpperCase());
       if (tableType === 'UNSUPPORTED') {
         callback(new Error(`table '${table}' not found`));
         return;
       }
-      const rows = client.selectColumnsByTableName(table.toUpperCase());
-      const columns = rows.map(r => {
+      const rows = client.selectColumnsByQualifiedTableName(table.toUpperCase()).filter((r) => {
+        if (tableType !== 'LOG') return true;
+        return r.NAME !== '_ARRIVAL_TIME';
+      });
+      const describe = (r) => {
         const colType = ColumnType.fromCode(r.TYPE);
         const sqlType = colType.ddlType !== null ? colType.ddlType : `VARCHAR(${r.LENGTH})`;
         return {
@@ -1115,8 +1119,15 @@ class Handler {
           isSummarized: !!(r.FLAG & FLAG_SUMMARIZED),
           isMetadata:   !!(r.FLAG & FLAG_METADATA),
         };
+      };
+      const columns = rows.filter((r) => !(r.FLAG & FLAG_METADATA)).map(describe);
+      const meta = rows.filter((r) => !!(r.FLAG & FLAG_METADATA)).map(describe);
+      callback(null, {
+        table: qualified.owner ? `${qualified.owner}.${qualified.table}` : qualified.table,
+        tableType,
+        columns,
+        meta,
       });
-      callback(null, { table: table.toUpperCase(), tableType, columns });
     } catch (err) {
       callback(err);
     } finally {

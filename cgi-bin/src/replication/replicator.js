@@ -52,7 +52,7 @@ class Replicator {
     try {
       sourceClient = new MachbaseClient(this.source);
       sourceClient.connect();
-      const { type: tableType } = sourceClient.selectTableType(this.source.table);
+      const { type: tableType } = sourceClient.selectTableTypeQualified(this.source.table);
       if (tableType === 'UNSUPPORTED') {
         getLogger().error('replicator', { ...this.logCtx, msg: `source table '${this.source.table}' not found` });
         return null;
@@ -92,7 +92,7 @@ class Replicator {
         try {
           srcTable.open();
           dstTable.open();
-          const { type: dstType } = dstTable.client.selectTableType(targetTable);
+          const { type: dstType } = dstTable.client.selectTableTypeQualified(targetTable);
           if (dstType !== 'LOG') {
             getLogger().error('replicator', { ...this.logCtx, msg: `target table '${targetTable}' not found` });
             return null;

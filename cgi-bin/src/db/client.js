@@ -108,12 +108,82 @@ class MachbaseClient {
   }
 
   /**
+   * owner.table 형태를 { owner, table }로 분리한다.
+   * @param {string} tableName
+   * @returns {{ owner: string|null, table: string }}
+   */
+  splitQualifiedTableName(tableName) {
+    const text = String(tableName || '').trim();
+    const dot = text.indexOf('.');
+    if (dot <= 0 || dot >= text.length - 1) {
+      return { owner: null, table: text.toUpperCase() };
+    }
+    return {
+      owner: text.slice(0, dot).trim().toUpperCase(),
+      table: text.slice(dot + 1).trim().toUpperCase(),
+    };
+  }
+
+  /**
+   * owner.table 형태를 포함하여 테이블 기본 정보를 조회한다.
+   * @param {string} tableName
+   * @returns {{ owner: string|null, table: string, id: number|null, type: number|null }}
+   */
+  selectTableInfoQualified(tableName) {
+    const qualified = this.splitQualifiedTableName(tableName);
+    let rows;
+    if (!qualified.owner) {
+      rows = this.query(
+        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ?',
+        [qualified.table]
+      );
+    } else {
+      rows = this.query(
+        `
+        SELECT t.ID, t.TYPE
+        FROM M$SYS_TABLES t
+        JOIN M$SYS_USERS u
+          ON t.USER_ID = u.USER_ID
+        WHERE u.NAME = ?
+          AND t.NAME = ?
+        `.trim(),
+        [qualified.owner, qualified.table]
+      );
+    }
+    if (!rows || rows.length === 0) {
+      return { owner: qualified.owner, table: qualified.table, id: null, type: null };
+    }
+    return {
+      owner: qualified.owner,
+      table: qualified.table,
+      id: rows[0].ID,
+      type: rows[0].TYPE,
+    };
+  }
+
+  /**
+   * owner.table 형태를 포함하여 테이블 타입 조회
+   * @param {string} tableName
+   * @returns {{ type: 'TAG'|'LOG'|'UNSUPPORTED' }}
+   */
+  selectTableTypeQualified(tableName) {
+    const info = this.selectTableInfoQualified(tableName);
+    if (info.type == null) return { type: 'UNSUPPORTED' };
+    switch (info.type) {
+      case 6: return { type: 'TAG' };
+      case 0: return { type: 'LOG' };
+      default: return { type: 'UNSUPPORTED' };
+    }
+  }
+
+  /**
    * TAG 데이터 파티션 목록 조회
    * @param {string} tableName - 논리 테이블명
    * @returns {Array<{ data_table: string }>}
    */
   selectTagDataTables(tableName) {
-    const pattern = `_${tableName}_DATA_%`;
+    const logicalTable = this.splitQualifiedTableName(tableName).table;
+    const pattern = `_${logicalTable}_DATA_%`;
     const sql = `
       SELECT m.NAME AS data_table
       FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m
@@ -171,6 +241,24 @@ class MachbaseClient {
   }
 
   /**
+   * owner.table 형태를 포함하여 M$SYS_COLUMNS 조회
+   * @param {string} tableName
+   * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
+   */
+  selectColumnsByQualifiedTableName(tableName) {
+    const info = this.selectTableInfoQualified(tableName);
+    if (info.id == null) return [];
+    const sql = `
+      SELECT c.NAME, c.TYPE, c.ID, c.LENGTH, c.FLAG
+      FROM M$SYS_COLUMNS c
+      WHERE c.TABLE_ID = ?
+        AND c.ID < 65534
+      ORDER BY c.ID ASC
+    `.trim();
+    return this.query(sql, [info.id]);
+  }
+
+  /**
    * 테이블의 최대 RID 조회
    * @param {string} tableName
    * @returns {bigint} 빈 테이블이면 -1n
@@ -187,7 +275,8 @@ class MachbaseClient {
    * @returns {Array<{ _ID: bigint, name: string }>}
    */
   selectTagNames(logicalTable) {
-    return this.query(`SELECT _ID, name FROM _${logicalTable}_META`);
+    const table = this.splitQualifiedTableName(logicalTable).table;
+    return this.query(`SELECT _ID, name FROM _${table}_META`);
   }
 
   /**
@@ -197,7 +286,8 @@ class MachbaseClient {
    * @returns {{ _ID: bigint, name: string }|null}
    */
   selectTagName(logicalTable, name) {
-    const rows = this.query(`SELECT _ID, name FROM _${logicalTable}_META WHERE NAME = ?`, [name]);
+    const table = this.splitQualifiedTableName(logicalTable).table;
+    const rows = this.query(`SELECT _ID, name FROM _${table}_META WHERE NAME = ?`, [name]);
     return rows?.[0] ?? null;
   }
 
@@ -209,7 +299,8 @@ class MachbaseClient {
    */
   selectTagMeta(logicalTable, metaColNames = []) {
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    return this.query(`SELECT _ID, name${extraCols} FROM _${logicalTable}_META`);
+    const table = this.splitQualifiedTableName(logicalTable).table;
+    return this.query(`SELECT _ID, name${extraCols} FROM _${table}_META`);
   }
 
   /**
@@ -247,8 +338,9 @@ class MachbaseClient {
    */
   selectTagMetaById(logicalTable, tagId, metaColNames = []) {
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
+    const table = this.splitQualifiedTableName(logicalTable).table;
     const rows = this.query(
-      `SELECT _ID, name${extraCols} FROM _${logicalTable}_META WHERE _ID = ?`,
+      `SELECT _ID, name${extraCols} FROM _${table}_META WHERE _ID = ?`,
       [tagId]
     );
     return rows?.[0] ?? null;
