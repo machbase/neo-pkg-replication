@@ -17,6 +17,9 @@ const NUMERIC_TYPES = new Set([
   ColumnType.FLOAT, ColumnType.DOUBLE,
 ]);
 
+const VALID_START_MODES = { full: true, now: true, ridAfter: true };
+const VALID_LOG_LEVELS = { trace: true, debug: true, info: true, warn: true, error: true };
+
 const STRING_LIKE_TYPES = new Set([
   ColumnType.VARCHAR,
   ColumnType.TEXT,
@@ -31,9 +34,100 @@ function _isStringLikeType(code) {
   return STRING_LIKE_TYPES.has(ColumnType.fromCode(code));
 }
 
+function _isVarcharType(code) {
+  return ColumnType.fromCode(code) === ColumnType.VARCHAR;
+}
+
 function _normalizeMappingArray(value, defaultValue) {
   if (!Array.isArray(value)) return defaultValue.slice();
   return value.map((item) => normalizeColumnName(item));
+}
+
+function _parseSafeInteger(value, label, options = {}) {
+  const { min = null, allowNull = false } = options;
+  if (value == null || value === '') {
+    if (allowNull) return null;
+    throw new Error(`${label} is required`);
+  }
+  const num = Number(value);
+  if (!Number.isSafeInteger(num)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  if (min !== null && num < min) {
+    throw new Error(`${label} must be >= ${min}`);
+  }
+  return num;
+}
+
+function _validateRuntimeOptions(storedConfig) {
+  const startMode = storedConfig.startMode == null || storedConfig.startMode === ''
+    ? 'full'
+    : String(storedConfig.startMode).trim();
+  if (!VALID_START_MODES[startMode]) {
+    throw new Error(`startMode '${storedConfig.startMode}' is not supported`);
+  }
+  if (storedConfig.startMode != null && storedConfig.startMode !== '') {
+    storedConfig.startMode = startMode;
+  }
+
+  if (startMode === 'ridAfter') {
+    if (storedConfig.ridAfter == null || storedConfig.ridAfter === '') {
+      throw new Error('ridAfter is required when startMode is ridAfter');
+    }
+    let ridAfter;
+    try {
+      ridAfter = BigInt(storedConfig.ridAfter);
+    } catch (_) {
+      throw new Error('ridAfter must be an integer');
+    }
+    if (ridAfter < 0n) {
+      throw new Error('ridAfter must be >= 0');
+    }
+  }
+
+  if (storedConfig.queryLimit !== undefined) {
+    storedConfig.queryLimit = _parseSafeInteger(storedConfig.queryLimit, 'queryLimit', { min: 1 });
+  }
+  if (storedConfig.pollIntervalMs !== undefined) {
+    storedConfig.pollIntervalMs = _parseSafeInteger(storedConfig.pollIntervalMs, 'pollIntervalMs', { min: 0 });
+  }
+  if (storedConfig.shutdownTimeoutMs !== undefined) {
+    storedConfig.shutdownTimeoutMs = _parseSafeInteger(storedConfig.shutdownTimeoutMs, 'shutdownTimeoutMs', { min: 1 });
+  }
+
+  if (storedConfig.retry !== undefined && storedConfig.retry !== null) {
+    if (!isObject(storedConfig.retry)) {
+      throw new Error('retry must be an object');
+    }
+    const retry = { ...storedConfig.retry };
+    if (retry.maxAttempts !== undefined) {
+      retry.maxAttempts = _parseSafeInteger(retry.maxAttempts, 'retry.maxAttempts', { min: 0, allowNull: true });
+    }
+    if (retry.baseDelayMs !== undefined) {
+      retry.baseDelayMs = _parseSafeInteger(retry.baseDelayMs, 'retry.baseDelayMs', { min: 0 });
+    }
+    if (retry.maxDelayMs !== undefined) {
+      retry.maxDelayMs = _parseSafeInteger(retry.maxDelayMs, 'retry.maxDelayMs', { min: 0 });
+    }
+    const effectiveBaseDelay = retry.baseDelayMs !== undefined ? retry.baseDelayMs : 1000;
+    const effectiveMaxDelay = retry.maxDelayMs !== undefined ? retry.maxDelayMs : 60000;
+    if (effectiveMaxDelay < effectiveBaseDelay) {
+      throw new Error('retry.maxDelayMs must be >= retry.baseDelayMs');
+    }
+    storedConfig.retry = retry;
+  }
+
+  if (storedConfig.logging !== undefined && storedConfig.logging !== null) {
+    if (!isObject(storedConfig.logging)) {
+      throw new Error('logging must be an object');
+    }
+    const logging = { ...storedConfig.logging };
+    if (!VALID_LOG_LEVELS[logging.level]) {
+      throw new Error(`logging.level '${logging.level}' is not supported`);
+    }
+    logging.maxFiles = _parseSafeInteger(logging.maxFiles, 'logging.maxFiles', { min: 1 });
+    storedConfig.logging = logging;
+  }
 }
 
 function _describeTable(client, tableName) {
@@ -160,6 +254,21 @@ function _validateMappedTypes(sourceMapping, targetMapping, sourceByName, target
   }
 }
 
+function _validateTagPrimaryMapping(sourceInfo, targetInfo, sourceMapping, targetMapping) {
+  if (sourceInfo.tableType !== 'TAG') return;
+  const sourcePrimaryName = sourceInfo.primaryColumn ? sourceInfo.primaryColumn.NAME : null;
+  const targetPrimaryName = targetInfo.primaryColumn ? targetInfo.primaryColumn.NAME : null;
+  if (!sourcePrimaryName || !targetPrimaryName) return;
+
+  const targetPrimaryIndex = targetMapping.findIndex((name) => name === targetPrimaryName);
+  if (targetPrimaryIndex < 0) {
+    throw new Error(`target.columns must include TAG PRIMARY KEY column '${targetPrimaryName}'`);
+  }
+  if (sourceMapping[targetPrimaryIndex] !== sourcePrimaryName) {
+    throw new Error(`target PRIMARY KEY column '${targetPrimaryName}' must map from source PRIMARY KEY column '${sourcePrimaryName}'`);
+  }
+}
+
 function _validateCondition(condition, sourceInfo, label) {
   if (!condition) return null;
 
@@ -268,6 +377,9 @@ function _validateTransformRules(transform, sourceInfo) {
       if ((hasMin && !Number.isFinite(normalizedItem.min)) || (hasMax && !Number.isFinite(normalizedItem.max))) {
         throw new Error(`source.transform[${i}].expr[${j}] filter min/max must be numeric`);
       }
+      if (hasMin && hasMax && normalizedItem.min > normalizedItem.max) {
+        throw new Error(`source.transform[${i}].expr[${j}] filter min must be <= max`);
+      }
       normalizedExpr.push(normalizedItem);
     }
 
@@ -277,9 +389,51 @@ function _validateTransformRules(transform, sourceInfo) {
   return normalized.length > 0 ? normalized : null;
 }
 
+function _collectStringGrowthByColumn(transform) {
+  const growthByColumn = {};
+  for (const rule of (transform || [])) {
+    for (const item of (rule.expr || [])) {
+      if (item.type !== 'prefix' && item.type !== 'suffix') continue;
+      const len = String(item.value || '').length;
+      if (!len) continue;
+      growthByColumn[item.column] = (growthByColumn[item.column] || 0) + len;
+    }
+  }
+  return growthByColumn;
+}
+
+function _collectVarcharOverflowNames(sourceMapping, targetMapping, sourceByName, targetByName, stringGrowthByColumn) {
+  const seen = {};
+  const result = [];
+  for (let i = 0; i < targetMapping.length; i++) {
+    const sourceName = sourceMapping[i];
+    const targetName = targetMapping[i];
+    if (!sourceName || !targetName) continue;
+    const sourceColumn = sourceByName[sourceName];
+    const targetColumn = targetByName[targetName];
+    if (!sourceColumn || !targetColumn) continue;
+    if (!_isVarcharType(sourceColumn.TYPE) || !_isVarcharType(targetColumn.TYPE)) continue;
+
+    const sourceLength = Number(sourceColumn.LENGTH);
+    const targetLength = Number(targetColumn.LENGTH);
+    if (!Number.isFinite(sourceLength) || !Number.isFinite(targetLength) || sourceLength <= 0 || targetLength <= 0) continue;
+
+    const extraLength = stringGrowthByColumn && stringGrowthByColumn[sourceName]
+      ? stringGrowthByColumn[sourceName]
+      : 0;
+    if ((sourceLength + extraLength) > targetLength && !seen[targetName]) {
+      seen[targetName] = true;
+      result.push(targetName);
+    }
+  }
+  return result;
+}
+
 function prepareReplicatorConfig(config, readServerProfile) {
   const storedConfig = normalizeReplicatorConfigForSave(config);
+  _validateRuntimeOptions(storedConfig);
   const runtimeConfig = resolveReplicatorRuntimeConfig(storedConfig, readServerProfile);
+  const warnings = [];
 
   if (!runtimeConfig.source || !runtimeConfig.target) {
     throw new Error('source/target config is required');
@@ -327,6 +481,29 @@ function prepareReplicatorConfig(config, readServerProfile) {
 
     const repTargetCond = _validateCondition(storedConfig.source.rep_target_cond, sourceInfo, 'source.rep_target_cond');
     const transform = _validateTransformRules(storedConfig.source.transform, sourceInfo);
+    _validateTagPrimaryMapping(sourceInfo, targetInfo, sourceColumns, targetColumns);
+
+    const stringGrowthByColumn = _collectStringGrowthByColumn(transform);
+    const dataOverflowNames = _collectVarcharOverflowNames(
+      sourceColumns,
+      targetColumns,
+      sourceInfo.dataByName,
+      targetInfo.dataByName,
+      stringGrowthByColumn
+    );
+    if (dataOverflowNames.length > 0) {
+      warnings.push(`VARCHAR length may overflow in target.columns: ${dataOverflowNames.join(', ')}`);
+    }
+    const metaOverflowNames = _collectVarcharOverflowNames(
+      sourceMeta,
+      targetMeta,
+      sourceInfo.metaByName,
+      targetInfo.metaByName,
+      null
+    );
+    if (metaOverflowNames.length > 0) {
+      warnings.push(`VARCHAR length may overflow in target.meta: ${metaOverflowNames.join(', ')}`);
+    }
 
     storedConfig.source.columns = sourceColumns;
     storedConfig.target.columns = targetColumns;
@@ -352,6 +529,7 @@ function prepareReplicatorConfig(config, readServerProfile) {
       runtimeConfig,
       sourceInfo,
       targetInfo,
+      warnings,
     };
   } finally {
     try { sourceClient && sourceClient.close(); } catch (_) {}

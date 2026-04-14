@@ -210,7 +210,7 @@ class Handler {
   /**
    * 저장/실행용 replication config를 준비하고 검증한다.
    * @param {object} config
-   * @returns {{ storedConfig: object, runtimeConfig: object, sourceInfo: object, targetInfo: object }}
+   * @returns {{ storedConfig: object, runtimeConfig: object, sourceInfo: object, targetInfo: object, warnings: string[] }}
    */
   static prepareReplicatorConfig(config) {
     return prepareReplicatorConfig(config, (serverName) => Handler.getServerConfig(serverName));
@@ -922,6 +922,7 @@ class Handler {
           metaColumns: prepared.targetInfo.metaColumns.map((column) => column.NAME),
         },
         normalized: sanitizeReplicatorConfig(prepared.storedConfig),
+        warnings: Array.isArray(prepared.warnings) ? prepared.warnings.slice() : [],
       });
     } catch (err) {
       callback(err);

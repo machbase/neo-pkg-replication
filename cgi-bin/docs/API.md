@@ -290,8 +290,10 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 ### `POST /api/rc/dryrun.js`
 
 - body는 `config` 또는 `{ "config": ... }` 둘 다 허용한다.
-- 실제 저장/설치 없이 DB 연결, 테이블 존재, columns/meta 길이/타입, filter/transform 구조를 검증한다.
-- 응답에는 정규화된 config와 source/target schema 요약이 포함된다.
+- 실제 저장/설치 없이 DB 연결, 테이블 존재, columns/meta 길이/타입, `startMode`/`ridAfter`, 수치 설정 범위, filter/transform 구조를 검증한다.
+- TAG 테이블에서는 `target.columns` 의 PRIMARY KEY 슬롯이 반드시 source PRIMARY KEY 컬럼에 매핑되는지 추가로 검증한다.
+- `VARCHAR` 길이 초과 가능성은 오류가 아니라 warning으로 반환한다.
+- 응답에는 정규화된 config, source/target schema 요약, `warnings` 배열이 포함된다.
 
 ## Table Columns API
 
