@@ -1123,6 +1123,36 @@ class Handler {
       client.close();
     }
   }
+
+  /**
+   * 지정한 서버에서 일반 사용자가 보는 TAG/LOG 논리 테이블 목록을 조회한다.
+   * @param {{ server?: string, host?: string, port?: number|string, user?: string, password?: string, type?: string }} body
+   * @param {function(Error|null, { tables: Array }=): void} callback
+   */
+  static getTableList(body, callback) {
+    let endpoint;
+    try {
+      endpoint = resolveEndpointConnection(body || {}, (serverName) => Handler.getServerConfig(serverName), 'server');
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    const client = new MachbaseClient(endpoint);
+    try {
+      client.connect();
+      const tables = client.selectVisibleTables().map((row) => ({
+        name: row.TABLE_NAME,
+        tableType: row.TABLE_TYPE === 6 ? 'TAG' : 'LOG',
+        owner: row.OWNER || '',
+      }));
+      callback(null, { tables });
+    } catch (err) {
+      callback(err);
+    } finally {
+      client.close();
+    }
+  }
 }
 
 module.exports = Handler;

@@ -137,6 +137,24 @@ class MachbaseClient {
   }
 
   /**
+   * 사용자 관점의 논리 테이블 목록 조회 (TAG/LOG + owner)
+   * @returns {Array<{ TABLE_NAME: string, TABLE_TYPE: number, OWNER: string|null }>}
+   */
+  selectVisibleTables() {
+    const sql = `
+      SELECT t.NAME AS TABLE_NAME,
+             t.TYPE AS TABLE_TYPE,
+             u.NAME AS OWNER
+      FROM M$SYS_TABLES t
+      LEFT JOIN M$SYS_USERS u
+        ON t.USER_ID = u.USER_ID
+      WHERE t.TYPE IN (0, 6)
+      ORDER BY t.NAME
+    `.trim();
+    return this.query(sql);
+  }
+
+  /**
    * 테이블명 기준으로 M$SYS_COLUMNS 조회
    * @param {string} tableName
    * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
