@@ -176,12 +176,13 @@ class LogTable {
       logicalTable: this.logicalTable,
       primaryColumnName: null,
     });
+    const hintEndRid = endRid + 1n;
     const colList = ['_RID', ...colNames].join(', ');
     const where = [`_RID >= ${startRid}`, `_RID <= ${endRid}`];
     if (filterSql.sql !== '1=1') {
       where.push(filterSql.sql);
     }
-    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.logicalTable} WHERE ${where.join(' AND ')} ORDER BY _RID LIMIT ${limit}`;
+    const sql = `SELECT /*+ RID_RANGE(${this.logicalTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.logicalTable} WHERE ${where.join(' AND ')} ORDER BY _RID LIMIT ${limit}`;
     try {
       const sqlRows = this.client.query(sql, filterSql.params) || [];
       const result = [];
@@ -612,12 +613,13 @@ class TagDataTable {
       primaryColumnName: keyColName,
     });
 
+    const hintEndRid = endRid + 1n;
     const colList = ['_RID', ...colNames].join(', ');
     const where = [`_RID >= ${startRid}`, `_RID <= ${endRid}`];
     if (filterSql.sql !== '1=1') {
       where.push(filterSql.sql);
     }
-    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${endRid}) */ ${colList} FROM ${this.dataTable} WHERE ${where.join(' AND ')} ORDER BY _RID LIMIT ${limit}`;
+    const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.dataTable} WHERE ${where.join(' AND ')} ORDER BY _RID LIMIT ${limit}`;
     try {
       const sqlRows = this.client.query(sql, filterSql.params) || [];
       const result = [];
