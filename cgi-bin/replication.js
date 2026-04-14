@@ -23,22 +23,25 @@ const ROOT = path.resolve(path.dirname(process.argv[1]));
 
 const { init: initLogger, getInstance: getLogger } = require(path.join(ROOT, 'src', 'lib', 'logger.js'));
 const { Replicator } = require(path.join(ROOT, 'src', 'replication', 'replicator.js'));
-const { CONF_DIR, DATA_DIR } = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
+const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
+const { CONF_DIR, DATA_DIR } = Handler;
 
 fs.mkdirSync(CONF_DIR, { recursive: true });
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const configName = process.argv[2];
 if (!configName) {
-  getLogger().error('app', { msg: 'config name is required: replication.js <name>' });
+  getLogger().error('app', { stdout: true, msg: 'config name is required: replication.js <name>' });
   process.exit(1);
 }
 
 const configPath = path.join(CONF_DIR, `${configName}.json`);
 
 try {
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  initLogger(config.logging);
+  const storedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  initLogger(storedConfig.logging);
+  const prepared = Handler.prepareReplicatorConfig(storedConfig);
+  const config = prepared.runtimeConfig;
 
   const pidFile = path.join(ROOT, `${configName}.pid`);
   fs.mkdirSync(path.dirname(pidFile), { recursive: true });
@@ -49,17 +52,17 @@ try {
 
   process.addShutdownHook(() => {
     try { fs.unlinkSync(pidFile); } catch (_) {}
-    try { getLogger().info('app', { msg: 'shutdown requested' }); } catch (_) {}
+    try { getLogger().info('app', { stdout: true, msg: 'shutdown requested' }); } catch (_) {}
     replicator.shutdown();
   });
 
   replicator.start().then(() => {
     process.exit(0);
   }).catch(err => {
-    getLogger().error('app', { msg: err.message });
+    getLogger().error('app', { stdout: true, msg: err.message });
     process.exit(1);
   });
 } catch (err) {
-  getLogger().error('app', { msg: err.message });
+  getLogger().error('app', { stdout: true, msg: err.message });
   process.exit(1);
 }

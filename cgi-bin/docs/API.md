@@ -1,610 +1,383 @@
-# repli-js CGI API 명세
+# neo-pkg-replication CGI API
 
-## 접근 방식
+## 개요
 
-CGI 파일을 machbase-neo jsh로 직접 실행한다.
-각 CGI 파일은 `conf.d/` 디렉토리를 직접 읽고 쓴다.
-`api/rc*.js` 는 Machbase Neo JSH `service` 모듈을 통해 replication service를 등록/제어한다.
+- CGI 경로 기준 루트: `127.0.0.1:5654/public/neo-pkg-replication/cgi-bin`
+- 설정 파일:
+  - replication: `conf.d/{name}.json`
+  - server profile: `conf.d/server/{name}.json`
+- service name은 API name 앞에 `"_rpl_"` 를 붙여 사용한다.
+- `POST /api/rc` 는 config 저장 후 service `install` 까지 수행한다.
+- `PUT /api/rc` 는 config 저장 후 service가 실행 중일 때만 `stop -> start` 한다.
+- `DELETE /api/rc` 는 service `uninstall` 후 config, pid, checkpoint/data를 정리한다.
 
-요청 본문은 `process.stdin.read()`로 읽는다 (`/dev/stdin` 미지원).
-
-### service 연동 관련 주의
-
-- `GET /cgi-bin/api/rc/list` 는 `conf.d/*.json` 전체를 반환하고, 각 항목에 service install 여부를 `installed` 로 함께 표시한다.
-- `POST /cgi-bin/api/rc` 는 config 저장 후 service `install` 까지 수행한다. 저장 전 source/target 컬럼을 "순서 기준"으로 타입 검증한다.
-- `POST /cgi-bin/api/rc/install?name=...` 는 이미 저장된 `conf.d/{name}.json` 기준으로 service만 install 한다.
-- `PUT /cgi-bin/api/rc` 는 config 저장 후, service가 실행 중이면 `stop -> start` 로 재적용한다. `source.password`/`target.password` 키가 없거나 빈 문자열(`""`)인 항목은 기존 값을 유지한다. 저장 전 컬럼 순서/타입 검증을 동일하게 수행한다.
-- `DELETE /cgi-bin/api/rc` 는 service `uninstall` 후 config, pid, checkpoint 파일을 함께 정리한다. service가 이미 없더라도 남은 설정 파일 정리는 계속 시도한다. 로그 파일은 유지한다.
-- 직접 JSH로 service 관련 CGI를 테스트할 때는 `/etc` mount 와 `SERVICE_CONTROLLER` 환경값이 필요할 수 있다.
-- `logging.file.directory` 에 `${CWD}` 를 쓰면 `cgi-bin` 의 부모 경로, 즉 패키지 루트로 치환된다.
-- `source.table`/`target.table` 은 저장 시 대문자로 정규화된다.
-- 내부적으로 실제 Machbase Neo service name은 API의 `name` 앞에 `"_rpl_"` 를 붙여 사용한다. 예: `name="test4"` -> service name `"_rpl_test4"`
-
-### jsh 직접 실행 (테스트용)
-
-```bash
-# 실행 위치: machbase-neo 설치 디렉토리
-# neo-pkg-replication은 public/ 하위에 위치해야 함
-# 주의: -e 플래그는 반드시 스크립트 파일 앞에 위치해야 함
-
-# GET 목록
-./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e REQUEST_METHOD=GET /public/neo-pkg-replication/cgi-bin/api/rc/list.js
-
-# GET 단건
-./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=GET -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
-
-# POST 등록
-echo '{"name":"repli-a","config":{"id":"repli-a","source":{"host":"192.168.1.10","port":5656,"user":"SYS","password":"MANAGER","table":"TAG","columns":null,"filter":null,"transform":null},"target":{"host":"192.168.1.20","port":5656,"user":"SYS","password":"MANAGER","table":"TAG_COPY","autoCreate":true},"startMode":"now","ridAfter":null,"metaSync":false,"pollIntervalMs":1000,"queryLimit":5000,"ridRangeSize":50000,"shutdownTimeoutMs":30000,"onSaveFailure":"continue","integrity":null,"retry":null}}' | \
-  ./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST /public/neo-pkg-replication/cgi-bin/api/rc.js
-
-# PUT 수정
-echo '{"id":"repli-a","source":{"host":"192.168.1.10","port":5656,"user":"SYS","password":"MANAGER","table":"TAG","columns":null,"filter":null,"transform":null},"target":{"host":"192.168.1.20","port":5656,"user":"SYS","password":"MANAGER","table":"TAG_COPY","autoCreate":true},"startMode":"now","ridAfter":null,"metaSync":false,"pollIntervalMs":2000,"queryLimit":5000,"ridRangeSize":50000,"shutdownTimeoutMs":30000,"onSaveFailure":"continue","integrity":null,"retry":null}' | \
-  ./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=PUT -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
-
-# DELETE 삭제
-./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=DELETE -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc.js
-
-# POST 시작
-./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/start.js
-
-# POST 종료
-./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/stop.js
-
-# POST install (기존 config 기준 service 등록)
-./machbase-neo jsh -v /public=$(pwd)/public -v /etc=$(pwd)/etc -e SERVICE_CONTROLLER=${SERVICE_CONTROLLER} -e REQUEST_METHOD=POST -e QUERY_STRING=name=repli-a /public/neo-pkg-replication/cgi-bin/api/rc/install.js
-
-# POST 테이블 컬럼 정보 조회
-echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":"TAG"}' | \
-  ./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=POST /public/neo-pkg-replication/cgi-bin/api/table/columns.js
-```
-
-### CGI 파일 목록
-
-| CGI 파일 | 메서드 | 설명 |
-|----------|--------|------|
-| `api/rc/list.js` | GET | replication config 목록 조회 (`installed`, `running` 포함) |
-| `api/rc.js` | POST, GET, PUT, DELETE | 등록(service install) / 단건 조회 / 수정(실행 중이면 재시작) / 제거(service uninstall + 관련 파일 정리) |
-| `api/rc/install.js?name=xxx` | POST | 기존 config 기준 service install |
-| `api/rc/start.js?name=xxx` | POST | service 시작 |
-| `api/rc/stop.js?name=xxx` | POST | service 종료 |
-| `api/table/columns.js` | POST | 테이블 컬럼 정보 조회 |
-
----
-
-## 공통 응답 구조
+## 공통 응답
 
 ```json
 {
-  "ok":     true | false,
-  "reason": "<오류 메시지>",
-  "data":   "<object | array>"
+  "ok": true,
+  "data": {}
 }
 ```
 
-| 필드 | 설명 |
-|------|------|
-| `ok` | `true` (성공) / `false` (실패) |
-| `reason` | 실패 시 오류 메시지, 성공 시 생략 |
-| `data` | 성공 시 응답 데이터, 없으면 생략 |
+실패 시:
 
----
+```json
+{
+  "ok": false,
+  "reason": "error message"
+}
+```
+
+## Server Profile
+
+### 저장 위치
+
+- `conf.d/server/{name}.json`
+
+### 필드
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `name` | string | ✓ | profile 이름 |
+| `host` | string | ✓ | DB host |
+| `port` | number | ✓ | DB port |
+| `user` | string | ✓ | DB user |
+| `password` | string | | DB password |
+| `type` | string | | 현재는 `"native"`만 지원 |
+
+### 규칙
+
+- `GET` 응답에는 `password`를 포함하지 않는다.
+- `PUT`에서 `password`가 없거나 `null` 또는 `""` 이면 기존 password를 유지한다.
+- 다른 replication config가 참조 중인 server profile은 `DELETE` 할 수 없다.
+
+### 엔드포인트
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `GET` | `/api/server/list.js` | server profile 목록 |
+| `POST` | `/api/server.js` | server profile 생성 |
+| `GET` | `/api/server.js?name=...` | server profile 단건 조회 |
+| `PUT` | `/api/server.js?name=...` | server profile 수정 |
+| `DELETE` | `/api/server.js?name=...` | server profile 삭제 |
+
+### 예시
+
+```bash
+curl -sS -X POST -H 'Content-Type: application/json' \
+  --data '{"name":"local","host":"127.0.0.1","port":5656,"user":"SYS","password":"manager","type":"native"}' \
+  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
+```
 
 ## ReplicatorConfig
 
-| 필드 | 타입 | 필수 | 기본값 | 설명 |
-|------|------|------|--------|------|
-| `id` | string \| null | | `"{source.table}_{target.table}"` | replicator 고유 ID. 미설정 시 자동 생성. |
-| `logging` | object | | — | 로깅 설정 (LoggingConfig 참조) |
-| `source` | object | ✓ | — | 소스 DB + 테이블 설정 |
-| `source.host` | string | ✓ | — | 소스 DB 호스트 |
-| `source.port` | number | ✓ | — | 소스 DB 포트 |
-| `source.user` | string | ✓ | — | 소스 DB 사용자명 |
-| `source.password` | string | ✓ | — | 소스 DB 비밀번호 |
-| `source.table` | string | ✓ | — | 원본 테이블명 |
-| `source.columns` | string[] \| null | | null | SELECT 컬럼 목록 (null=전체). 배열 지정 시 source 컬럼 순서를 target 데이터 컬럼 순서에 맞춰야 하며, TAG는 key(PRIMARY)와 base time(BASETIME) 컬럼을 반드시 포함해야 한다. |
-| `source.filter` | object[] \| null | | null | 복제 필터 목록 (FilterRule 참조) |
-| `source.transform` | object[] \| null | | null | read 후 값 변환 목록 (TransformRule 참조) |
-| `target` | object | ✓ | — | 대상 DB + 테이블 설정 |
-| `target.host` | string | ✓ | — | 대상 DB 호스트 |
-| `target.port` | number | ✓ | — | 대상 DB 포트 |
-| `target.user` | string | ✓ | — | 대상 DB 사용자명 |
-| `target.password` | string | ✓ | — | 대상 DB 비밀번호 |
-| `target.table` | string | | — | 대상 테이블명. 비어 있으면 `source.table` 을 사용한다. |
-| `target.autoCreate` | boolean | | false | 대상 테이블 미존재 시 src 스키마로 자동 생성. 등록 시점에도 target 테이블이 없어도 허용된다. |
-| `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
-| `ridAfter` | number \| null | | null | `startMode: "ridAfter"` 시 기준 RID |
-| `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |
-| `queryLimit` | number | | 5000 | 배치당 최대 레코드 수 |
-| `ridRangeSize` | number | | 50000 | RID 범위 힌트 크기 |
-| `shutdownTimeoutMs` | number | | 30000 | 종료 대기 타임아웃 (ms) |
-| `onSaveFailure` | string | | `"continue"` | `"continue"` \| `"abort"` |
-| `integrity` | boolean \| null | | null | `false`=비활성화, 그 외=활성화 |
-| `retry` | object \| null | | null | RetryConfig 참조 |
+### 상위 필드
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | string | 미지정 시 `{source.table}_{target.table}` |
+| `source` | object | source endpoint + mapping + filter/transform |
+| `target` | object | target endpoint + mapping |
+| `startMode` | string | `"full"` \| `"now"` \| `"ridAfter"` |
+| `ridAfter` | number \| null | `startMode: "ridAfter"` 에서 사용 |
+| `queryLimit` | number | batch 크기 |
+| `pollIntervalMs` | number | idle poll 주기 |
+| `shutdownTimeoutMs` | number | shutdown timeout |
+| `onSaveFailure` | string | `"continue"` \| `"abort"` |
+| `integrity` | boolean \| null | TAG 재기동 integrity check 사용 여부 |
+| `retry` | object \| null | 재시도 설정 |
+| `logging` | object | 로그 설정 |
+
+### EndpointConfig
+
+`source`, `target` 공통 필드.
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `server` | string | 권장 | `conf.d/server/{name}.json` 참조 |
+| `host` | string | legacy | inline 접속정보. `server`가 없을 때만 사용 |
+| `port` | number | legacy | inline 접속정보 |
+| `user` | string | legacy | inline 접속정보 |
+| `password` | string | legacy | inline 접속정보 |
+| `type` | string | legacy | 현재 `"native"`만 지원 |
+| `table` | string | ✓ | 테이블명, 저장 시 대문자 정규화 |
+| `columns` | array | ✓ | data column mapping |
+| `meta` | array | ✓ | metadata column mapping, LOG는 보통 `[]` |
+
+### Column Mapping 규칙
+
+- `source.columns.length === target.columns.length`
+- `source.meta.length === target.meta.length`
+- `target.columns` 의 non-null 항목은 target 실제 data column 순서와 정확히 같아야 한다.
+- `target.meta` 의 non-null 항목은 target 실제 metadata column 순서와 정확히 같아야 한다.
+- trailing `null` 은 길이 맞춤용 padding 으로 허용된다.
+- `source.columns` / `source.meta` 의 `null` 또는 `""` 는 해당 target slot에 `null` 값을 넣는다.
+- 타입은 위치 기준으로 비교한다.
+- 숫자 타입끼리는 상호 호환한다.
+- TAG target key(PRIMARY) / base time(BASETIME) slot은 source mapping이 반드시 있어야 한다.
+
+### Source Filtering / Transform
+
+#### `source.rep_target_cond`
+
+```json
+{ "column": "NAME", "op": "IN", "value": ["A", "B"] }
+```
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `column` | string \| null | `ALL`이 아니면 필수 |
+| `op` | string | `ALL` \| `IN` \| `LIKE` |
+| `value` | array | `IN`, `LIKE` 에서 사용 |
+
+규칙:
+
+- TAG에서는 `column` 이 PRIMARY KEY 컬럼이어야 한다.
+- `ALL` 은 전체를 의미한다.
+- `IN` 은 `value` 배열 중 하나와 일치.
+- `LIKE` 는 `value[0]` 을 SQL `LIKE` 로 사용한다.
+- TAG에서 name filter는 prefix/suffix 적용 전 원본 tag name 기준으로 평가된다.
+
+#### `source.transform`
+
+```json
+[
+  {
+    "criteria": { "op": "ALL", "value": [] },
+    "expr": [
+      { "column": "NAME", "type": "prefix", "value": "SRC1." }
+    ]
+  }
+]
+```
+
+`criteria` 와 `rep_target_cond` 는 같은 형식이다.
+
+`expr.type`:
+
+| type | 설명 |
+|------|------|
+| `prefix` | 문자열 앞에 추가 |
+| `suffix` | 문자열 뒤에 추가 |
+| `calc` | `(value + bias) * multiplier` |
+| `filter` | `value < min` 또는 `value > max` 인 row 제외 |
+
+규칙:
+
+- `prefix` / `suffix` 는 string-like 컬럼에만 허용된다.
+- `calc` / `filter` 는 numeric 컬럼에만 허용된다.
+- `filter` 는 query 단계에서 SQL WHERE로 내려간다.
+- `prefix` / `suffix` / `calc` 는 read 후 메모리에서 적용된다.
+- transform criteria는 원본 source row 값을 기준으로 판단하고, expr 적용은 순서대로 누적된다.
+- legacy `surfix`, `multplier`, `add`, 기존 `filter`/구형 `transform` 형식도 입력 시 새 형식으로 정규화한다.
 
 ### RetryConfig
 
-| 필드 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| `maxAttempts` | number | 5 | 최대 재시도 횟수 |
-| `baseDelayMs` | number | 100 | 초기 재시도 지연 (ms) |
-| `maxDelayMs` | number | 30000 | 최대 재시도 지연 (ms) |
+| 필드 | 타입 | 기본값 |
+|------|------|--------|
+| `maxAttempts` | number | `5` |
+| `baseDelayMs` | number | `100` |
+| `maxDelayMs` | number | `30000` |
 
 ### LoggingConfig
 
 | 필드 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
-| `level` | string | `"info"` | `"trace"` \| `"debug"` \| `"info"` \| `"warn"` \| `"error"` |
-| `stdout` | boolean | true | 표준 출력 여부 |
-| `file.enabled` | boolean | false | 파일 출력 여부 |
-| `file.directory` | string | `"/work/logs"` | 로그 파일 디렉토리 (절대경로). `${CWD}` 사용 시 `cgi-bin` 부모 경로로 치환 |
+| `level` | string | `"info"` | `trace/debug/info/warn/error` |
+| `maxFiles` | number | `10` | 10MB rotation file count |
 
-### FilterRule
+현재 구현:
 
-`source.filter` 배열의 각 항목. 조건을 모두 AND로 평가하며, 하나라도 불통과하면 해당 행은 복제하지 않는다.
+- 모든 로그 파일 경로는 `/work/public/logs/neo-pkg-replication`
+- 파일당 최대 크기 10MB
+- `stdout:true` 로 기록한 service lifecycle 로그는 stdout에도 함께 출력
+- `logging.level` 이 `trace` 이면 source data read에 사용하는 SQL과 바인딩 파라미터를 로그에 남긴다.
 
-| 필드 | 타입 | 적용 대상 | 설명 |
-|------|------|-----------|------|
-| `column` | string | 모두 | 필터를 적용할 컬럼명 |
-| `in` | string[] | NAME, VARCHAR, TEXT | 허용할 값 목록. 목록에 없으면 해당 행 제외. |
-| `like` | string | NAME, VARCHAR, TEXT | SQL LIKE 패턴 (`%`=0개 이상 임의 문자, `_`=임의 1개 문자). 대소문자 무시. |
-| `min` | number | 숫자 컬럼 (SHORT/INTEGER/LONG/FLOAT/DOUBLE) | 이 값 미만이면 해당 행 제외 (inclusive: `value >= min`) |
-| `max` | number | 숫자 컬럼 (SHORT/INTEGER/LONG/FLOAT/DOUBLE) | 이 값 초과이면 해당 행 제외 (inclusive: `value <= max`) |
+## Replication API
 
-> - 숫자 컬럼에는 `min` / `max` 만 적용된다. `in` / `like` 는 무시된다.
-> - `NAME` 컬럼에는 `in` / `like` 만 적용된다. `min` / `max` 는 무시된다.
-> - TAG `NAME` 필터는 원본 tag name 기준으로 먼저 검사된다. `prefix` / `suffix` 는 filter 통과 후 대상에 기록할 때만 적용된다.
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `GET` | `/api/rc/list.js` | replication 목록 (`installed`, `running`) |
+| `POST` | `/api/rc.js` | replication 생성 + service install |
+| `GET` | `/api/rc.js?name=...` | replication 단건 조회 + checkpoint |
+| `PUT` | `/api/rc.js?name=...` | replication 수정 |
+| `DELETE` | `/api/rc.js?name=...` | replication 삭제 + cleanup |
+| `POST` | `/api/rc/install.js?name=...` | 기존 config 기준 service install |
+| `POST` | `/api/rc/start.js?name=...` | service start |
+| `POST` | `/api/rc/stop.js?name=...` | service stop |
+| `POST` | `/api/rc/dryrun.js` | config dry-run validation |
 
-**예시**
-```json
-"filter": [
-  { "column": "NAME", "like": "sensor_%" },
-  { "column": "VALUE", "min": 0, "max": 100 },
-  { "column": "STATUS", "in": ["active", "idle"] }
-]
-```
+### `GET /api/rc/list.js`
 
-### TransformRule
+응답 예시:
 
-`source.transform` 배열의 각 항목. read 후 대상 DB에 쓰기 직전에 값을 변환한다.
-
-| 필드 | 타입 | 적용 대상 | 설명 |
-|------|------|-----------|------|
-| `column` | string | 모두 | 변환을 적용할 컬럼명 |
-| `add` | number | 숫자 컬럼 | 더할 값. 수식: `(value + add) * multiply` |
-| `multiply` | number | 숫자 컬럼 | 곱할 값. 수식: `(value + add) * multiply` |
-| `prefix` | string | NAME(논리 key) 컬럼 | tag name 앞에 붙일 문자열 |
-| `suffix` | string | NAME(논리 key) 컬럼 | tag name 뒤에 붙일 문자열 |
-
-> `add` / `multiply` 는 숫자 타입 컬럼에만 적용된다. `BigInt`, `null`, 문자열은 변환하지 않는다.  
-> `prefix` / `suffix` 는 TAG key(논리 `NAME`)에만 적용된다. 물리 컬럼명은 테이블마다 다를 수 있다.
-> TAG `NAME` filter(`in`, `like`)는 `prefix` / `suffix` 적용 전 원본 이름 기준으로 평가된다.
-> 연산 순서는 `add` 후 `multiply` 이다. 즉 `(value + add) * multiply` 로 고정된다.
-> `bias` 키는 지원하지 않는다. 프론트엔드에서 `bias` 용어를 쓰는 경우 API 요청에서는 `add`로 매핑해서 보내야 한다.
-
-**예시**
-```json
-"transform": [
-  { "column": "VALUE", "add": 0, "multiply": 1.5 },
-  { "column": "NAME", "prefix": "copy_", "suffix": "" }
-]
-```
-
----
-
-## 엔드포인트
-
-### GET /cgi-bin/api/rc/list
-
-현재 저장된 replicator config 목록 조회. install 여부와 실행 여부를 함께 반환한다.
-
-**응답**
 ```json
 {
   "ok": true,
   "data": [
-    {
-      "name": "repli-a",
-      "installed": true,
-      "running": false
-    }
+    { "name": "repli-a", "installed": true, "running": false }
   ]
 }
 ```
 
-| 필드 | 설명 |
-|------|------|
-| `name` | replicator 이름 |
-| `installed` | service install 여부 |
-| `running` | service 실행 중 여부 |
+### `GET /api/rc.js?name=...`
 
----
+응답 예시:
 
-### POST /cgi-bin/api/rc
-
-새 replicator 등록. `conf.d/{name}.json` 저장 후 service `install` 까지 수행한다.
-저장 전에 source/target 데이터 컬럼을 순서 기준으로 매칭하여 타입을 검사한다.
-- `source.columns` 지정 시: 지정 배열 순서로 source 타입을 비교
-- `source.columns` 미지정 시: source 테이블의 물리 컬럼 순서를 사용
-- target 테이블이 없고 `target.autoCreate=true`인 경우: target 컬럼 순서를 source 테이블 순서로 간주해 검증
-
-**요청 파라미터**
-
-| 필드 | 필수 | 설명 |
-|------|------|------|
-| `name` | ✓ | replicator 이름 |
-| `config` | ✓ | ReplicatorConfig |
-
-**요청 본문**
-```json
-{
-  "name": "repli-a",
-  "config": {
-    "id": "repli-a",
-    "logging": {
-      "level": "info",
-      "stdout": true,
-      "file": { "enabled": false, "directory": "/work/logs" }
-    },
-    "source": {
-      "host": "192.168.1.10",
-      "port": 5656,
-      "user": "SYS",
-      "password": "MANAGER",
-      "table": "TAG",
-      "columns": ["NAME", "TIME", "VALUE"],
-      "filter": [
-        { "column": "NAME", "like": "sensor_%" },
-        { "column": "VALUE", "min": 0, "max": 100 }
-      ],
-      "transform": [
-        { "column": "VALUE", "add": 0, "multiply": 1.5 },
-        { "column": "NAME", "prefix": "copy_", "suffix": "" }
-      ]
-    },
-    "target": {
-      "host": "192.168.1.20",
-      "port": 5656,
-      "user": "SYS",
-      "password": "MANAGER",
-      "table": "TAG_COPY",
-      "autoCreate": true
-    },
-    "startMode": "now",
-    "ridAfter": null,
-    "metaSync": false,
-    "pollIntervalMs": 1000,
-    "queryLimit": 5000,
-    "ridRangeSize": 50000,
-    "shutdownTimeoutMs": 30000,
-    "onSaveFailure": "continue",
-    "integrity": null,
-    "retry": null
-  }
-}
-```
-
-**응답**
-```json
-{ "ok": true, "data": { "name": "repli-a" } }
-```
-
-**실패**
-```json
-{ "ok": false, "reason": "name is required" }
-```
-
-```json
-{ "ok": false, "reason": "config is required" }
-```
-
-```json
-{ "ok": false, "reason": "replicator 'repli-a' already exists" }
-```
-
-```json
-{ "ok": false, "reason": "column type mismatch at index 2: source.VALUE(TYPE=20) != target.VALUE1(TYPE=8)" }
-```
-
----
-
-### POST /cgi-bin/api/rc/install?name=xxx
-
-이미 저장된 `conf.d/{name}.json` 기준으로 service를 install 한다. config가 없으면 실패한다.
-
-**응답**
-```json
-{ "ok": true, "data": { "name": "repli-a" } }
-```
-
-**실패**
-```json
-{ "ok": false, "reason": "replicator 'repli-a' not found" }
-```
-
-```json
-{ "ok": false, "reason": "replicator 'repli-a' already installed" }
-```
-
----
-
-### GET /cgi-bin/api/rc?name=xxx
-
-특정 replicator config 조회. password 필드는 응답에서 제외된다.
-
-**응답**
 ```json
 {
   "ok": true,
   "data": {
     "name": "repli-a",
-    "config": {
-      "id": "repli-a",
-      "logging": {
-        "level": "info",
-        "stdout": true,
-        "file": { "enabled": false, "directory": "/work/logs" }
-      },
-      "source": {
-        "host": "192.168.1.10",
-        "port": 5656,
-        "user": "SYS",
-        "table": "TAG",
-        "columns": ["NAME", "TIME", "VALUE"],
-        "filter": [
-          { "column": "NAME", "like": "sensor_%" },
-          { "column": "VALUE", "min": 0, "max": 100 }
-        ],
-        "transform": [
-          { "column": "VALUE", "add": 0, "multiply": 1.5 },
-          { "column": "NAME", "prefix": "copy_", "suffix": "" }
-        ]
-      },
-      "target": {
-        "host": "192.168.1.20",
-        "port": 5656,
-        "user": "SYS",
-        "table": "TAG_COPY",
-        "autoCreate": true
-      },
-      "startMode": "now",
-      "ridAfter": null,
-      "metaSync": false,
-      "pollIntervalMs": 1000,
-      "queryLimit": 5000,
-      "ridRangeSize": 50000,
-      "shutdownTimeoutMs": 30000,
-      "onSaveFailure": "continue",
-      "integrity": null,
-      "retry": null
-    },
+    "config": {},
     "checkpoints": {
-      "_TAG_DATA_0": { "lastSuccessRid": "12345", "hasMore": true },
-      "_TAG_DATA_1": { "lastSuccessRid": "6789", "hasMore": false }
+      "_HOME_DATA_0": {
+        "lastSuccessRid": "2799971",
+        "totalRowsWritten": "2799972",
+        "hasMore": false
+      }
     }
   }
 }
 ```
 
-| 필드 | 설명 |
-|------|------|
-| `name` | replicator 이름 |
-| `config` | ReplicatorConfig (password 필드 제외) |
-| `checkpoints` | 파티션별 checkpoint 정보. source 파티션 전체를 포함하며 파일이 아직 없으면 `{ "lastSuccessRid": "", "hasMore": false }` 로 반환된다. `lastSuccessRid`는 문자열, `hasMore`는 `rowsRead === queryLimit` 기준 추정값 |
+### `POST /api/rc.js`
 
-**실패**
-```json
-{ "ok": false, "reason": "name is required" }
-```
+요청 예시:
 
-```json
-{ "ok": false, "reason": "replicator 'xxx' not found" }
-```
-
----
-
-### PUT /cgi-bin/api/rc?name=xxx
-
-replicator config 수정. `conf.d/{name}.json` 파일이 갱신되며, service가 실행 중이면 `stop -> start` 로 재적용된다. `source.password` 또는 `target.password` 키가 요청 본문에 없거나 빈 문자열(`""`)이면 해당 항목은 기존 비밀번호를 유지한다.
-`POST`와 동일한 컬럼 순서/타입 검증을 수행하며, 검증 실패 시 저장하지 않는다.
-
-**요청 본문**
 ```json
 {
-  "id": "repli-a",
-  "logging": {
-    "level": "info",
-    "stdout": true,
-    "file": { "enabled": false, "directory": "/work/logs" }
-  },
-  "source": {
-    "host": "192.168.1.10",
-    "port": 5656,
-    "user": "SYS",
-    "password": "MANAGER",
-    "table": "TAG",
-    "columns": ["NAME", "TIME", "VALUE"],
-    "filter": [
-      { "column": "NAME", "like": "sensor_%" },
-      { "column": "VALUE", "min": 0, "max": 100 }
-    ],
-    "transform": [
-      { "column": "VALUE", "add": 0, "multiply": 1.5 },
-      { "column": "NAME", "prefix": "copy_", "suffix": "" }
-    ]
-  },
-  "target": {
-    "host": "192.168.1.20",
-    "port": 5656,
-    "user": "SYS",
-    "password": "MANAGER",
-    "table": "TAG_COPY",
-    "autoCreate": true
-  },
-  "startMode": "now",
-  "ridAfter": null,
-  "metaSync": false,
-  "pollIntervalMs": 2000,
-  "queryLimit": 5000,
-  "ridRangeSize": 50000,
-  "shutdownTimeoutMs": 30000,
-  "onSaveFailure": "continue",
-  "integrity": null,
-  "retry": null
+  "name": "repli-a",
+  "config": {
+    "id": "repli-a",
+    "source": {
+      "server": "local",
+      "table": "HOME",
+      "columns": ["NAME", "TIME", "VALUE"],
+      "meta": [],
+      "rep_target_cond": { "op": "ALL", "value": [] },
+      "transform": null
+    },
+    "target": {
+      "server": "local",
+      "table": "HOME_COPY",
+      "columns": ["NAME", "TIME", "VALUE"],
+      "meta": []
+    },
+    "startMode": "now",
+    "queryLimit": 100,
+    "pollIntervalMs": 1000,
+    "shutdownTimeoutMs": 30000,
+    "onSaveFailure": "continue",
+    "integrity": true,
+    "retry": {
+      "maxAttempts": 5,
+      "baseDelayMs": 100,
+      "maxDelayMs": 30000
+    },
+    "logging": {
+      "level": "info",
+      "maxFiles": 5
+    }
+  }
 }
 ```
 
-**응답**
-```json
-{ "ok": true, "data": { "name": "repli-a" } }
-```
+### `PUT /api/rc.js?name=...`
 
-**실패**
-```json
-{ "ok": false, "reason": "name is required" }
-```
+- inline 접속정보를 사용하는 legacy config에서는 `source.password` / `target.password` 가 없거나 `null` 또는 `""` 이면 기존 값을 유지한다.
+- service가 install되지 않았거나 running이 아니면 config만 저장한다.
 
-```json
-{ "ok": false, "reason": "replicator 'repli-a' not found" }
-```
+### `POST /api/rc/dryrun.js`
 
-```json
-{ "ok": false, "reason": "column type mismatch at index 2: source.VALUE(TYPE=20) != target.VALUE1(TYPE=8)" }
-```
+- body는 `config` 또는 `{ "config": ... }` 둘 다 허용한다.
+- 실제 저장/설치 없이 DB 연결, 테이블 존재, columns/meta 길이/타입, `startMode`/`ridAfter`, 수치 설정 범위, filter/transform 구조를 검증한다.
+- TAG 테이블에서는 `target.columns` 의 PRIMARY KEY 슬롯이 반드시 source PRIMARY KEY 컬럼에 매핑되는지 추가로 검증한다.
+- `VARCHAR` 길이 초과 가능성은 오류가 아니라 warning으로 반환한다.
+- 응답에는 정규화된 config, source/target schema 요약, `warnings` 배열이 포함된다.
 
----
+## Table Columns API
 
-### DELETE /cgi-bin/api/rc?name=xxx
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `POST` | `/api/table/list.js` | 테이블 목록 조회 |
+| `POST` | `/api/table/columns.js` | 테이블 컬럼 정보 조회 |
 
-replicator 제거. service `uninstall` 후 `conf.d/{name}.json`, `{name}.pid`, 관련 checkpoint 디렉토리를 함께 삭제한다.
+요청은 아래 두 방식 중 하나를 사용한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
 
-**응답**
-```json
-{ "ok": true }
-```
-
-**실패**
-```json
-{ "ok": false, "reason": "name is required" }
-```
+1. server profile 참조
 
 ```json
-{ "ok": false, "reason": "replicator 'repli-a' not found" }
+{
+  "server": "local",
+  "table": "HOME"
+}
 ```
 
----
-
-### POST /cgi-bin/api/table/columns
-
-지정한 DB에 연결하여 테이블의 컬럼 정보를 반환한다.
-
-**요청 본문**
+2. inline 접속정보
 
 ```json
-{ "host": "127.0.0.1", "port": 5656, "user": "SYS", "password": "MANAGER", "table": "TAG" }
+{
+  "host": "127.0.0.1",
+  "port": 5656,
+  "user": "SYS",
+  "password": "manager",
+  "table": "HOME"
+}
 ```
 
-| 필드 | 필수 | 설명 |
-|------|------|------|
-| `host` | ✓ | DB 호스트 |
-| `port` | ✓ | DB 포트 |
-| `user` | ✓ | DB 사용자명 |
-| `password` | ✓ | DB 비밀번호 |
-| `table` | ✓ | 테이블명 |
+응답 예시:
 
-**응답**
 ```json
 {
   "ok": true,
   "data": {
-    "table": "TAG",
+    "table": "HOME",
     "tableType": "TAG",
     "columns": [
-      { "name": "NAME",  "type": "VARCHAR(80)", "isPrimary": true,  "isBasetime": false, "isSummarized": false, "isMetadata": false },
-      { "name": "TIME",  "type": "DATETIME",    "isPrimary": false, "isBasetime": true,  "isSummarized": false, "isMetadata": false },
-      { "name": "VALUE", "type": "DOUBLE",      "isPrimary": false, "isBasetime": false, "isSummarized": true,  "isMetadata": false }
+      { "name": "NAME", "type": "VARCHAR(25)", "isPrimary": true, "isBasetime": false, "isSummarized": false, "isMetadata": false }
+    ],
+    "meta": [
+      { "name": "EQPID", "type": "VARCHAR(20)", "isPrimary": false, "isBasetime": false, "isSummarized": false, "isMetadata": true }
     ]
   }
 }
 ```
 
-| 필드 | 설명 |
-|------|------|
-| `table` | 테이블명 (대문자 정규화) |
-| `tableType` | `"TAG"` \| `"LOG"` |
-| `columns[].name` | 컬럼명 |
-| `columns[].type` | DDL 타입 문자열 (아래 타입 목록 참고) |
-| `columns[].isPrimary` | PRIMARY KEY 여부 (TAG key 컬럼, 물리 컬럼명은 테이블마다 다를 수 있음) |
-| `columns[].isBasetime` | BASETIME 여부 (TAG base time 컬럼, 물리 컬럼명은 테이블마다 다를 수 있음) |
-| `columns[].isSummarized` | SUMMARIZED 여부 (TAG 테이블의 VALUE 컬럼 등) |
-| `columns[].isMetadata` | TAG METADATA 컬럼 여부 (TAG 테이블의 추가 속성 컬럼) |
+### `POST /api/table/list.js`
 
-**`columns[].type` 값 목록**
+요청은 `table` 없이 접속정보만 전달한다.
 
-| type 값 | 설명 | 비고 |
-|---------|------|------|
-| `"SHORT"` | 16비트 정수 | signed / unsigned 모두 동일하게 표기 |
-| `"INTEGER"` | 32비트 정수 | signed / unsigned 모두 동일하게 표기 |
-| `"LONG"` | 64비트 정수 | signed / unsigned 모두 동일하게 표기 |
-| `"FLOAT"` | 32비트 부동소수점 | |
-| `"DOUBLE"` | 64비트 부동소수점 | |
-| `"DATETIME"` | 나노초 단위 타임스탬프 | TAG 테이블의 BASETIME 컬럼 타입 |
-| `"VARCHAR(n)"` | 가변 길이 문자열 | `n`은 최대 바이트 수 (예: `VARCHAR(80)`) |
-| `"TEXT"` | 대용량 텍스트 | |
-| `"CLOB"` | Character Large Object | |
-| `"BLOB"` | Binary Large Object | |
-| `"BINARY"` | 고정 길이 바이너리 | |
-| `"IPV4"` | IPv4 주소 | |
-| `"IPV6"` | IPv6 주소 | |
-| `"JSON"` | JSON 문자열 | |
-
-**실패**
-```json
-{ "ok": false, "reason": "table 'NO_SUCH' not found" }
-```
-
-**jsh 직접 실행 (테스트)**
-```bash
-# 실행 위치: machbase-neo 설치 디렉토리
-echo '{"host":"127.0.0.1","port":5656,"user":"SYS","password":"MANAGER","table":"TAG"}' | \
-  ./machbase-neo jsh -v /public=$(pwd)/public -e REQUEST_METHOD=POST /public/neo-pkg-replication/cgi-bin/api/table/columns.js
-```
-
----
-
-### POST /cgi-bin/api/rc/start?name=xxx
-
-replicator service 시작.
-
-**응답**
-```json
-{ "ok": true, "data": { "name": "repli-a" } }
-```
-
-**실패**
-```json
-{ "ok": false, "reason": "name is required" }
-```
+1. server profile 참조
 
 ```json
-{ "ok": false, "reason": "replicator 'repli-a' not found" }
+{
+  "server": "local"
+}
 ```
 
----
+2. inline 접속정보
 
-### POST /cgi-bin/api/rc/stop?name=xxx
-
-replicator service 종료. 성공 시 pid 파일도 정리한다.
-
-**응답**
 ```json
-{ "ok": true, "data": { "name": "repli-a" } }
+{
+  "host": "127.0.0.1",
+  "port": 5656,
+  "user": "SYS",
+  "password": "manager"
+}
 ```
 
-**실패**
-```json
-{ "ok": false, "reason": "name is required" }
-```
+응답 예시:
 
 ```json
-{ "ok": false, "reason": "replicator 'repli-a' not found" }
+{
+  "ok": true,
+  "data": {
+    "tables": [
+      { "name": "HOME", "tableType": "TAG", "owner": "SYS" },
+      { "name": "HOME_LOG", "tableType": "LOG", "owner": "SYS" }
+    ]
+  }
+}
 ```
