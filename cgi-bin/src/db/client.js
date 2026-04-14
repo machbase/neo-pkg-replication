@@ -155,12 +155,12 @@ class MachbaseClient {
   /**
    * 테이블의 최대 RID 조회
    * @param {string} tableName
-   * @returns {bigint} 빈 테이블이면 0n
+   * @returns {bigint} 빈 테이블이면 -1n
    */
   selectMaxRid(tableName) {
     const rows = this.query(`SELECT MAX(_RID) as max_rid FROM ${tableName}`);
     const raw = rows?.[0]?.max_rid;
-    return raw == null ? 0n : BigInt(raw);
+    return raw == null ? -1n : BigInt(raw);
   }
 
   /**
