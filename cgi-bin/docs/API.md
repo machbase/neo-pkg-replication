@@ -69,7 +69,8 @@
 | `PUT` | `/api/server.js?name=...` | server profile 수정 |
 | `DELETE` | `/api/server.js?name=...` | server profile 삭제 |
 | `GET` | `/api/log/list` | 로그 파일 목록 조회 |
-| `GET` | `/api/log/content?name=...` | 로그 파일 내용 조회 |
+| `GET` | `/api/log/content?name=...` | 로그 파일 라인 범위 조회 |
+| `GET` | `/api/log/content/all?name=...` | 로그 파일 전체 내용 조회 |
 
 ### 예시
 
@@ -424,13 +425,12 @@ type별 제약:
   "ok": true,
   "data": {
     "files": [
-      { "name": "repli.log", "size": 10319374, "lines": 125438 }
+      { "name": "collector-a.log", "size": 4096 },
+      { "name": "collector-a_20260415_034234.log", "size": 10485760 }
     ]
   }
 }
 ```
-
-- `lines`는 읽기 권한이 없으면 `null` 일 수 있다.
 
 ### `GET /api/log/content?name=...&start=...&end=...`
 
@@ -449,6 +449,23 @@ type별 제약:
     "end": 3,
     "totalLines": 125438,
     "lines": ["line1", "line2", "line3"]
+  }
+}
+```
+
+### `GET /api/log/content/all?name=...`
+
+- `name`은 로그 파일명
+- 파일 전체 내용을 문자열로 반환한다.
+
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "name": "collector-a.log",
+    "content": "[INFO] 2026-04-15 ..."
   }
 }
 ```

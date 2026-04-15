@@ -1,7 +1,7 @@
 /**
- * GET /cgi-bin/api/log/list
+ * GET /cgi-bin/api/log/content/all?name=...
  *
- * 로그 디렉토리 파일 목록과 파일 크기를 반환한다.
+ * 로그 파일 전체 내용을 문자열로 반환한다.
  */
 
 const path = require('path');
@@ -10,7 +10,7 @@ const ROOT = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/') +
 const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 
 function GET() {
-  Handler.getLogList((err, data) => {
+  Handler.getLogContentAll(Handler.parseQuery(), (err, data) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
   });
 }

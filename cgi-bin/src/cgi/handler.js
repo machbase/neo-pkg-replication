@@ -1292,7 +1292,6 @@ class Handler {
 
   /**
    * 로그 파일 목록을 반환한다.
-   * 읽기 권한이 없으면 lines는 null로 반환한다.
    * @param {function(Error|null, { files: Array }=): void} callback
    */
   static getLogList(callback) {
@@ -1315,15 +1314,48 @@ class Handler {
         continue;
       }
       if (!stat.isFile()) continue;
-      let lines = null;
-      try {
-        lines = Handler.countLines(fs.readFileSync(filePath, 'utf8'));
-      } catch (_) {}
-      files.push({ name, size: stat.size, lines });
+      files.push({ name, size: stat.size });
     }
 
     files.sort((a, b) => a.name.localeCompare(b.name));
     callback(null, { files });
+  }
+
+  /**
+   * 로그 파일 전체 내용을 반환한다.
+   * @param {{ name?: string }} query
+   * @param {function(Error|null, { name: string, content: string }=): void} callback
+   */
+  static getLogContentAll(query, callback) {
+    let filePath;
+    try {
+      filePath = Handler.resolveLogFilePath(query && query.name);
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (err) {
+      callback(err);
+      return;
+    }
+    if (!stat.isFile()) {
+      callback(new Error(`log file '${query.name}' not found`));
+      return;
+    }
+
+    let content;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    callback(null, { name: path.basename(filePath), content });
   }
 
   /**
