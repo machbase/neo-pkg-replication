@@ -1,24 +1,25 @@
-import { useNavigate, useLocation } from "react-router";
-import { useApp } from "../../context/AppContext";
 import Icon from "../common/Icon";
 import JobListItem from "../jobs/JobListItem";
 
-export default function Sidebar({ jobs, onToggleJob, onInstallJob, onRefresh }) {
-    const navigate = useNavigate();
-    const location = useLocation();
-    const { selectedJobId, setSelectedJobId } = useApp();
-
+export default function Sidebar({ jobs, selectedJobId, onSelectJob, onNewJob, onToggleJob, onInstallJob, onRefresh, onServerSettings, className = "side h-screen" }) {
     return (
-        <aside className="side w-full shrink-0 lg:fixed lg:left-0 lg:top-0 lg:w-64 lg:h-screen z-dropdown border-b lg:border-b-0 lg:border-r border-border">
+        <aside className={className}>
             <div className="side-header">
                 <Icon name="rebase_edit" className="text-primary shrink-0" />
                 <span className="truncate flex-1">Replication</span>
                 <button
-                    onClick={() => { navigate("/jobs/new"); setSelectedJobId(null); }}
+                    onClick={onNewJob}
                     className="side-header-action tooltip"
                     data-tooltip="New Job"
                 >
                     <Icon name="add" />
+                </button>
+                <button
+                    onClick={onServerSettings}
+                    className="side-header-action tooltip"
+                    data-tooltip="Server Settings"
+                >
+                    <Icon name="dns" />
                 </button>
             </div>
 
@@ -33,17 +34,13 @@ export default function Sidebar({ jobs, onToggleJob, onInstallJob, onRefresh }) 
                         <Icon name="refresh" />
                     </button>
                 </div>
-                {/* Desktop: vertical list, Mobile: horizontal scroll */}
-                <nav className="side-list lg:flex-col flex-row overflow-x-auto lg:overflow-x-hidden">
+                <nav className="side-list">
                     {jobs.map((job) => (
                         <JobListItem
                             key={job.id}
                             job={job}
                             selected={selectedJobId === job.id}
-                            onSelect={() => {
-                                setSelectedJobId(job.id);
-                                if (location.pathname !== "/") navigate("/");
-                            }}
+                            onSelect={() => onSelectJob(job.id)}
                             onToggle={() => onToggleJob(job)}
                             onInstall={() => onInstallJob(job)}
                         />
