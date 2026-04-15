@@ -5,9 +5,11 @@
  */
 
 const { MachbaseClient } = require('../db/client.js');
+const { createQueryClient } = require('../db/remote.js');
 const { TagTable, LogTable } = require('../db/table.js');
 const { Worker } = require('./worker.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
+const { ColumnType, Column, TableSchema, FLAG_METADATA } = require('../db/types.js');
 
 class AbortSignal {
   constructor() { this.aborted = false; }
@@ -39,6 +41,7 @@ class Replicator {
     this.integrity = config.integrity ?? null;
     this.retry = config.retry ?? null;
     this.logging = config.logging ?? null;
+    this.runtimeHints = config._runtime || null;
     this.logCtx = {
       source: `${this.source.host}:${this.source.port}/${this.source.table}`,
       target: `${this.target.host}:${this.target.port}/${this.target.table}`,
@@ -46,13 +49,62 @@ class Replicator {
     this.shutdownFlag = shutdownFlag || { value: false };
   }
 
-  discover() {
+  async _openSourceClient() {
+    const type = String(this.source?.type || 'native').toLowerCase();
+    const client = type === 'native' ? new MachbaseClient(this.source) : createQueryClient(this.source);
+    await client.connect();
+    return client;
+  }
+
+  _buildSchemaFromRuntimeHints(logicalTable) {
+    const hint = this.runtimeHints?.target || null;
+    if (!hint || !Array.isArray(hint.dataColumns)) {
+      throw new Error('target runtime hints are missing');
+    }
+    const serialized = hint && Array.isArray(hint.dataColumns)
+      ? hint.dataColumns.concat(Array.isArray(hint.metaColumns) ? hint.metaColumns : [])
+      : [];
+    const columns = serialized.map((column) => new Column(
+      column.name,
+      ColumnType.fromCode(column.type),
+      column.id,
+      column.flag,
+      column.length || 0
+    ));
+    return new TableSchema(hint?.tableType || 'LOG', logicalTable, columns);
+  }
+
+  _buildMqttPublishSchema(srcSchema, logicalTable) {
+    const columns = [];
+    let nextId = 0;
+    const sourceByName = {};
+    for (const column of srcSchema.columns) {
+      sourceByName[column.name] = column;
+    }
+
+    for (const name of (this.target.columns || [])) {
+      if (!name) continue;
+      const sourceColumn = sourceByName[name];
+      if (!sourceColumn) continue;
+      columns.push(new Column(name, sourceColumn.columnType, nextId++, sourceColumn.flag & ~FLAG_METADATA, sourceColumn.length));
+    }
+    for (const name of (this.target.meta || [])) {
+      if (!name) continue;
+      const sourceColumn = sourceByName[name];
+      if (!sourceColumn) continue;
+      columns.push(new Column(name, sourceColumn.columnType, nextId++, sourceColumn.flag | FLAG_METADATA, sourceColumn.length));
+    }
+    return new TableSchema(srcSchema.tableType, logicalTable, columns);
+  }
+
+  async discover() {
     const targetTable = this.target.table || this.source.table;
+    const targetType = String(this.target?.type || 'native').toLowerCase();
+    const targetQueryable = targetType !== 'mqtt-api' && targetType !== 'mqtt-publish';
     let sourceClient = null;
     try {
-      sourceClient = new MachbaseClient(this.source);
-      sourceClient.connect();
-      const { type: tableType } = sourceClient.selectTableTypeQualified(this.source.table);
+      sourceClient = await this._openSourceClient();
+      const { type: tableType } = await sourceClient.selectTableTypeQualified(this.source.table);
       if (tableType === 'UNSUPPORTED') {
         getLogger().error('replicator', { ...this.logCtx, msg: `source table '${this.source.table}' not found` });
         return null;
@@ -60,52 +112,74 @@ class Replicator {
 
       if (tableType === 'TAG') {
         const srcTable = new TagTable(this.source, this.source.table);
-        const dstTable = new TagTable(this.target, targetTable);
         try {
-          srcTable.open();
-          dstTable.open();
-          const dataTables = srcTable.getDataTables().map((item) => item.data_table);
+          await srcTable.open();
+          const dataTables = (await srcTable.getDataTables()).map((item) => item.data_table);
           if (dataTables.length === 0) {
             getLogger().error('replicator', { ...this.logCtx, msg: 'no source data partitions found' });
             return null;
           }
-          const dstParts = dstTable.getDataTables();
-          if (dstParts.length === 0) {
-            getLogger().error('replicator', { ...this.logCtx, msg: `target table '${targetTable}' not found or has no partitions` });
-            return null;
+          let dstSchema = null;
+          if (targetQueryable) {
+            const dstTable = new TagTable(this.target, targetTable);
+            try {
+              await dstTable.open();
+              const dstParts = await dstTable.getDataTables();
+              if (dstParts.length === 0) {
+                getLogger().error('replicator', { ...this.logCtx, msg: `target table '${targetTable}' not found or has no partitions` });
+                return null;
+              }
+              dstSchema = await dstTable.getSchema();
+            } finally {
+              try { await dstTable.close(); } catch (_) {}
+            }
+          } else if (targetType === 'mqtt-api') {
+            dstSchema = this._buildSchemaFromRuntimeHints(targetTable);
+          } else {
+            dstSchema = this._buildMqttPublishSchema(await srcTable.getSchema(), targetTable);
           }
           return {
             tableType,
             dataTables,
-            srcSchema: srcTable.getSchema(),
-            dstSchema: dstTable.getSchema(),
+            srcSchema: await srcTable.getSchema(),
+            dstSchema,
           };
         } finally {
-          try { srcTable.close(); } catch (_) {}
-          try { dstTable.close(); } catch (_) {}
+          try { await srcTable.close(); } catch (_) {}
         }
       }
 
       if (tableType === 'LOG') {
         const srcTable = new LogTable(this.source.table, this.source);
-        const dstTable = new LogTable(targetTable, this.target);
         try {
-          srcTable.open();
-          dstTable.open();
-          const { type: dstType } = dstTable.client.selectTableTypeQualified(targetTable);
-          if (dstType !== 'LOG') {
-            getLogger().error('replicator', { ...this.logCtx, msg: `target table '${targetTable}' not found` });
-            return null;
+          await srcTable.open();
+          let dstSchema = null;
+          if (targetQueryable) {
+            const dstTable = new LogTable(targetTable, this.target);
+            try {
+              await dstTable.open();
+              const { type: dstType } = await dstTable.client.selectTableTypeQualified(targetTable);
+              if (dstType !== 'LOG') {
+                getLogger().error('replicator', { ...this.logCtx, msg: `target table '${targetTable}' not found` });
+                return null;
+              }
+              dstSchema = await dstTable.getSchema();
+            } finally {
+              try { await dstTable.close(); } catch (_) {}
+            }
+          } else if (targetType === 'mqtt-api') {
+            dstSchema = this._buildSchemaFromRuntimeHints(targetTable);
+          } else {
+            dstSchema = this._buildMqttPublishSchema(await srcTable.getSchema(), targetTable);
           }
           return {
             tableType,
             dataTables: [this.source.table],
-            srcSchema: srcTable.getSchema(),
-            dstSchema: dstTable.getSchema(),
+            srcSchema: await srcTable.getSchema(),
+            dstSchema,
           };
         } finally {
-          try { srcTable.close(); } catch (_) {}
-          try { dstTable.close(); } catch (_) {}
+          try { await srcTable.close(); } catch (_) {}
         }
       }
 
@@ -115,7 +189,7 @@ class Replicator {
       getLogger().error('replicator', { ...this.logCtx, msg: `discover failed: ${err.message}` });
       return null;
     } finally {
-      try { sourceClient && sourceClient.close(); } catch (_) {}
+      try { sourceClient && await sourceClient.close(); } catch (_) {}
     }
   }
 
@@ -179,7 +253,7 @@ class Replicator {
     getLogger().info('replicator', { ...this.logCtx, stdout: true, msg: 'start' });
 
     while (!this.shutdownFlag.value) {
-      const discovered = this.discover();
+      const discovered = await this.discover();
       if (!discovered) {
         if (this.shutdownFlag.value) break;
         getLogger().warn('replicator', { ...this.logCtx, msg: 'discover failed, retrying in 5s' });

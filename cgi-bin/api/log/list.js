@@ -1,7 +1,7 @@
 /**
  * GET /cgi-bin/api/log/list
  *
- * 로그 디렉토리 파일 목록과 파일 크기, 라인 수를 반환한다.
+ * 로그 디렉토리 파일 목록과 파일 크기를 반환한다.
  */
 
 const path = require('path');

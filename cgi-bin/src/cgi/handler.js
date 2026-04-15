@@ -5,6 +5,7 @@ const path = require('path');
 const process = require('process');
 const service = require('service');
 const { MachbaseClient, ColumnType } = require('../db/client.js');
+const { createQueryClient } = require('../db/remote.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME, FLAG_SUMMARIZED } = require('../db/types.js');
 const {
   APP_DIR,
@@ -26,6 +27,9 @@ const {
   prepareReplicatorConfig,
   validateServerProfile,
 } = require('./validation.js');
+
+const SERVICE_RETRY_DELAY_MS = 1000;
+const SERVICE_RETRY_MAX_ATTEMPTS = 3;
 
 /**
  * CGI 핸들러 — replicator 설정/서비스 생명주기 관리
@@ -251,7 +255,7 @@ class Handler {
    * @param {object} config
    * @returns {{ storedConfig: object, runtimeConfig: object, sourceInfo: object, targetInfo: object, warnings: string[] }}
    */
-  static prepareReplicatorConfig(config) {
+  static async prepareReplicatorConfig(config) {
     return prepareReplicatorConfig(config, (serverName) => Handler.getServerConfig(serverName));
   }
 
@@ -523,12 +527,72 @@ class Handler {
   }
 
   /**
+   * service 호출 옵션을 정규화한다.
+   * @param {object=} options
+   * @returns {{ retryOnMissingService: boolean, maxAttempts: number, delayMs: number }}
+   */
+  static normalizeServiceRetryOptions(options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const maxAttempts = Number.isInteger(opts.maxAttempts) && opts.maxAttempts > 0
+      ? opts.maxAttempts
+      : SERVICE_RETRY_MAX_ATTEMPTS;
+    const delayMs = Number.isInteger(opts.delayMs) && opts.delayMs >= 0
+      ? opts.delayMs
+      : SERVICE_RETRY_DELAY_MS;
+    return {
+      retryOnMissingService: opts.retryOnMissingService === true,
+      maxAttempts,
+      delayMs,
+    };
+  }
+
+  /**
+   * service 오류가 재시도 가능한지 판별한다.
+   * 현재는 controller 반영 지연으로 인한 not found 계열만 재시도한다.
+   * @param {string} method
+   * @param {Error} err
+   * @param {{ retryOnMissingService: boolean }} options
+   * @returns {boolean}
+   */
+  static isRetryableServiceError(method, err, options) {
+    if (!err) return false;
+    const opts = Handler.normalizeServiceRetryOptions(options);
+    if (opts.retryOnMissingService && Handler.isMissingServiceError(err)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * service 모듈 메서드를 재시도와 함께 호출한다.
+   * @param {string} method
+   * @param {Array} args
+   * @param {function(Error|null, any=): void} callback
+   * @param {object=} options
+   */
+  static callServiceWithRetry(method, args, callback, options) {
+    const opts = Handler.normalizeServiceRetryOptions(options);
+    let attempt = 1;
+    const invoke = () => {
+      Handler.callService(method, args, (err, data) => {
+        if (!err || !Handler.isRetryableServiceError(method, err, opts) || attempt >= opts.maxAttempts) {
+          callback(err, data);
+          return;
+        }
+        attempt += 1;
+        setTimeout(invoke, opts.delayMs);
+      });
+    };
+    invoke();
+  }
+
+  /**
    * service를 설치한다.
    * @param {string} name
    * @param {function(Error|null): void} callback
    */
-  static installService(name, callback) {
-    Handler.callService('install', [Handler.buildServiceInstallConfig(name)], callback);
+  static installService(name, callback, options) {
+    Handler.callServiceWithRetry('install', [Handler.buildServiceInstallConfig(name)], callback, options);
   }
 
   /**
@@ -536,20 +600,21 @@ class Handler {
    * @param {string} name
    * @param {function(Error|null, object=): void} callback
    */
-  static getServiceStatus(name, callback) {
+  static getServiceStatus(name, callback, options) {
     const names = Handler.serviceNamesForControl(name);
+    const retryOptions = Handler.normalizeServiceRetryOptions(options);
     const next = (index, lastErr) => {
       if (index >= names.length) {
         callback(lastErr || new Error(`service '${Handler.serviceName(name)}' does not exist`));
         return;
       }
-      Handler.callService('status', [names[index]], (err, serviceInfo) => {
+      Handler.callServiceWithRetry('status', [names[index]], (err, serviceInfo) => {
         if (err && Handler.isMissingServiceError(err)) {
           next(index + 1, err);
           return;
         }
         callback(err, serviceInfo);
-      });
+      }, retryOptions);
     };
     next(0, null);
   }
@@ -559,20 +624,21 @@ class Handler {
    * @param {string} name
    * @param {function(Error|null): void} callback
    */
-  static uninstallService(name, callback) {
+  static uninstallService(name, callback, options) {
     const names = Handler.serviceNamesForControl(name);
+    const retryOptions = Handler.normalizeServiceRetryOptions(options);
     const next = (index, firstErr) => {
       if (index >= names.length) {
         callback(firstErr);
         return;
       }
-      Handler.callService('uninstall', [names[index]], (err) => {
+      Handler.callServiceWithRetry('uninstall', [names[index]], (err) => {
         if (!err || Handler.isMissingServiceError(err)) {
           next(index + 1, firstErr);
           return;
         }
         next(index + 1, firstErr || err);
-      });
+      }, retryOptions);
     };
     next(0, null);
   }
@@ -582,20 +648,21 @@ class Handler {
    * @param {string} name
    * @param {function(Error|null): void} callback
    */
-  static startService(name, callback) {
+  static startService(name, callback, options) {
     const names = Handler.serviceNamesForControl(name);
+    const retryOptions = Handler.normalizeServiceRetryOptions(options);
     const next = (index, lastErr) => {
       if (index >= names.length) {
         callback(lastErr || new Error(`service '${Handler.serviceName(name)}' does not exist`));
         return;
       }
-      Handler.callService('start', [names[index]], (err) => {
+      Handler.callServiceWithRetry('start', [names[index]], (err) => {
         if (err && Handler.isMissingServiceError(err)) {
           next(index + 1, err);
           return;
         }
         callback(err);
-      });
+      }, retryOptions);
     };
     next(0, null);
   }
@@ -605,20 +672,21 @@ class Handler {
    * @param {string} name
    * @param {function(Error|null): void} callback
    */
-  static stopService(name, callback) {
+  static stopService(name, callback, options) {
     const names = Handler.serviceNamesForControl(name);
+    const retryOptions = Handler.normalizeServiceRetryOptions(options);
     const next = (index, lastErr) => {
       if (index >= names.length) {
         callback(lastErr || new Error(`service '${Handler.serviceName(name)}' does not exist`));
         return;
       }
-      Handler.callService('stop', [names[index]], (err) => {
+      Handler.callServiceWithRetry('stop', [names[index]], (err) => {
         if (err && Handler.isMissingServiceError(err)) {
           next(index + 1, err);
           return;
         }
         callback(err);
-      });
+      }, retryOptions);
     };
     next(0, null);
   }
@@ -629,7 +697,7 @@ class Handler {
    * @returns {boolean}
    */
   static isMissingServiceError(err) {
-    const message = err && err.message ? String(err.message) : '';
+    const message = err && err.message ? String(err.message).toLowerCase() : '';
     return message.indexOf('does not exist') >= 0
       || message.indexOf('not found') >= 0;
   }
@@ -651,6 +719,7 @@ class Handler {
    * @param {function(Error|null, boolean)} callback - (err, restarted)
    */
   static restartServiceIfRunning(name, callback) {
+    const retryOptions = { retryOnMissingService: true };
     Handler.getServiceStatus(name, (err, serviceInfo) => {
       if (err) {
         callback(Handler.isMissingServiceError(err) ? null : err, false);
@@ -664,9 +733,9 @@ class Handler {
         if (stopErr) { callback(stopErr); return; }
         Handler.startService(name, (startErr) => {
           callback(startErr || null, !startErr);
-        });
-      });
-    });
+        }, retryOptions);
+      }, retryOptions);
+    }, retryOptions);
   }
 
   /**
@@ -676,6 +745,7 @@ class Handler {
    * @param {function(Error|null, boolean)} callback - (err, stopped)
    */
   static stopServiceIfRunning(name, callback) {
+    const retryOptions = { retryOnMissingService: true };
     Handler.getServiceStatus(name, (err, serviceInfo) => {
       if (err) {
         callback(Handler.isMissingServiceError(err) ? null : err, false);
@@ -687,8 +757,8 @@ class Handler {
       }
       Handler.stopService(name, (stopErr) => {
         callback(stopErr || null, !stopErr);
-      });
-    });
+      }, retryOptions);
+    }, retryOptions);
   }
 
   // ── checkpoint ───────────────────────────────────────────────────────────
@@ -700,7 +770,7 @@ class Handler {
    * @param {object} config - replicator config
    * @returns {{ [dataTable: string]: { lastSuccessRid: string, totalRowsWritten: string, hasMore: boolean } }}
    */
-  static readCheckpoints(name, config) {
+  static async readCheckpoints(name, config) {
     const result = {};
 
     // source 파티션 목록으로 result 초기화
@@ -710,9 +780,12 @@ class Handler {
       let client = null;
       try {
         const normalizedTable = String(logicalTable).toUpperCase();
-        client = new MachbaseClient({ ...source, table: normalizedTable });
-        client.connect();
-        const tableType = client.selectTableTypeQualified(normalizedTable).type;
+        const sourceType = String(source.type || 'native').toLowerCase();
+        client = sourceType === 'native'
+          ? new MachbaseClient({ ...source, table: normalizedTable })
+          : createQueryClient({ ...source, table: normalizedTable });
+        await client.connect();
+        const tableType = (await client.selectTableTypeQualified(normalizedTable)).type;
         const seen = {};
         const push = (value) => {
           if (typeof value !== 'string') return;
@@ -722,7 +795,7 @@ class Handler {
           result[dataTable] = { lastSuccessRid: '', totalRowsWritten: '0', hasMore: false };
         };
         if (tableType === 'TAG') {
-          for (const part of client.selectTagDataTables(normalizedTable)) {
+          for (const part of (await client.selectTagDataTables(normalizedTable))) {
             push(part?.data_table);
           }
         } else if (tableType === 'LOG') {
@@ -731,7 +804,7 @@ class Handler {
       } catch (_) {
         // checkpoint 조회는 best-effort로 동작한다.
       } finally {
-        try { client && client.close(); } catch (_) {}
+        try { client && await client.close(); } catch (_) {}
       }
     }
 
@@ -809,10 +882,16 @@ class Handler {
       if (!nextSource.server && (!Handler._hasOwn(nextSource, 'password') || nextSource.password == null || nextSource.password === '') && Handler._hasOwn(currentConfig?.source, 'password')) {
         nextSource.password = currentConfig.source.password;
       }
+      if (!nextSource.server && (!Handler._hasOwn(nextSource, 'token') || nextSource.token == null || nextSource.token === '') && Handler._hasOwn(currentConfig?.source, 'token')) {
+        nextSource.token = currentConfig.source.token;
+      }
     }
     if (nextTarget && typeof nextTarget === 'object') {
       if (!nextTarget.server && (!Handler._hasOwn(nextTarget, 'password') || nextTarget.password == null || nextTarget.password === '') && Handler._hasOwn(currentConfig?.target, 'password')) {
         nextTarget.password = currentConfig.target.password;
+      }
+      if (!nextTarget.server && (!Handler._hasOwn(nextTarget, 'token') || nextTarget.token == null || nextTarget.token === '') && Handler._hasOwn(currentConfig?.target, 'token')) {
+        nextTarget.token = currentConfig.target.token;
       }
     }
     return nextConfig;
@@ -828,6 +907,9 @@ class Handler {
     if (!nextProfile || typeof nextProfile !== 'object') return nextProfile;
     if ((!Handler._hasOwn(nextProfile, 'password') || nextProfile.password == null || nextProfile.password === '') && Handler._hasOwn(currentProfile, 'password')) {
       nextProfile.password = currentProfile.password;
+    }
+    if ((!Handler._hasOwn(nextProfile, 'token') || nextProfile.token == null || nextProfile.token === '') && Handler._hasOwn(currentProfile, 'token')) {
+      nextProfile.token = currentProfile.token;
     }
     return nextProfile;
   }
@@ -917,12 +999,12 @@ class Handler {
    * @param {{ name: string, config: object }} body
    * @param {function(Error|null, { name: string }=): void} callback
    */
-  static createReplicator(body, callback) {
+  static async createReplicator(body, callback) {
     if (!body.name) { callback(new Error('name is required')); return; }
     if (!body.config) { callback(new Error('config is required')); return; }
     if (Handler.getConfig(body.name)) { callback(new Error(`replicator '${body.name}' already exists`)); return; }
     try {
-      const prepared = Handler.prepareReplicatorConfig(body.config);
+      const prepared = await Handler.prepareReplicatorConfig(body.config);
       Handler.writeConfig(body.name, prepared.storedConfig);
     } catch (err) {
       callback(err);
@@ -943,14 +1025,14 @@ class Handler {
    * @param {object} body
    * @param {function(Error|null, object=): void} callback
    */
-  static dryRunReplicator(body, callback) {
+  static async dryRunReplicator(body, callback) {
     const config = body && body.config ? body.config : body;
     if (!config || typeof config !== 'object') {
       callback(new Error('config is required'));
       return;
     }
     try {
-      const prepared = Handler.prepareReplicatorConfig(config);
+      const prepared = await Handler.prepareReplicatorConfig(config);
       callback(null, {
         source: {
           table: prepared.sourceInfo.table,
@@ -977,7 +1059,7 @@ class Handler {
    * @param {string} name
    * @param {function(Error|null, { name: string, config: object, checkpoints: object }=): void} callback
    */
-  static getReplicator(name, callback) {
+  static async getReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     const config = Handler.getConfig(name);
     if (!config) { callback(new Error(`replicator '${name}' not found`)); return; }
@@ -991,7 +1073,7 @@ class Handler {
     const sourceTable = config.source?.table || '';
     const targetTable = config.target?.table || sourceTable;
     const replicatorId = config.id || (sourceTable && targetTable ? `${sourceTable}_${targetTable}` : '');
-    const checkpoints = Handler.readCheckpoints(replicatorId, runtimeConfig);
+    const checkpoints = await Handler.readCheckpoints(replicatorId, runtimeConfig);
     callback(null, { name, config: safeConfig, checkpoints });
   }
 
@@ -1001,13 +1083,13 @@ class Handler {
    * @param {object} body - 새 config
    * @param {function(Error|null, boolean=): void} callback
    */
-  static updateReplicator(name, body, callback) {
+  static async updateReplicator(name, body, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     const currentConfig = Handler.getConfig(name);
     if (!currentConfig) { callback(new Error(`replicator '${name}' not found`)); return; }
     const nextConfig = Handler._applyPasswordFallback(body, currentConfig);
     try {
-      const prepared = Handler.prepareReplicatorConfig(nextConfig);
+      const prepared = await Handler.prepareReplicatorConfig(nextConfig);
       Handler.writeConfig(name, prepared.storedConfig);
     } catch (err) {
       callback(err);
@@ -1025,6 +1107,7 @@ class Handler {
     if (!name) { callback(new Error('name is required')); return; }
     const config = Handler.getConfig(name);
     if (!config) { callback(new Error(`replicator '${name}' not found`)); return; }
+    const retryOptions = { retryOnMissingService: true };
     Handler.stopServiceIfRunning(name, (stopErr) => {
       if (stopErr) { callback(stopErr); return; }
       Handler.uninstallService(name, (err) => {
@@ -1045,7 +1128,7 @@ class Handler {
         if (configErr) { callback(configErr); return; }
         if (Handler.existsConfig(name)) { callback(new Error(`failed to delete config '${name}'`)); return; }
         callback(null);
-      });
+      }, retryOptions);
     });
   }
 
@@ -1058,7 +1141,7 @@ class Handler {
     if (!name) { callback(new Error('name is required')); return; }
     if (!Handler.getConfig(name)) { callback(new Error(`replicator '${name}' not found`)); return; }
     if (Handler.hasInstalledService(name)) { callback(new Error(`replicator '${name}' already installed`)); return; }
-    Handler.installService(name, callback);
+    Handler.installService(name, callback, { retryOnMissingService: true });
   }
 
   /**
@@ -1069,13 +1152,14 @@ class Handler {
   static startReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     if (!Handler.getConfig(name)) { callback(new Error(`replicator '${name}' not found`)); return; }
+    const retryOptions = { retryOnMissingService: true };
     Handler.getServiceStatus(name, (err, serviceInfo) => {
       if (!err && Handler.isServiceRunningStatus(serviceInfo)) {
         callback(new Error(`replicator '${name}' is already running`));
         return;
       }
-      Handler.startService(name, callback);
-    });
+      Handler.startService(name, callback, retryOptions);
+    }, retryOptions);
   }
 
   /**
@@ -1091,7 +1175,7 @@ class Handler {
       const pidPath = path.join(APP_DIR, `${name}.pid`);
       Handler._delete(pidPath);
       callback(null);
-    });
+    }, { retryOnMissingService: true });
   }
 
   /**
@@ -1113,7 +1197,7 @@ class Handler {
           data.push({ name, installed: true, running: Handler.isServiceRunningStatus(serviceInfo) });
         }
         next(index + 1);
-      });
+      }, { retryOnMissingService: installed });
     };
     next(0);
   }
@@ -1123,7 +1207,7 @@ class Handler {
    * @param {{ server?: string, host?: string, port?: number|string, user?: string, password?: string, type?: string, table: string }} body
    * @param {function(Error|null, { table: string, tableType: string, columns: Array, meta: Array }=): void} callback
    */
-  static getTableColumns(body, callback) {
+  static async getTableColumns(body, callback) {
     const { table } = body;
     if (!table)    { callback(new Error('table is required')); return; }
     let endpoint;
@@ -1134,16 +1218,17 @@ class Handler {
       return;
     }
 
-    const client = new MachbaseClient(endpoint);
+    const type = String(endpoint.type || 'native').toLowerCase();
+    const client = type === 'native' ? new MachbaseClient(endpoint) : createQueryClient(endpoint);
     try {
-      client.connect();
+      await client.connect();
       const qualified = client.splitQualifiedTableName(table);
-      const { type: tableType } = client.selectTableTypeQualified(table.toUpperCase());
+      const { type: tableType } = await client.selectTableTypeQualified(table.toUpperCase());
       if (tableType === 'UNSUPPORTED') {
         callback(new Error(`table '${table}' not found`));
         return;
       }
-      const rows = client.selectColumnsByQualifiedTableName(table.toUpperCase()).filter((r) => {
+      const rows = (await client.selectColumnsByQualifiedTableName(table.toUpperCase())).filter((r) => {
         if (tableType !== 'LOG') return true;
         return r.NAME !== '_ARRIVAL_TIME';
       });
@@ -1170,7 +1255,7 @@ class Handler {
     } catch (err) {
       callback(err);
     } finally {
-      client.close();
+      try { await client.close(); } catch (_) {}
     }
   }
 
@@ -1179,7 +1264,7 @@ class Handler {
    * @param {{ server?: string, host?: string, port?: number|string, user?: string, password?: string, type?: string }} body
    * @param {function(Error|null, { tables: Array }=): void} callback
    */
-  static getTableList(body, callback) {
+  static async getTableList(body, callback) {
     let endpoint;
     try {
       endpoint = resolveEndpointConnection(body || {}, (serverName) => Handler.getServerConfig(serverName), 'server');
@@ -1188,10 +1273,11 @@ class Handler {
       return;
     }
 
-    const client = new MachbaseClient(endpoint);
+    const type = String(endpoint.type || 'native').toLowerCase();
+    const client = type === 'native' ? new MachbaseClient(endpoint) : createQueryClient(endpoint);
     try {
-      client.connect();
-      const tables = client.selectVisibleTables().map((row) => ({
+      await client.connect();
+      const tables = (await client.selectVisibleTables()).map((row) => ({
         name: row.TABLE_NAME,
         tableType: row.TABLE_TYPE === 6 ? 'TAG' : 'LOG',
         owner: row.OWNER || '',
@@ -1200,13 +1286,12 @@ class Handler {
     } catch (err) {
       callback(err);
     } finally {
-      client.close();
+      try { await client.close(); } catch (_) {}
     }
   }
 
   /**
    * 로그 파일 목록을 반환한다.
-   * 읽기 권한이 없으면 lines는 null로 반환한다.
    * @param {function(Error|null, { files: Array }=): void} callback
    */
   static getLogList(callback) {
@@ -1229,15 +1314,48 @@ class Handler {
         continue;
       }
       if (!stat.isFile()) continue;
-      let lines = null;
-      try {
-        lines = Handler.countLines(fs.readFileSync(filePath, 'utf8'));
-      } catch (_) {}
-      files.push({ name, size: stat.size, lines });
+      files.push({ name, size: stat.size });
     }
 
     files.sort((a, b) => a.name.localeCompare(b.name));
     callback(null, { files });
+  }
+
+  /**
+   * 로그 파일 전체 내용을 반환한다.
+   * @param {{ name?: string }} query
+   * @param {function(Error|null, { name: string, content: string }=): void} callback
+   */
+  static getLogContentAll(query, callback) {
+    let filePath;
+    try {
+      filePath = Handler.resolveLogFilePath(query && query.name);
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (err) {
+      callback(err);
+      return;
+    }
+    if (!stat.isFile()) {
+      callback(new Error(`log file '${query.name}' not found`));
+      return;
+    }
+
+    let content;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    callback(null, { name: path.basename(filePath), content });
   }
 
   /**

@@ -1,8 +1,7 @@
 /**
- * POST /cgi-bin/api/table/columns
- * body: { host, port, user, password, table }
+ * GET /cgi-bin/api/log/content/all?name=...
  *
- * 지정한 DB에 연결하여 테이블 컬럼 정보를 반환한다.
+ * 로그 파일 전체 내용을 문자열로 반환한다.
  */
 
 const path = require('path');
@@ -10,17 +9,16 @@ const process = require('process');
 const ROOT = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
 const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 
-async function POST() {
-  await Handler.getTableColumns(Handler.readBody(), (err, data) => {
+function GET() {
+  Handler.getLogContentAll(Handler.parseQuery(), (err, data) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
   });
 }
 
-const handlers = { POST };
+const handlers = { GET };
 const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
 try {
-  Promise.resolve((handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))())
-    .catch((err) => Handler.reply({ ok: false, reason: err.message }));
+  (handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))();
 } catch (err) {
   Handler.reply({ ok: false, reason: err.message });
 }

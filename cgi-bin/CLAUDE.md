@@ -38,11 +38,22 @@
 ## Server Profile 규칙
 
 - 저장 위치: `conf.d/server/{name}.json`
-- 필드: `name`, `host`, `port`, `user`, `password`, `type`
-- 현재 `type`은 `"native"`만 지원
-- `GET` 응답에서는 password 제외
-- `PUT`에서 password가 없거나 `null` 또는 `""` 이면 기존값 유지
+- 필드:
+  - 공통: `name`, `host`, `port`, `type`
+  - `native`: `user`, `password`
+  - `http`: `protocol`, `token`
+  - `mqtt-api`: `clientId`, `token`, `qos`
+  - `mqtt-publish`: `clientId`, `token`, `qos`, `retain`, 필요시 `user`, `password`
+- `type` 지원:
+  - `native`
+  - `http`
+  - `mqtt-api`
+  - `mqtt-publish`
+- `GET` 응답에서는 `password`, `token` 제외
+- `PUT`에서 `password`, `token`이 없거나 `null` 또는 `""` 이면 기존값 유지
 - 다른 replication config가 참조 중이면 `DELETE` 거부
+- source로 사용할 수 있는 type은 `native`, `http` 뿐이다
+- `mqtt-api`, `mqtt-publish` 는 target 전용이다
 
 ## ReplicatorConfig 핵심 규칙
 
@@ -78,10 +89,14 @@
 - TAG primary/base time 컬럼명은 물리적으로 달라도 flag 기준으로 해석한다
 - source TAG data read 시 파티션 테이블의 primary 값(tag id)을 source meta cache로 원본 tag name으로 복원한다
 - TAG `rep_target_cond` / transform criteria가 primary 컬럼일 때 SQL은 `_TAG_META` subquery로 name 조건을 푼다
-- 신규 target tag name을 만나면 append 전에 `INSERT INTO <table> METADATA VALUES (...)` 로 metadata를 먼저 등록한다
-- metadata insert는 target 별도 연결에서 수행한다
+- target type별 metadata 동작:
+  - `native`: 신규 target tag name을 만나면 append 전에 `INSERT INTO <table> METADATA VALUES (...)` 로 metadata를 먼저 등록한다
+  - `http`: `native`와 동일하게 metadata를 먼저 insert한다. append payload는 현재 Machbase HTTP API 제약 때문에 metadata 컬럼 자리를 포함하지만 값은 `null`로 채운다
+  - `mqtt-api`: metadata를 별도 insert하지 않고 data write payload에 meta 컬럼을 함께 포함한다
+  - `mqtt-publish`: metadata를 별도 insert하지 않고 publish payload columns/rows에 meta 컬럼을 함께 포함한다
 - target에 이미 있는 tag name은 메모리 cache로 건너뛴다
 - integrity check는 재기동 시 source batch를 읽고 target의 `PRIMARY + BASETIME` 존재 여부를 row-by-row로 확인한다
+- `mqtt-api`, `mqtt-publish` target은 integrity를 지원하지 않는다
 
 ## runtime 배치 루프
 
@@ -154,6 +169,11 @@
 - `src/db/client.js`
   - machcli wrapper
   - metadata select/insert helpers
+- `src/db/remote.js`
+  - HTTP API query/write helper
+  - MQTT API query helper
+  - MQTT API write-only target helper
+  - generic MQTT publish helper
 
 ## 배포 테스트 메모
 
