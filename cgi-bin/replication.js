@@ -39,7 +39,7 @@ const configPath = path.join(CONF_DIR, `${configName}.json`);
 
 try {
   const storedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  initLogger(storedConfig.logging);
+  initLogger(storedConfig.logging, { fileStem: configName });
   const prepared = Handler.prepareReplicatorConfig(storedConfig);
   const config = prepared.runtimeConfig;
 
