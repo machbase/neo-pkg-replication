@@ -234,7 +234,7 @@ type별 제약:
 
 - 모든 로그 파일 경로는 `/work/public/neo-pkg-replication/logs`
 - 파일당 최대 크기 10MB
-- `stdout:true` 로 기록한 service lifecycle 로그는 stdout에도 함께 출력
+- service process lifecycle 로그(`start`, `stopped`)는 stdout에도 함께 출력
 - `logging.level` 이 `trace` 이면 source data read에 사용하는 SQL과 바인딩 파라미터를 로그에 남긴다.
 
 ## Replication API

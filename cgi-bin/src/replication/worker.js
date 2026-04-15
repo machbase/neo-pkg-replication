@@ -322,18 +322,25 @@ class Worker {
   async _ensureTagMetadata(metaClient, targetMetaNames, metadataRows, retry, shutdownFlag, logCtx) {
     if (!metaClient || !Array.isArray(metadataRows) || metadataRows.length === 0) return true;
 
+    let inserted = 0;
+    let skippedExisting = 0;
     for (const row of metadataRows) {
       if (shutdownFlag.value) return false;
-      if (targetMetaNames[row.name]) continue;
+      if (targetMetaNames[row.name]) {
+        skippedExisting++;
+        continue;
+      }
       const ok = await _withRetry({
         fn: async () => {
           try {
             await metaClient.insertTagMeta(this.config.target.table, [row.name].concat(row.values));
             targetMetaNames[row.name] = true;
+            inserted++;
             return { done: true, value: true };
           } catch (err) {
             if (_isDuplicateMetadataError(err)) {
               targetMetaNames[row.name] = true;
+              skippedExisting++;
               return { done: true, value: true };
             }
             return {
@@ -352,6 +359,12 @@ class Worker {
       });
       if (!ok.ok) return false;
     }
+    getLogger().debug('worker_metadata', {
+      ...logCtx,
+      inserted,
+      skippedExisting,
+      msg: 'metadata sync completed',
+    });
     return true;
   }
 
@@ -379,7 +392,7 @@ class Worker {
     let totalRowsWritten = cpExists && cp && cp.totalRowsWritten != null ? BigInt(String(cp.totalRowsWritten)) : 0n;
     if (cpExists && cp) {
       startRid = cp.lastSuccessRid + 1n;
-      getLogger().info('worker', { ...logCtx, startRid: String(startRid), msg: 'resume from checkpoint' });
+      getLogger().debug('worker', { ...logCtx, startRid: String(startRid), msg: 'resume from checkpoint' });
     } else {
       const startMode = this.config.startMode;
       if (startMode === 'now') {
@@ -391,7 +404,7 @@ class Worker {
       } else {
         startRid = 0n;
       }
-      getLogger().info('worker', { ...logCtx, startMode: this.config.startMode, startRid: String(startRid), msg: 'worker start' });
+      getLogger().debug('worker', { ...logCtx, startMode: this.config.startMode, startRid: String(startRid), msg: 'worker start' });
       const initialCpRid = startRid > 0n ? (startRid - 1n) : -1n;
       this._saveCheckpoint(checkpointStore, initialCpRid, totalRowsWritten, {
         rowsRead: 0,
@@ -484,6 +497,17 @@ class Worker {
         }
 
         totalRowsWritten += BigInt(processed.appendRows.length);
+        getLogger().debug('worker_batch', {
+          ...logCtx,
+          phase: 'STEADY',
+          fromRid: String(startRid),
+          toRid: String(endRid),
+          rowsRead: readResult.rows.length,
+          rowsWritten: processed.appendRows.length,
+          droppedNoMeta: 0,
+          skippedExists: 0,
+          totalRowsWritten: totalRowsWritten.toString(),
+        });
         this._saveCheckpoint(checkpointStore, endRid, totalRowsWritten, {
           rowsRead: readResult.rows.length,
           rowsWritten: processed.appendRows.length,
@@ -499,7 +523,7 @@ class Worker {
   }
 
   async _runStartupIntegrity({ startRid, totalRowsWritten, srcTable, dstTable, retry, shutdownFlag, logCtx, checkpointStore, plan }) {
-    getLogger().info('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
+    getLogger().debug('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
 
     let integrityRid = startRid;
     const integrityBatchSize = Math.min(this.config.queryLimit, INTEGRITY_BATCH_LIMIT);
@@ -556,12 +580,23 @@ class Worker {
             droppedNoMeta: 0,
             skippedExists: result.firstMissIdx,
           }, true, integrityBatchSize);
-          getLogger().info('worker', { ...logCtx, firstMissRid: String(firstMissRid), safeCpRid: String(safeCpRid), msg: 'integrity check: first missing row found' });
+          getLogger().debug('worker', { ...logCtx, firstMissRid: String(firstMissRid), safeCpRid: String(safeCpRid), msg: 'integrity check: first missing row found' });
           startRid = firstMissRid;
           break;
         }
 
         totalRowsWritten += BigInt(processed.appendRows.length);
+        getLogger().debug('worker_batch', {
+          ...logCtx,
+          phase: 'STARTUP_INTEGRITY',
+          fromRid: String(integrityRid),
+          toRid: String(endRid),
+          rowsRead: readResult.rows.length,
+          rowsWritten: 0,
+          droppedNoMeta: 0,
+          skippedExists: processed.resolved.length,
+          totalRowsWritten: totalRowsWritten.toString(),
+        });
         this._saveCheckpoint(checkpointStore, endRid, totalRowsWritten, {
           rowsRead: readResult.rows.length,
           rowsWritten: 0,

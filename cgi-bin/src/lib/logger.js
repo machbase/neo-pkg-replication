@@ -52,6 +52,10 @@ class Logger {
   warn(stage, fields)  { this._write('warn',  stage, fields); }
   /** @param {string} stage @param {object} fields */
   error(stage, fields) { this._write('error', stage, fields); }
+  /** @param {string} level @param {string} stage @param {object} fields */
+  stdout(level, stage, fields) {
+    console.println(this._format(level, stage, fields || {}));
+  }
 
   /**
    * 구분선과 함께 배너 메시지를 파일에 출력한다.
@@ -79,9 +83,6 @@ class Logger {
     if (LEVELS[level] < this._minLevel) return;
     const text = this._format(level, stage, fields);
     this._appendToFile(text + '\n');
-    if (fields.stdout === true) {
-      console.println(text);
-    }
   }
 
   /**
@@ -95,7 +96,7 @@ class Logger {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
     const label = LEVEL_LABEL[level] || level.toUpperCase();
 
-    const { msg, stdout, ...rest } = fields;
+    const { msg, ...rest } = fields;
     const kvParts = Object.entries(rest)
       .filter(([, v]) => v !== undefined && v !== null)
       .map(([k, v]) => `${k}=${_quoteIfNeeded(String(v))}`);

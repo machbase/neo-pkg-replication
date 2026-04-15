@@ -132,7 +132,7 @@
 - 파일당 최대 10MB
 - `maxFiles` 개수만큼 rotation
 - config에서 실제 사용하는 logging 필드는 `level`, `maxFiles`
-- `stdout:true` 로 기록한 로그만 파일 + stdout 동시 출력
+- service process lifecycle 로그(`start`, `stopped`)는 파일과 별도로 stdout에도 출력
 - 현재 service lifecycle 로그(`app`, `replicator start/stopped`)는 stdout으로도 출력한다
 - `logging.level=trace` 이면 source data read SQL과 바인딩 파라미터를 `table_read_query` 로그로 남긴다
 
