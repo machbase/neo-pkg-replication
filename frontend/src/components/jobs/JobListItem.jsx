@@ -6,9 +6,9 @@ export default function JobListItem({ job, selected, onSelect, onToggle, onInsta
     return (
         <div
             onClick={onSelect}
-            className={`side-item shrink-0 ${selected ? "active" : ""}`}
+            className={`side-item ${selected ? "active" : ""}`}
         >
-            <span className="lg:flex-1 truncate min-w-0">{job.id}</span>
+            <span className="flex-1 min-w-0 truncate">{job.id}</span>
             {job.installed === false ? (
                 <button
                     onClick={(e) => {
@@ -16,9 +16,9 @@ export default function JobListItem({ job, selected, onSelect, onToggle, onInsta
                         onInstall();
                     }}
                     className="btn-icon-sm shrink-0 ml-4 tooltip"
-                    data-tooltip="Install"
+                    data-tooltip="Register"
                 >
-                    <Icon name="download" className="icon-sm" />
+                    <Icon name="app_registration" className="icon-sm" />
                 </button>
             ) : (
                 <button

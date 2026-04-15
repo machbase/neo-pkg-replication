@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import Icon from './Icon'
 
 export default function ConfirmDialog({ title, message, onConfirm, onCancel }) {
   useEffect(() => {
@@ -8,9 +9,17 @@ export default function ConfirmDialog({ title, message, onConfirm, onCancel }) {
   }, [onCancel])
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-title">{title}</div>
+    <div className="modal-overlay" onMouseDown={onCancel}>
+      <div className="modal modal-sm" onMouseDown={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-header-title">
+            <Icon name="warning" className="text-warning" />
+            {title}
+          </div>
+          <button onClick={onCancel} className="p-4 hover:bg-surface-hover rounded-base tooltip" data-tooltip="Close">
+            <Icon name="close" />
+          </button>
+        </div>
         <div className="modal-body">{message}</div>
         <div className="modal-footer">
           <button onClick={onCancel} className="btn btn-content btn-ghost">

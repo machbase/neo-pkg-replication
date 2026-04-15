@@ -10,7 +10,7 @@ export default function useServers() {
   const fetchServers = useCallback(async () => {
     try {
       const data = await serversApi.listServers()
-      setServers(data)
+      setServers(Array.isArray(data) ? data : [])
     } catch (e) {
       notify(e.reason || e.message, 'error')
     } finally {
@@ -55,9 +55,5 @@ export default function useServers() {
     }
   }, [fetchServers, notify])
 
-  const healthCheck = useCallback(async (name) => {
-    return await serversApi.checkHealth(name)
-  }, [])
-
-  return { servers, loading, addServer, editServer, removeServer, healthCheck, refreshServers: fetchServers }
+  return { servers, loading, addServer, editServer, removeServer, refreshServers: fetchServers }
 }

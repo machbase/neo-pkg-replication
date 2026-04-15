@@ -1,67 +1,42 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { Routes, Route, useNavigate } from 'react-router'
 import useJobs from './hooks/useJobs'
 import { useApp } from './context/AppContext'
 import DashboardPage from './pages/DashboardPage'
 import JobFormPage from './pages/JobFormPage'
+import ServerSettingsModal from './components/servers/ServerSettingsModal'
 import Toast from './components/common/Toast'
 
 const CHANNEL_NAME = 'app:neo-replication'
 
 export default function App() {
   const navigate = useNavigate()
-  const { selectedJobId, setSelectedJobId } = useApp()
-  const { jobs, toggleJob, installJob, removeJob, refreshJobs } = useJobs()
-  const channelRef = useRef(null)
-  const handlersRef = useRef({})
-
-  handlersRef.current = {
-    selectJob: (payload) => {
-      setSelectedJobId(payload.jobId)
-      navigate('/')
-    },
-    navigate: (payload) => {
-      navigate(payload.path)
-    },
-    toggleJob: (payload) => {
-      const job = jobs.find(j => j.id === payload.jobId)
-      if (job) toggleJob(job)
-    },
-    installJob: (payload) => {
-      const job = jobs.find(j => j.id === payload.jobId)
-      if (job) installJob(job)
-    },
-    requestReady: () => {
-      const ch = channelRef.current
-      if (!ch) return
-      ch.postMessage({ type: 'ready' })
-      ch.postMessage({ type: 'jobsData', payload: { jobs } })
-      ch.postMessage({ type: 'jobSelected', payload: { jobId: selectedJobId } })
-    },
-  }
+  const { setSelectedJobId } = useApp()
+  const { jobs, removeJob, refreshJobs } = useJobs()
+  const [showServerSettings, setShowServerSettings] = useState(false)
 
   useEffect(() => {
     const ch = new BroadcastChannel(CHANNEL_NAME)
-    channelRef.current = ch
 
     ch.onmessage = (e) => {
       const msg = e.data
       if (!msg || !msg.type) return
-      const handler = handlersRef.current[msg.type]
-      if (handler) handler(msg.payload)
+      switch (msg.type) {
+        case 'selectJob':
+          setSelectedJobId(msg.payload.jobId)
+          navigate('/')
+          break
+        case 'navigate':
+          navigate(msg.payload.path)
+          break
+        case 'openServerSettings':
+          setShowServerSettings(true)
+          break
+      }
     }
 
-    ch.postMessage({ type: 'ready' })
     return () => ch.close()
-  }, [])
-
-  useEffect(() => {
-    channelRef.current?.postMessage({ type: 'jobsData', payload: { jobs } })
-  }, [jobs])
-
-  useEffect(() => {
-    channelRef.current?.postMessage({ type: 'jobSelected', payload: { jobId: selectedJobId } })
-  }, [selectedJobId])
+  }, [navigate, setSelectedJobId])
 
   return (
     <>
@@ -81,6 +56,9 @@ export default function App() {
         </main>
       </div>
       <Toast />
+      {showServerSettings && (
+        <ServerSettingsModal onClose={() => setShowServerSettings(false)} />
+      )}
     </>
   )
 }

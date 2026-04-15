@@ -7,7 +7,7 @@ class ApiError extends Error {
     }
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "/public/neo-pkg-replication";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "/public/neo-pkg-replication/cgi-bin/api";
 
 async function request(method, path, body) {
     const opts = {
@@ -31,7 +31,7 @@ async function request(method, path, body) {
     } catch {
         throw new ApiError(res.status, `Server returned non-JSON response (${res.status})`);
     }
-    if (!json.ok) throw new ApiError(res.status, json.reason || 'Unknown error', json);
+    if (!json.ok) throw new ApiError(res.status, json.reason || "Unknown error", json);
     return json.data;
 }
 

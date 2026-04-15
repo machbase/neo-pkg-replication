@@ -1,15 +1,13 @@
 import { request } from "./client";
 
-export const listServers = () => request("GET", "/api/servers");
+export const listServers = () => request("GET", "/server/list");
 
-export const createServer = (data) => request("POST", "/api/servers", data);
+export const getServer = (name) => request("GET", `/server?name=${encodeURIComponent(name)}`);
 
-export const updateServer = (name, data) => request("PUT", `/api/servers/${encodeURIComponent(name)}`, data);
+export const createServer = (data) => request("POST", "/server", data);
 
-export const deleteServer = (name) => request("DELETE", `/api/servers/${encodeURIComponent(name)}`);
+export const updateServer = (name, data) => request("PUT", `/server?name=${encodeURIComponent(name)}`, data);
 
-export const checkHealth = (name) => request("GET", `/api/servers/${encodeURIComponent(name)}/health`);
+export const deleteServer = (name) => request("DELETE", `/server?name=${encodeURIComponent(name)}`);
 
-export const listTables = (name) => request("GET", `/api/servers/${encodeURIComponent(name)}/tables`);
-
-export const getTableSchema = (name, table) => request("GET", `/api/servers/${encodeURIComponent(name)}/tables/${encodeURIComponent(table)}/schema`);
+export const listTables = (server) => request("POST", "/table/list", { server });
