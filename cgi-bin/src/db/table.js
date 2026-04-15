@@ -74,6 +74,42 @@ function _toEpochMs(value) {
   return Number.isFinite(ms) ? ms : value;
 }
 
+function _isIntegerFamilyColumn(column) {
+  if (!column || !column.columnType) return false;
+  return column.columnType === ColumnType.SHORT
+    || column.columnType === ColumnType.USHORT
+    || column.columnType === ColumnType.INTEGER
+    || column.columnType === ColumnType.UINTEGER
+    || column.columnType === ColumnType.LONG
+    || column.columnType === ColumnType.ULONG;
+}
+
+function _coerceIntegerFamilyValue(value) {
+  if (value == null) return value;
+  if (typeof value === 'bigint') {
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    const minSafe = BigInt(Number.MIN_SAFE_INTEGER);
+    if (value <= maxSafe && value >= minSafe) {
+      return Number(value);
+    }
+    return value.toString();
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? Math.trunc(value) : null;
+  }
+  if (typeof value === 'boolean') {
+    return value ? 1 : 0;
+  }
+  const text = String(value).trim();
+  if (text === '') return null;
+  if (/^-?\d+$/.test(text)) {
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : text;
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : value;
+}
+
 function _normalizeWriteValue(column, value, targetType) {
   if (value == null) return value;
   if (targetType === 'native' && column && column.columnType === ColumnType.DATETIME) {
@@ -87,6 +123,9 @@ function _normalizeWriteValue(column, value, targetType) {
   }
   if (targetType === 'mqtt-publish' && column && column.columnType === ColumnType.DATETIME) {
     return formatEpochNsToRfc3339NanoLocal(value);
+  }
+  if ((targetType === 'http' || targetType === 'mqtt-api') && _isIntegerFamilyColumn(column)) {
+    return _coerceIntegerFamilyValue(value);
   }
   return value;
 }
