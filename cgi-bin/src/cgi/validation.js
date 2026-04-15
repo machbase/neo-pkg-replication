@@ -2,7 +2,7 @@
 
 const { MachbaseClient, ColumnType } = require('../db/client.js');
 const { createQueryClient } = require('../db/remote.js');
-const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
+const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME, FLAG_SUMMARIZED } = require('../db/types.js');
 const {
   isObject,
   normalizeColumnName,
@@ -360,6 +360,9 @@ function _validateMappedTypes(sourceMapping, targetMapping, sourceByName, target
       throw new Error(`${label}[${i}] target column '${targetName}' not found`);
     }
     if (!sourceName) {
+      if ((targetColumn.FLAG & FLAG_SUMMARIZED) !== 0) {
+        throw new Error(`${label}[${i}] target summarized column '${targetName}' does not allow null mapping`);
+      }
       if (options.requireKeyColumns && ((targetColumn.FLAG & FLAG_PRIMARY) || (targetColumn.FLAG & FLAG_BASETIME))) {
         throw new Error(`${label}[${i}] requires source mapping for target key column '${targetName}'`);
       }

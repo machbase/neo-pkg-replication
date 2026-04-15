@@ -3,6 +3,7 @@
 const http = require('http');
 const mqtt = require('mqtt');
 const { ColumnType } = require('./types.js');
+const { getInstance: getLogger } = require('../lib/logger.js');
 
 const DEFAULT_HTTP_TIMEOUT_MS = 10000;
 const DEFAULT_MQTT_TIMEOUT_MS = 10000;
@@ -427,6 +428,12 @@ class HttpApiClient extends SqlLikeClient {
   }
 
   async writeRows(tableName, columns, rows, method) {
+    getLogger().trace('remote_http_write', {
+      table: String(tableName),
+      method: method || 'append',
+      columns: columns.length,
+      rows: rows.length,
+    });
     const table = encodeURIComponent(String(tableName));
     const result = await this._request(
       'POST',
@@ -640,6 +647,12 @@ class MqttApiClient extends SqlLikeClient {
   async writeRows(tableName, columns, rows) {
     await this.connect();
     if (!this.client) throw new Error('mqtt client is not connected');
+    getLogger().trace('remote_mqtt_api_write', {
+      table: String(tableName),
+      qos: this.qos,
+      columns: columns.length,
+      rows: rows.length,
+    });
     let ack = null;
     try {
       ack = this.client.publish(
@@ -750,6 +763,14 @@ class MqttPublishClient {
   async publish(topic, payload) {
     await this.connect();
     if (!this.client) throw new Error('mqtt publisher is not connected');
+    const rowCount = Array.isArray(payload && payload.rows) ? payload.rows.length : 0;
+    const columnCount = Array.isArray(payload && payload.columns) ? payload.columns.length : 0;
+    getLogger().trace('remote_mqtt_publish', {
+      topic: String(topic),
+      qos: this.qos,
+      columns: columnCount,
+      rows: rowCount,
+    });
     const ack = this.client.publish(topic, JSON.stringify(payload), {
       qos: this.qos,
       retain: this.retain,

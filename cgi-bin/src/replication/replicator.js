@@ -235,7 +235,7 @@ class Replicator {
           throw err;
         })
       ));
-      getLogger().info('replicator', { ...this.logCtx, msg: 'all workers finished' });
+      getLogger().debug('replicator', { ...this.logCtx, msg: 'all workers finished' });
       return true;
     } catch (_) {
       if (!this.shutdownFlag.value) {
@@ -250,7 +250,8 @@ class Replicator {
   }
 
   async start() {
-    getLogger().info('replicator', { ...this.logCtx, stdout: true, msg: 'start' });
+    getLogger().stdout('info', 'replicator', { ...this.logCtx, msg: 'start' });
+    getLogger().info('replicator', { ...this.logCtx, msg: 'start' });
 
     while (!this.shutdownFlag.value) {
       const discovered = await this.discover();
@@ -265,7 +266,8 @@ class Replicator {
       if (this.shutdownFlag.value) break;
     }
 
-    getLogger().info('replicator', { ...this.logCtx, stdout: true, msg: 'stopped' });
+    getLogger().stdout('info', 'replicator', { ...this.logCtx, msg: 'stopped' });
+    getLogger().info('replicator', { ...this.logCtx, msg: 'stopped' });
   }
 }
 

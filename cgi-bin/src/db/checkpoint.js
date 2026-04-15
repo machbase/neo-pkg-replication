@@ -150,7 +150,7 @@ class CheckpointStore {
       const tmpPath = `${filePath}.${Date.now()}.tmp`;
       fs.writeFileSync(tmpPath, content, 'utf-8');
       fs.renameSync(tmpPath, filePath);
-      getLogger().info('checkpoint_saved', {
+      getLogger().debug('checkpoint_saved', {
         dataTable,
         lastSuccessRid: cp.lastSuccessRid.toString(),
         totalRowsWritten: totalRowsWritten.toString(),
