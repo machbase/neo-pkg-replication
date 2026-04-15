@@ -12,6 +12,7 @@ const {
   DATA_DIR,
   SERVER_CONF_DIR,
   SERVICE_NAME_PREFIX,
+  DEFAULT_LOG_DIR,
   normalizeTableName,
   normalizeColumnName,
   normalizeServerProfileForSave,
@@ -91,6 +92,44 @@ class Handler {
         || message.indexOf('cannot find the path') >= 0;
       return isMissing ? null : err;
     }
+  }
+
+  /**
+   * 로그 디렉토리 경로를 반환한다.
+   * @returns {string}
+   */
+  static getLogDir() {
+    return DEFAULT_LOG_DIR;
+  }
+
+  /**
+   * log API에서 사용할 파일명을 검증하고 절대경로로 변환한다.
+   * 경로 탐색은 허용하지 않는다.
+   * @param {string} name
+   * @returns {string}
+   */
+  static resolveLogFilePath(name) {
+    const fileName = String(name || '').trim();
+    if (!fileName) throw new Error('name is required');
+    if (fileName !== path.basename(fileName)) {
+      throw new Error('invalid log file name');
+    }
+    return path.join(Handler.getLogDir(), fileName);
+  }
+
+  /**
+   * 텍스트의 라인 수를 계산한다.
+   * @param {string} text
+   * @returns {number}
+   */
+  static countLines(text) {
+    if (!text) return 0;
+    let count = 1;
+    for (let i = 0; i < text.length; i++) {
+      if (text.charCodeAt(i) === 10) count++;
+    }
+    if (text.charCodeAt(text.length - 1) === 10) count--;
+    return count;
   }
 
   // ── conf.d CRUD ─────────────────────────────────────────────────────────────
@@ -1163,6 +1202,120 @@ class Handler {
     } finally {
       client.close();
     }
+  }
+
+  /**
+   * 로그 파일 목록을 반환한다.
+   * 읽기 권한이 없으면 lines는 null로 반환한다.
+   * @param {function(Error|null, { files: Array }=): void} callback
+   */
+  static getLogList(callback) {
+    const logDir = Handler.getLogDir();
+    let names = [];
+    try {
+      names = fs.readdirSync(logDir);
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    const files = [];
+    for (const name of names) {
+      const filePath = path.join(logDir, name);
+      let stat;
+      try {
+        stat = fs.statSync(filePath);
+      } catch (_) {
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      let lines = null;
+      try {
+        lines = Handler.countLines(fs.readFileSync(filePath, 'utf8'));
+      } catch (_) {}
+      files.push({ name, size: stat.size, lines });
+    }
+
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    callback(null, { files });
+  }
+
+  /**
+   * 로그 파일 내용의 전체 또는 일부 라인을 반환한다.
+   * @param {{ name?: string, start?: string|number, end?: string|number }} query
+   * @param {function(Error|null, { name: string, start: number, end: number, totalLines: number, lines: string[] }=): void} callback
+   */
+  static getLogContent(query, callback) {
+    let filePath;
+    try {
+      filePath = Handler.resolveLogFilePath(query && query.name);
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (err) {
+      callback(err);
+      return;
+    }
+    if (!stat.isFile()) {
+      callback(new Error(`log file '${query.name}' not found`));
+      return;
+    }
+
+    let text;
+    try {
+      text = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    const lines = text ? text.split(/\r?\n/) : [];
+    if (lines.length > 0 && lines[lines.length - 1] === '') {
+      lines.pop();
+    }
+    const totalLines = lines.length;
+
+    const parseLineNumber = (value, fallback) => {
+      if (value == null || value === '') return fallback;
+      const parsed = parseInt(value, 10);
+      if (!Number.isFinite(parsed)) throw new Error('start/end must be integers');
+      return parsed;
+    };
+
+    let start;
+    let end;
+    try {
+      start = parseLineNumber(query && query.start, 1);
+      end = parseLineNumber(query && query.end, totalLines);
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    if (totalLines === 0) {
+      callback(null, { name: path.basename(filePath), start: 0, end: 0, totalLines: 0, lines: [] });
+      return;
+    }
+
+    if (start < 1) start = 1;
+    if (end > totalLines) end = totalLines;
+    if (end < start) {
+      callback(new Error('end must be greater than or equal to start'));
+      return;
+    }
+
+    callback(null, {
+      name: path.basename(filePath),
+      start,
+      end,
+      totalLines,
+      lines: lines.slice(start - 1, end),
+    });
   }
 }
 

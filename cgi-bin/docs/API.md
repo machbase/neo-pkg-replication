@@ -61,6 +61,8 @@
 | `GET` | `/api/server.js?name=...` | server profile 단건 조회 |
 | `PUT` | `/api/server.js?name=...` | server profile 수정 |
 | `DELETE` | `/api/server.js?name=...` | server profile 삭제 |
+| `GET` | `/api/log/list` | 로그 파일 목록 조회 |
+| `GET` | `/api/log/content?name=...` | 로그 파일 내용 조회 |
 
 ### 예시
 
@@ -189,7 +191,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 현재 구현:
 
-- 모든 로그 파일 경로는 `/work/public/logs/neo-pkg-replication`
+- 모든 로그 파일 경로는 `/work/public/neo-pkg-replication/logs`
 - 파일당 최대 크기 10MB
 - `stdout:true` 로 기록한 service lifecycle 로그는 stdout에도 함께 출력
 - `logging.level` 이 `trace` 이면 source data read에 사용하는 SQL과 바인딩 파라미터를 로그에 남긴다.
@@ -354,6 +356,50 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 ```json
 {
   "server": "local"
+}
+```
+
+## Log API
+
+### 로그 경로
+
+- `/work/public/neo-pkg-replication/logs`
+
+### `GET /api/log/list`
+
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "files": [
+      { "name": "repli.log", "size": 10319374, "lines": 125438 }
+    ]
+  }
+}
+```
+
+- `lines`는 읽기 권한이 없으면 `null` 일 수 있다.
+
+### `GET /api/log/content?name=...&start=...&end=...`
+
+- `name`은 로그 파일명
+- `start`, `end`는 1-based line number
+- `start/end`를 생략하면 전체 내용을 반환한다.
+
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "name": "repli.log",
+    "start": 1,
+    "end": 3,
+    "totalLines": 125438,
+    "lines": ["line1", "line2", "line3"]
+  }
 }
 ```
 

@@ -8,7 +8,7 @@ const CONF_DIR = path.join(APP_DIR, 'conf.d');
 const DATA_DIR = path.join(APP_DIR, 'data');
 const SERVER_CONF_DIR = path.join(CONF_DIR, 'server');
 const SERVICE_NAME_PREFIX = '_rpl_';
-const DEFAULT_LOG_DIR = '/work/public/logs/neo-pkg-replication';
+const DEFAULT_LOG_DIR = '/work/public/neo-pkg-replication/logs';
 
 const CONDITION_OPS = { ALL: true, IN: true, LIKE: true };
 const EXPR_TYPES = { prefix: true, suffix: true, calc: true, filter: true };
