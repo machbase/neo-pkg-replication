@@ -12,6 +12,7 @@ const DEFAULT_LOG_DIR = '/work/public/neo-pkg-replication/logs';
 
 const CONDITION_OPS = { ALL: true, IN: true, LIKE: true };
 const EXPR_TYPES = { prefix: true, suffix: true, calc: true, filter: true };
+const SERVER_TYPES = { native: true, http: true, 'mqtt-api': true, 'mqtt-publish': true };
 
 function isObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -56,6 +57,21 @@ function normalizeServerType(value) {
   if (typeof value !== 'string') return 'native';
   const text = value.trim().toLowerCase();
   return text || 'native';
+}
+
+function normalizeProtocol(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().toLowerCase();
+  return text || null;
+}
+
+function normalizeBoolean(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'boolean') return value;
+  const text = String(value).trim().toLowerCase();
+  if (text === 'true' || text === '1' || text === 'yes' || text === 'y') return true;
+  if (text === 'false' || text === '0' || text === 'no' || text === 'n') return false;
+  return value;
 }
 
 function normalizeConditionValue(value) {
@@ -208,13 +224,19 @@ function normalizeLoggingConfig(logging) {
 
 function normalizeServerProfileForSave(profile) {
   if (!isObject(profile)) return profile;
+  const type = normalizeServerType(profile.type);
   return {
     name: normalizeOptionalString(profile.name),
     host: normalizeOptionalString(profile.host),
     port: normalizePort(profile.port),
     user: normalizeOptionalString(profile.user),
     password: profile.password == null ? '' : String(profile.password),
-    type: normalizeServerType(profile.type),
+    token: normalizeOptionalString(profile.token),
+    clientId: normalizeOptionalString(profile.clientId),
+    protocol: normalizeProtocol(profile.protocol),
+    qos: profile.qos == null || profile.qos === '' ? null : Number(profile.qos),
+    retain: normalizeBoolean(profile.retain),
+    type: SERVER_TYPES[type] ? type : type,
   };
 }
 
@@ -222,6 +244,7 @@ function sanitizeServerProfile(profile) {
   if (!isObject(profile)) return profile;
   const safe = { ...profile };
   delete safe.password;
+  delete safe.token;
   return safe;
 }
 
@@ -240,6 +263,11 @@ function _normalizeEndpointForSave(endpoint) {
     delete normalized.port;
     delete normalized.user;
     delete normalized.password;
+    delete normalized.token;
+    delete normalized.clientId;
+    delete normalized.protocol;
+    delete normalized.qos;
+    delete normalized.retain;
     delete normalized.type;
   } else {
     if (endpoint.host !== undefined) normalized.host = normalizeOptionalString(endpoint.host);
@@ -247,6 +275,14 @@ function _normalizeEndpointForSave(endpoint) {
     if (endpoint.user !== undefined) normalized.user = normalizeOptionalString(endpoint.user);
     if (endpoint.password !== undefined) normalized.password = endpoint.password == null ? '' : String(endpoint.password);
     if (endpoint.type !== undefined) normalized.type = normalizeServerType(endpoint.type);
+    if (endpoint.token !== undefined) normalized.token = normalizeOptionalString(endpoint.token);
+    if (endpoint.clientId !== undefined) normalized.clientId = normalizeOptionalString(endpoint.clientId);
+    if (endpoint.protocol !== undefined) normalized.protocol = normalizeProtocol(endpoint.protocol);
+    if (endpoint.qos !== undefined && endpoint.qos !== null && endpoint.qos !== '') {
+      const qos = Number(endpoint.qos);
+      normalized.qos = Number.isFinite(qos) ? qos : endpoint.qos;
+    }
+    if (endpoint.retain !== undefined) normalized.retain = normalizeBoolean(endpoint.retain);
   }
 
   if (endpoint.rep_target_cond !== undefined) {
@@ -321,13 +357,22 @@ function resolveEndpointConnection(endpoint, readServerProfile, side) {
 
   const resolved = profile ? { ...profile, ...normalized } : { ...normalized };
   resolved.type = normalizeServerType(resolved.type);
-  if (resolved.type !== 'native') {
-    throw new Error(`${side}.type '${resolved.type}' is not supported`);
-  }
   if (!resolved.host) throw new Error(`${side}.host is required`);
   if (!resolved.port) throw new Error(`${side}.port is required`);
-  if (!resolved.user) throw new Error(`${side}.user is required`);
-  if (resolved.password == null) resolved.password = '';
+  if (resolved.type === 'native') {
+    if (!resolved.user) throw new Error(`${side}.user is required`);
+    if (resolved.password == null) resolved.password = '';
+  } else if (resolved.type === 'http') {
+    if (resolved.password == null) resolved.password = '';
+    if (!resolved.protocol) resolved.protocol = 'http';
+  } else if (resolved.type === 'mqtt-api' || resolved.type === 'mqtt-publish') {
+    if (resolved.password == null) resolved.password = '';
+    if (resolved.qos == null || !Number.isFinite(Number(resolved.qos))) resolved.qos = 1;
+    else resolved.qos = Number(resolved.qos);
+    if (resolved.retain == null) resolved.retain = false;
+  } else {
+    throw new Error(`${side}.type '${resolved.type}' is not supported`);
+  }
   resolved.table = normalizeTableName(resolved.table);
   return resolved;
 }
@@ -352,13 +397,16 @@ function resolveReplicatorRuntimeConfig(config, readServerProfile) {
 function sanitizeReplicatorConfig(config) {
   if (!isObject(config)) return config;
   const safe = { ...config };
+  delete safe._runtime;
   if (isObject(config.source)) {
     safe.source = { ...config.source };
     delete safe.source.password;
+    delete safe.source.token;
   }
   if (isObject(config.target)) {
     safe.target = { ...config.target };
     delete safe.target.password;
+    delete safe.target.token;
   }
   return safe;
 }
@@ -379,6 +427,8 @@ module.exports = {
   normalizeColumnName,
   normalizeNameArray,
   normalizeServerType,
+  normalizeProtocol,
+  normalizeBoolean,
   normalizeCondition,
   normalizeTransformRules,
   normalizeServerProfileForSave,

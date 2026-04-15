@@ -37,32 +37,30 @@ if (!configName) {
 
 const configPath = path.join(CONF_DIR, `${configName}.json`);
 
-try {
-  const storedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  initLogger(storedConfig.logging, { fileStem: configName });
-  const prepared = Handler.prepareReplicatorConfig(storedConfig);
-  const config = prepared.runtimeConfig;
+(async () => {
+  try {
+    const storedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    initLogger(storedConfig.logging, { fileStem: configName });
+    const prepared = await Handler.prepareReplicatorConfig(storedConfig);
+    const config = prepared.runtimeConfig;
 
-  const pidFile = path.join(ROOT, `${configName}.pid`);
-  fs.mkdirSync(path.dirname(pidFile), { recursive: true });
-  fs.writeFileSync(pidFile, String(process.pid), 'utf-8');
+    const pidFile = path.join(ROOT, `${configName}.pid`);
+    fs.mkdirSync(path.dirname(pidFile), { recursive: true });
+    fs.writeFileSync(pidFile, String(process.pid), 'utf-8');
 
-  const shutdownFlag = { value: false };
-  const replicator = new Replicator(config, shutdownFlag);
+    const shutdownFlag = { value: false };
+    const replicator = new Replicator(config, shutdownFlag);
 
-  process.addShutdownHook(() => {
-    try { fs.unlinkSync(pidFile); } catch (_) {}
-    try { getLogger().info('app', { stdout: true, msg: 'shutdown requested' }); } catch (_) {}
-    replicator.shutdown();
-  });
+    process.addShutdownHook(() => {
+      try { fs.unlinkSync(pidFile); } catch (_) {}
+      try { getLogger().info('app', { stdout: true, msg: 'shutdown requested' }); } catch (_) {}
+      replicator.shutdown();
+    });
 
-  replicator.start().then(() => {
+    await replicator.start();
     process.exit(0);
-  }).catch(err => {
+  } catch (err) {
     getLogger().error('app', { stdout: true, msg: err.message });
     process.exit(1);
-  });
-} catch (err) {
-  getLogger().error('app', { stdout: true, msg: err.message });
-  process.exit(1);
-}
+  }
+})();

@@ -1,6 +1,7 @@
 'use strict';
 
 const { MachbaseClient, ColumnType } = require('../db/client.js');
+const { createQueryClient } = require('../db/remote.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
 const {
   isObject,
@@ -19,6 +20,7 @@ const NUMERIC_TYPES = new Set([
 
 const VALID_START_MODES = { full: true, now: true, ridAfter: true };
 const VALID_LOG_LEVELS = { trace: true, debug: true, info: true, warn: true, error: true };
+const MQTT_TARGET_TYPES = { 'mqtt-api': true, 'mqtt-publish': true };
 
 const STRING_LIKE_TYPES = new Set([
   ColumnType.VARCHAR,
@@ -130,15 +132,114 @@ function _validateRuntimeOptions(storedConfig) {
   }
 }
 
-function _describeTable(client, tableName) {
+async function _openQueryClient(endpoint, side) {
+  const type = String(endpoint?.type || 'native').toLowerCase();
+  if (type === 'mqtt-api' && side === 'source') {
+    throw new Error(`${side}.type 'mqtt-api' is not supported`);
+  }
+  if (type === 'mqtt-publish' && side === 'source') {
+    throw new Error(`${side}.type 'mqtt-publish' is not supported`);
+  }
+  const client = type === 'native' ? new MachbaseClient(endpoint) : createQueryClient(endpoint);
+  if (!client) {
+    throw new Error(`${side}.type '${type}' does not support query operations`);
+  }
+  await client.connect();
+  return client;
+}
+
+function _serializeColumns(columns) {
+  return (columns || []).map((column) => ({
+    name: column.NAME,
+    type: column.TYPE,
+    id: column.ID,
+    length: column.LENGTH,
+    flag: column.FLAG,
+  }));
+}
+
+function _buildDerivedTargetInfo(storedConfig, runtimeConfig, sourceInfo) {
+  const sourceColumns = _normalizeMappingArray(storedConfig.source.columns, sourceInfo.dataColumns.map((column) => column.NAME));
+  const targetColumns = _normalizeMappingArray(storedConfig.target.columns, sourceColumns.slice());
+  const sourceMeta = _normalizeMappingArray(storedConfig.source.meta, sourceInfo.metaColumns.map((column) => column.NAME));
+  const targetMeta = _normalizeMappingArray(storedConfig.target.meta, sourceMeta.slice());
+
+  const dataColumns = [];
+  const metaColumns = [];
+  const dataByName = {};
+  const metaByName = {};
+  let dataId = 0;
+  let metaId = 1000;
+  let primaryColumn = null;
+  let baseTimeColumn = null;
+
+  for (let i = 0; i < targetColumns.length; i++) {
+    const targetName = targetColumns[i];
+    if (!targetName) continue;
+    const sourceName = sourceColumns[i];
+    if (!sourceName) continue;
+    const sourceColumn = sourceInfo.dataByName[sourceName];
+    if (!sourceColumn) continue;
+    const column = {
+      NAME: targetName,
+      TYPE: sourceColumn.TYPE,
+      ID: dataId++,
+      LENGTH: sourceColumn.LENGTH,
+      FLAG: 0,
+    };
+    if (sourceInfo.primaryColumn && sourceName === sourceInfo.primaryColumn.NAME) {
+      column.FLAG |= FLAG_PRIMARY;
+      primaryColumn = column;
+    }
+    if (sourceInfo.baseTimeColumn && sourceName === sourceInfo.baseTimeColumn.NAME) {
+      column.FLAG |= FLAG_BASETIME;
+      baseTimeColumn = column;
+    }
+    dataColumns.push(column);
+    dataByName[column.NAME] = column;
+  }
+
+  for (let i = 0; i < targetMeta.length; i++) {
+    const targetName = targetMeta[i];
+    if (!targetName) continue;
+    const sourceName = sourceMeta[i];
+    if (!sourceName) continue;
+    const sourceColumn = sourceInfo.metaByName[sourceName];
+    if (!sourceColumn) continue;
+    const column = {
+      NAME: targetName,
+      TYPE: sourceColumn.TYPE,
+      ID: metaId++,
+      LENGTH: sourceColumn.LENGTH,
+      FLAG: FLAG_METADATA,
+    };
+    metaColumns.push(column);
+    metaByName[column.NAME] = column;
+  }
+
+  return {
+    table: runtimeConfig.target.table,
+    logicalTable: runtimeConfig.target.table,
+    tableType: sourceInfo.tableType,
+    rows: dataColumns.concat(metaColumns),
+    dataColumns,
+    metaColumns,
+    dataByName,
+    metaByName,
+    primaryColumn,
+    baseTimeColumn,
+  };
+}
+
+async function _describeTable(client, tableName) {
   const normalizedTable = normalizeColumnName(tableName);
   const qualified = client.splitQualifiedTableName(normalizedTable);
-  const { type: tableType } = client.selectTableTypeQualified(normalizedTable);
+  const { type: tableType } = await client.selectTableTypeQualified(normalizedTable);
   if (tableType === 'UNSUPPORTED') {
     throw new Error(`table '${normalizedTable}' not found`);
   }
 
-  const rows = client.selectColumnsByQualifiedTableName(normalizedTable)
+  const rows = (await client.selectColumnsByQualifiedTableName(normalizedTable))
     .filter((column) => !column.NAME.startsWith('_'));
   const dataColumns = rows.filter((column) => (column.FLAG & FLAG_METADATA) === 0);
   const metaColumns = rows.filter((column) => (column.FLAG & FLAG_METADATA) !== 0);
@@ -166,9 +267,26 @@ function _validateServerProfile(profile) {
   if (!normalized.name) throw new Error('server.name is required');
   if (!normalized.host) throw new Error('server.host is required');
   if (!normalized.port) throw new Error('server.port is required');
-  if (!normalized.user) throw new Error('server.user is required');
   if (!normalized.type) normalized.type = 'native';
-  if (normalized.type !== 'native') {
+  if (normalized.type === 'native') {
+    if (!normalized.user) throw new Error('server.user is required');
+    return normalized;
+  }
+  if (normalized.type === 'http') {
+    if (!normalized.protocol) normalized.protocol = 'http';
+    return normalized;
+  }
+  if (normalized.type === 'mqtt-api' || normalized.type === 'mqtt-publish') {
+    if (normalized.qos != null) {
+      const qos = Number(normalized.qos);
+      if (!Number.isFinite(qos) || qos < 0 || qos > 2) {
+        throw new Error('server.qos must be 0, 1 or 2');
+      }
+      normalized.qos = qos;
+    }
+    return normalized;
+  }
+  if (normalized.type) {
     throw new Error(`server.type '${normalized.type}' is not supported`);
   }
   return normalized;
@@ -182,17 +300,6 @@ function _resolveTagAlias(sourceInfo, column) {
 }
 
 function _validateTargetOrder(mapping, actualColumns, label) {
-  const actualNames = actualColumns.map((column) => column.NAME);
-  const presentNames = mapping.filter((name) => !!name);
-  if (presentNames.length !== actualNames.length) {
-    throw new Error(`${label} non-null count must match actual target columns`);
-  }
-  for (let i = 0; i < actualNames.length; i++) {
-    if (presentNames[i] !== actualNames[i]) {
-      throw new Error(`${label} must follow actual target column order`);
-    }
-  }
-
   let seenNull = false;
   for (const name of mapping) {
     if (!name) {
@@ -201,6 +308,21 @@ function _validateTargetOrder(mapping, actualColumns, label) {
     }
     if (seenNull) {
       throw new Error(`${label} allows only trailing null padding`);
+    }
+  }
+
+  if (!Array.isArray(actualColumns) || actualColumns.length === 0) {
+    return;
+  }
+
+  const actualNames = actualColumns.map((column) => column.NAME);
+  const presentNames = mapping.filter((name) => !!name);
+  if (presentNames.length !== actualNames.length) {
+    throw new Error(`${label} non-null count must match actual target columns`);
+  }
+  for (let i = 0; i < actualNames.length; i++) {
+    if (presentNames[i] !== actualNames[i]) {
+      throw new Error(`${label} must follow actual target column order`);
     }
   }
 }
@@ -431,7 +553,7 @@ function _collectVarcharOverflowNames(sourceMapping, targetMapping, sourceByName
   return result;
 }
 
-function prepareReplicatorConfig(config, readServerProfile) {
+async function prepareReplicatorConfig(config, readServerProfile) {
   const storedConfig = normalizeReplicatorConfigForSave(config);
   _validateRuntimeOptions(storedConfig);
   const runtimeConfig = resolveReplicatorRuntimeConfig(storedConfig, readServerProfile);
@@ -448,24 +570,48 @@ function prepareReplicatorConfig(config, readServerProfile) {
     storedConfig.target.table = runtimeConfig.target.table;
   }
 
+  const sourceType = String(runtimeConfig.source.type || 'native').toLowerCase();
+  const targetType = String(runtimeConfig.target.type || 'native').toLowerCase();
+  if (sourceType === 'mqtt-api' || sourceType === 'mqtt-publish') {
+    throw new Error(`source.type '${sourceType}' is not supported`);
+  }
+  if (MQTT_TARGET_TYPES[targetType] && storedConfig.integrity !== false) {
+    warnings.push(`target.type '${targetType}' forces integrity=false`);
+    storedConfig.integrity = false;
+    runtimeConfig.integrity = false;
+  }
+
   let sourceClient = null;
   let targetClient = null;
   try {
-    sourceClient = new MachbaseClient(runtimeConfig.source);
-    targetClient = new MachbaseClient(runtimeConfig.target);
-    sourceClient.connect();
-    targetClient.connect();
+    sourceClient = await _openQueryClient(runtimeConfig.source, 'source');
+    const targetNeedsQuery = targetType !== 'mqtt-publish';
+    if (targetNeedsQuery) {
+      targetClient = await _openQueryClient(runtimeConfig.target, 'target');
+    }
 
-    const sourceInfo = _describeTable(sourceClient, runtimeConfig.source.table);
-    const targetInfo = _describeTable(targetClient, runtimeConfig.target.table);
-    if (sourceInfo.tableType !== targetInfo.tableType) {
+    const sourceInfo = await _describeTable(sourceClient, runtimeConfig.source.table);
+    const targetInfo = targetClient
+      ? await _describeTable(targetClient, runtimeConfig.target.table)
+      : _buildDerivedTargetInfo(storedConfig, runtimeConfig, sourceInfo);
+    if (targetClient && sourceInfo.tableType !== targetInfo.tableType) {
       throw new Error(`source/target table type mismatch: ${sourceInfo.tableType} != ${targetInfo.tableType}`);
     }
 
     const sourceColumns = _normalizeMappingArray(storedConfig.source.columns, sourceInfo.dataColumns.map((column) => column.NAME));
-    const targetColumns = _normalizeMappingArray(storedConfig.target.columns, targetInfo.dataColumns.map((column) => column.NAME));
+    const targetColumns = _normalizeMappingArray(
+      storedConfig.target.columns,
+      targetType === 'mqtt-publish'
+        ? sourceColumns.slice()
+        : targetInfo.dataColumns.map((column) => column.NAME)
+    );
     const sourceMeta = _normalizeMappingArray(storedConfig.source.meta, sourceInfo.metaColumns.map((column) => column.NAME));
-    const targetMeta = _normalizeMappingArray(storedConfig.target.meta, targetInfo.metaColumns.map((column) => column.NAME));
+    const targetMeta = _normalizeMappingArray(
+      storedConfig.target.meta,
+      targetType === 'mqtt-publish'
+        ? sourceMeta.slice()
+        : targetInfo.metaColumns.map((column) => column.NAME)
+    );
 
     if (sourceColumns.length !== targetColumns.length) {
       throw new Error(`source.columns/target.columns length mismatch: ${sourceColumns.length} != ${targetColumns.length}`);
@@ -474,37 +620,43 @@ function prepareReplicatorConfig(config, readServerProfile) {
       throw new Error(`source.meta/target.meta length mismatch: ${sourceMeta.length} != ${targetMeta.length}`);
     }
 
-    _validateTargetOrder(targetColumns, targetInfo.dataColumns, 'target.columns');
-    _validateTargetOrder(targetMeta, targetInfo.metaColumns, 'target.meta');
+    _validateTargetOrder(targetColumns, targetType === 'mqtt-publish' ? [] : targetInfo.dataColumns, 'target.columns');
+    _validateTargetOrder(targetMeta, targetType === 'mqtt-publish' ? [] : targetInfo.metaColumns, 'target.meta');
     _validateSourceNames(sourceColumns, sourceInfo.dataByName, 'source.columns');
     _validateSourceNames(sourceMeta, sourceInfo.metaByName, 'source.meta');
-    _validateMappedTypes(sourceColumns, targetColumns, sourceInfo.dataByName, targetInfo.dataByName, 'columns', { requireKeyColumns: true });
-    _validateMappedTypes(sourceMeta, targetMeta, sourceInfo.metaByName, targetInfo.metaByName, 'meta');
+    if (targetType !== 'mqtt-publish') {
+      _validateMappedTypes(sourceColumns, targetColumns, sourceInfo.dataByName, targetInfo.dataByName, 'columns', { requireKeyColumns: true });
+      _validateMappedTypes(sourceMeta, targetMeta, sourceInfo.metaByName, targetInfo.metaByName, 'meta');
+    }
 
     const repTargetCond = _validateCondition(storedConfig.source.rep_target_cond, sourceInfo, 'source.rep_target_cond');
     const transform = _validateTransformRules(storedConfig.source.transform, sourceInfo);
-    _validateTagPrimaryMapping(sourceInfo, targetInfo, sourceColumns, targetColumns);
+    if (targetType !== 'mqtt-publish') {
+      _validateTagPrimaryMapping(sourceInfo, targetInfo, sourceColumns, targetColumns);
+    }
 
     const stringGrowthByColumn = _collectStringGrowthByColumn(transform);
-    const dataOverflowNames = _collectVarcharOverflowNames(
-      sourceColumns,
-      targetColumns,
-      sourceInfo.dataByName,
-      targetInfo.dataByName,
-      stringGrowthByColumn
-    );
-    if (dataOverflowNames.length > 0) {
-      warnings.push(`VARCHAR length may overflow in target.columns: ${dataOverflowNames.join(', ')}`);
-    }
-    const metaOverflowNames = _collectVarcharOverflowNames(
-      sourceMeta,
-      targetMeta,
-      sourceInfo.metaByName,
-      targetInfo.metaByName,
-      null
-    );
-    if (metaOverflowNames.length > 0) {
-      warnings.push(`VARCHAR length may overflow in target.meta: ${metaOverflowNames.join(', ')}`);
+    if (targetType !== 'mqtt-publish') {
+      const dataOverflowNames = _collectVarcharOverflowNames(
+        sourceColumns,
+        targetColumns,
+        sourceInfo.dataByName,
+        targetInfo.dataByName,
+        stringGrowthByColumn
+      );
+      if (dataOverflowNames.length > 0) {
+        warnings.push(`VARCHAR length may overflow in target.columns: ${dataOverflowNames.join(', ')}`);
+      }
+      const metaOverflowNames = _collectVarcharOverflowNames(
+        sourceMeta,
+        targetMeta,
+        sourceInfo.metaByName,
+        targetInfo.metaByName,
+        null
+      );
+      if (metaOverflowNames.length > 0) {
+        warnings.push(`VARCHAR length may overflow in target.meta: ${metaOverflowNames.join(', ')}`);
+      }
     }
 
     storedConfig.source.columns = sourceColumns;
@@ -515,9 +667,20 @@ function prepareReplicatorConfig(config, readServerProfile) {
     storedConfig.source.transform = transform;
 
     runtimeConfig.source.columns = sourceColumns.slice();
-    runtimeConfig.target.columns = targetColumns.slice();
     runtimeConfig.source.meta = sourceMeta.slice();
-    runtimeConfig.target.meta = targetMeta.slice();
+    if (targetType === 'mqtt-publish') {
+      runtimeConfig.target.columns = targetColumns.map((targetName, index) => {
+        if (!targetName) return null;
+        return sourceColumns[index] || null;
+      });
+      runtimeConfig.target.meta = targetMeta.map((targetName, index) => {
+        if (!targetName) return null;
+        return sourceMeta[index] || null;
+      });
+    } else {
+      runtimeConfig.target.columns = targetColumns.slice();
+      runtimeConfig.target.meta = targetMeta.slice();
+    }
     runtimeConfig.source.rep_target_cond = repTargetCond ? { ...repTargetCond, value: repTargetCond.value.slice() } : null;
     runtimeConfig.source.transform = transform
       ? transform.map((rule) => ({
@@ -525,6 +688,19 @@ function prepareReplicatorConfig(config, readServerProfile) {
           expr: rule.expr.map((item) => ({ ...item })),
         }))
       : null;
+
+    storedConfig._runtime = {
+      source: {
+        tableType: sourceInfo.tableType,
+        logicalTable: sourceInfo.logicalTable,
+      },
+      target: {
+        tableType: targetInfo.tableType,
+        logicalTable: targetInfo.logicalTable,
+        dataColumns: _serializeColumns(targetInfo.dataColumns),
+        metaColumns: _serializeColumns(targetInfo.metaColumns),
+      },
+    };
 
     return {
       storedConfig,
@@ -534,8 +710,8 @@ function prepareReplicatorConfig(config, readServerProfile) {
       warnings,
     };
   } finally {
-    try { sourceClient && sourceClient.close(); } catch (_) {}
-    try { targetClient && targetClient.close(); } catch (_) {}
+    try { sourceClient && await sourceClient.close(); } catch (_) {}
+    try { targetClient && await targetClient.close(); } catch (_) {}
   }
 }
 

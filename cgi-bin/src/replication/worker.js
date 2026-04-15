@@ -10,6 +10,7 @@ const path = require('path');
 const CheckpointStore = require('../db/checkpoint.js');
 const RetryHandler = require('../lib/retry.js');
 const { MachbaseClient } = require('../db/client.js');
+const { createQueryClient, parseEpochNsLike } = require('../db/remote.js');
 const { TagDataTable, TagTable, LogTable } = require('../db/table.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME } = require('../db/types.js');
@@ -36,7 +37,7 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
       const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
       if (signal === 'shutdown') return { ok: false };
     }
-    const result = fn();
+    const result = await fn();
     if (result.done) return { ok: true, value: result.value };
     if (!result.retryable) {
       getLogger().error('worker', { ...ctx, msg: result.msg });
@@ -48,8 +49,8 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
 
 async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
   const result = await _withRetry({
-    fn: () => {
-      const err = dstTable.append(outRows);
+    fn: async () => {
+      const err = await dstTable.append(outRows);
       if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable append error: ${err.message}` };
       return { done: true, value: true };
     },
@@ -73,11 +74,25 @@ function _uniqueNames(values) {
   return result;
 }
 
+function _toEpochNs(value) {
+  return parseEpochNsLike(value);
+}
+
 function _isDuplicateMetadataError(err) {
   const message = err && err.message ? String(err.message).toLowerCase() : '';
   return message.indexOf('duplicate') >= 0
     || message.indexOf('already exists') >= 0
     || message.indexOf('unique') >= 0;
+}
+
+function _createQueryClientForRuntime(config) {
+  const type = String(config?.type || 'native').toLowerCase();
+  if (type === 'native') return new MachbaseClient(config);
+  const client = createQueryClient(config);
+  if (!client) {
+    throw new Error(`query client not supported for type '${type}'`);
+  }
+  return client;
 }
 
 class Worker {
@@ -117,18 +132,18 @@ class Worker {
     }
 
     try {
-      srcTable.open();
-      dstTable.open();
+      await srcTable.open();
+      await dstTable.open();
       await this._runStateMachine({
         srcTable,
         dstTable,
         shutdownFlag: effectiveShutdownFlag,
       });
     } finally {
-      try { dstTable.close(); } catch (err) {
+      try { await dstTable.close(); } catch (err) {
         getLogger().error('worker', { ...logCtx, msg: `dstTable.close failed: ${err.message}` });
       }
-      try { srcTable.close(); } catch (err) {
+      try { await srcTable.close(); } catch (err) {
         getLogger().error('worker', { ...logCtx, msg: `srcTable.close failed: ${err.message}` });
       }
     }
@@ -149,6 +164,13 @@ class Worker {
     const sourceDataCols = this.srcSchema.columns.filter((column) => !(column.flag & FLAG_METADATA)).map((column) => column.name);
     const targetDataCols = this.dstSchema.columns.filter((column) => !(column.flag & FLAG_METADATA)).map((column) => column.name);
     const targetMetaCols = this.dstSchema.columns.filter((column) => column.flag & FLAG_METADATA).map((column) => column.name);
+    const targetType = String(this.config.target?.type || 'native').toLowerCase();
+    const targetUsesPayloadMeta = targetType === 'http'
+      || targetType === 'mqtt-api'
+      || targetType === 'mqtt-publish';
+    const targetSeparateMetadataInsert = targetType === 'native' || targetType === 'http';
+    const supportsIntegrity = targetType === 'native' || targetType === 'http';
+    const integrityUsesEpochNs = supportsIntegrity;
     const referencedColumns = collectReferencedColumns(repTargetCond, transform);
     const readColumns = _uniqueNames(
       sourceColumns.filter((name) => !!name)
@@ -171,6 +193,12 @@ class Worker {
       targetBaseTimeColName: targetBaseTimeCol ? targetBaseTimeCol.name : null,
       targetDataCols,
       targetMetaCols,
+      appendColumns: targetUsesPayloadMeta ? targetDataCols.concat(targetMetaCols) : targetDataCols.slice(),
+      targetUsesPayloadMeta,
+      payloadMetaFromSource: targetType === 'mqtt-api' || targetType === 'mqtt-publish',
+      targetSeparateMetadataInsert,
+      supportsIntegrity,
+      integrityUsesEpochNs,
       isTag: this.srcSchema.tableType === 'TAG',
     };
   }
@@ -189,6 +217,23 @@ class Worker {
     return out;
   }
 
+  _buildTargetPayloadRow(sourceRow, plan) {
+    const out = this._buildTargetRow(sourceRow, plan);
+    for (const name of plan.targetMetaCols) {
+      out[name] = null;
+    }
+    if (!plan.payloadMetaFromSource) {
+      return out;
+    }
+    for (let i = 0; i < plan.targetMeta.length; i++) {
+      const targetName = plan.targetMeta[i];
+      if (!targetName) continue;
+      const sourceName = plan.sourceMeta[i];
+      out[targetName] = sourceName ? sourceRow[sourceName] : null;
+    }
+    return out;
+  }
+
   _buildTargetMetaValues(sourceRow, plan) {
     const values = [];
     for (let i = 0; i < plan.targetMeta.length; i++) {
@@ -201,7 +246,7 @@ class Worker {
   }
 
   _processRows(rows, plan, logCtx) {
-    const targetRows = [];
+    const appendRows = [];
     const resolved = [];
     const pendingMetaByName = {};
 
@@ -209,7 +254,9 @@ class Worker {
       const transformed = applyTransformRules(item.data, plan.transform);
       if (transformed.dropped) continue;
 
-      const targetRow = this._buildTargetRow(transformed.row, plan);
+      const targetRow = plan.targetUsesPayloadMeta
+        ? this._buildTargetPayloadRow(transformed.row, plan)
+        : this._buildTargetRow(transformed.row, plan);
       if (plan.isTag) {
         const canonical = targetRow[plan.targetPrimaryColName];
         const time = targetRow[plan.targetBaseTimeColName];
@@ -218,11 +265,14 @@ class Worker {
           continue;
         }
         resolved.push({ rid: item.rid, canonical, time });
+        if (plan.integrityUsesEpochNs) {
+          resolved[resolved.length - 1].time = _toEpochNs(time);
+        }
         if (!pendingMetaByName[canonical]) {
           pendingMetaByName[canonical] = this._buildTargetMetaValues(transformed.row, plan);
         }
       }
-      targetRows.push(targetRow);
+      appendRows.push(targetRow);
     }
 
     const metadataRows = Object.keys(pendingMetaByName).map((name) => ({
@@ -230,7 +280,7 @@ class Worker {
       values: pendingMetaByName[name],
     }));
 
-    return { targetRows, resolved, metadataRows };
+    return { appendRows, resolved, metadataRows };
   }
 
   _saveCheckpoint(checkpointStore, rid, totalRowsWritten, stats, hasMore, queryLimit) {
@@ -248,9 +298,9 @@ class Worker {
 
   async _getMaxRid(srcTable, retry, shutdownFlag, logCtx, phase) {
     const result = await _withRetry({
-      fn: () => {
+      fn: async () => {
         try {
-          return { done: true, value: srcTable.getMaxRid() };
+          return { done: true, value: await srcTable.getMaxRid() };
         } catch (err) {
           return {
             done: false,
@@ -276,9 +326,9 @@ class Worker {
       if (shutdownFlag.value) return false;
       if (targetMetaNames[row.name]) continue;
       const ok = await _withRetry({
-        fn: () => {
+        fn: async () => {
           try {
-            metaClient.insertTagMeta(this.config.target.table, [row.name].concat(row.values));
+            await metaClient.insertTagMeta(this.config.target.table, [row.name].concat(row.values));
             targetMetaNames[row.name] = true;
             return { done: true, value: true };
           } catch (err) {
@@ -312,6 +362,9 @@ class Worker {
     const retry = new RetryHandler(this.config.retry || {});
     const checkpointStore = new CheckpointStore(path.join(CHECKPOINT_DIRECTORY, this.config.id), this.dataTable);
     const plan = this._buildPlan();
+    if (typeof dstTable.setAppendColumns === 'function') {
+      dstTable.setAppendColumns(plan.appendColumns);
+    }
 
     if (plan.isTag && (!plan.sourcePrimaryColName || !plan.sourceBaseTimeColName || !plan.targetPrimaryColName || !plan.targetBaseTimeColName)) {
       getLogger().error('worker', { ...logCtx, msg: 'TAG key columns not found in source/target schema' });
@@ -349,14 +402,16 @@ class Worker {
     }
 
     if (plan.isTag) {
-      const loadErr = srcTable.cacheTagMetaAll();
+      const loadErr = await srcTable.cacheTagMetaAll();
       if (loadErr) {
         getLogger().warn('worker', { ...logCtx, msg: `loadTagMetaCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
-      metaClient = new MachbaseClient(this.config.target);
+    }
+    if (plan.isTag && plan.targetSeparateMetadataInsert) {
+      metaClient = _createQueryClientForRuntime(this.config.target);
       try {
-        metaClient.connect();
-        const rows = metaClient.selectTagNames(this.config.target.table);
+        await metaClient.connect();
+        const rows = await metaClient.selectTagNames(this.config.target.table);
         for (const row of (rows || [])) {
           targetMetaNames[row.name] = true;
         }
@@ -367,7 +422,7 @@ class Worker {
     }
 
     try {
-      const doIntegrity = plan.isTag && cpExists && this.config.integrity !== false;
+      const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists && this.config.integrity !== false;
       if (doIntegrity) {
         const result = await this._runStartupIntegrity({
           startRid,
@@ -405,7 +460,7 @@ class Worker {
         let endRid = startRid + BigInt(batchSize) - 1n;
         if (endRid > maxRid) endRid = maxRid;
 
-        const readResult = srcTable.read(startRid, endRid, batchSize, {
+        const readResult = await srcTable.read(startRid, endRid, batchSize, {
           selectColumns: plan.readColumns,
           repTargetCond: plan.repTargetCond,
           transform: plan.transform,
@@ -418,20 +473,20 @@ class Worker {
         const processed = this._processRows(readResult.rows, plan, logCtx);
         if (shutdownFlag.value) return;
 
-        if (plan.isTag) {
+        if (plan.isTag && plan.targetSeparateMetadataInsert) {
           const metadataOk = await this._ensureTagMetadata(metaClient, targetMetaNames, processed.metadataRows, retry, shutdownFlag, logCtx);
           if (!metadataOk) return;
         }
 
-        if (processed.targetRows.length > 0) {
-          const ok = await _appendRows(dstTable, processed.targetRows, retry, shutdownFlag, logCtx);
+        if (processed.appendRows.length > 0) {
+          const ok = await _appendRows(dstTable, processed.appendRows, retry, shutdownFlag, logCtx);
           if (!ok) return;
         }
 
-        totalRowsWritten += BigInt(processed.targetRows.length);
+        totalRowsWritten += BigInt(processed.appendRows.length);
         this._saveCheckpoint(checkpointStore, endRid, totalRowsWritten, {
           rowsRead: readResult.rows.length,
-          rowsWritten: processed.targetRows.length,
+          rowsWritten: processed.appendRows.length,
           droppedNoMeta: 0,
           skippedExists: 0,
         }, endRid < maxRid, batchSize);
@@ -439,7 +494,7 @@ class Worker {
         startRid = endRid + 1n;
       }
     } finally {
-      try { metaClient && metaClient.close(); } catch (_) {}
+      try { metaClient && await metaClient.close(); } catch (_) {}
     }
   }
 
@@ -460,7 +515,7 @@ class Worker {
       let endRid = integrityRid + BigInt(integrityBatchSize) - 1n;
       if (endRid > maxRid) endRid = maxRid;
 
-      const readResult = srcTable.read(integrityRid, endRid, integrityBatchSize, {
+      const readResult = await srcTable.read(integrityRid, endRid, integrityBatchSize, {
         selectColumns: plan.readColumns,
         repTargetCond: plan.repTargetCond,
         transform: plan.transform,
@@ -482,10 +537,10 @@ class Worker {
         continue;
       }
 
-      const intConn = new MachbaseClient(this.config.target);
+      const intConn = _createQueryClientForRuntime(this.config.target);
       try {
-        intConn.connect();
-        const result = dstTable.findFirstMissRow(processed.resolved, intConn, this.dataTable);
+        await intConn.connect();
+        const result = await dstTable.findFirstMissRow(processed.resolved, intConn, this.dataTable);
         if (result.err) {
           getLogger().error('worker', { ...logCtx, msg: `findFirstMissRow failed: ${result.err.message}` });
           return null;
@@ -506,7 +561,7 @@ class Worker {
           break;
         }
 
-        totalRowsWritten += BigInt(processed.targetRows.length);
+        totalRowsWritten += BigInt(processed.appendRows.length);
         this._saveCheckpoint(checkpointStore, endRid, totalRowsWritten, {
           rowsRead: readResult.rows.length,
           rowsWritten: 0,
@@ -515,7 +570,7 @@ class Worker {
         }, endRid < maxRid, integrityBatchSize);
         integrityRid = endRid + 1n;
       } finally {
-        try { intConn.close(); } catch (_) {}
+        try { await intConn.close(); } catch (_) {}
       }
     }
 

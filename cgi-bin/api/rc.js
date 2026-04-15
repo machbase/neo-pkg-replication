@@ -12,20 +12,20 @@ const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 
 const { name } = Handler.parseQuery();
 
-function POST() {
-  Handler.createReplicator(Handler.readBody(), (err, data) => {
+async function POST() {
+  await Handler.createReplicator(Handler.readBody(), (err, data) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
   });
 }
 
-function GET() {
-  Handler.getReplicator(name, (err, data) => {
+async function GET() {
+  await Handler.getReplicator(name, (err, data) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
   });
 }
 
-function PUT() {
-  Handler.updateReplicator(name, Handler.readBody(), (err) => {
+async function PUT() {
+  await Handler.updateReplicator(name, Handler.readBody(), (err) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data: { name } });
   });
 }
@@ -39,7 +39,8 @@ function DELETE() {
 const handlers = { POST, GET, PUT, DELETE };
 const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
 try {
-  (handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))();
+  Promise.resolve((handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))())
+    .catch((err) => Handler.reply({ ok: false, reason: err.message }));
 } catch (err) {
   Handler.reply({ ok: false, reason: err.message });
 }

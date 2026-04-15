@@ -42,15 +42,22 @@
 | `name` | string | ✓ | profile 이름 |
 | `host` | string | ✓ | DB host |
 | `port` | number | ✓ | DB port |
-| `user` | string | ✓ | DB user |
-| `password` | string | | DB password |
-| `type` | string | | 현재는 `"native"`만 지원 |
+| `user` | string | 조건부 | `native`, `mqtt-publish` 에서 사용 가능 |
+| `password` | string | 조건부 | `native`, `mqtt-publish` 에서 사용 가능 |
+| `token` | string | 조건부 | `http`, `mqtt-api`, `mqtt-publish` 에서 사용 가능 |
+| `type` | string | | `"native"` \| `"http"` \| `"mqtt-api"` \| `"mqtt-publish"` |
+| `protocol` | string | 선택 | `http`에서 `"http"` 또는 `"https"` |
+| `clientId` | string | 선택 | `mqtt-api`, `mqtt-publish` client id |
+| `qos` | number | 선택 | `mqtt-api`, `mqtt-publish` publish QoS |
+| `retain` | boolean | 선택 | `mqtt-publish` retain flag |
 
 ### 규칙
 
-- `GET` 응답에는 `password`를 포함하지 않는다.
-- `PUT`에서 `password`가 없거나 `null` 또는 `""` 이면 기존 password를 유지한다.
+- `GET` 응답에는 `password`, `token`을 포함하지 않는다.
+- `PUT`에서 `password`, `token`이 없거나 `null` 또는 `""` 이면 기존 값을 유지한다.
 - 다른 replication config가 참조 중인 server profile은 `DELETE` 할 수 없다.
+- source로 사용할 수 있는 type은 현재 `native`, `http` 뿐이다.
+- `mqtt-api`, `mqtt-publish` 는 target 전용이다.
 
 ### 엔드포인트
 
@@ -69,6 +76,18 @@
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
   --data '{"name":"local","host":"127.0.0.1","port":5656,"user":"SYS","password":"manager","type":"native"}' \
+  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
+```
+
+```bash
+curl -sS -X POST -H 'Content-Type: application/json' \
+  --data '{"name":"local_http","host":"127.0.0.1","port":5654,"type":"http","protocol":"http","token":""}' \
+  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
+```
+
+```bash
+curl -sS -X POST -H 'Content-Type: application/json' \
+  --data '{"name":"local_mqtt","host":"127.0.0.1","port":5653,"type":"mqtt-api","clientId":"rpl-mqtt-api","token":"","qos":1}' \
   http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
 ```
 
@@ -102,10 +121,31 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | `port` | number | legacy | inline 접속정보 |
 | `user` | string | legacy | inline 접속정보 |
 | `password` | string | legacy | inline 접속정보 |
-| `type` | string | legacy | 현재 `"native"`만 지원 |
+| `token` | string | legacy | inline token |
+| `type` | string | legacy | `"native"` \| `"http"` \| `"mqtt-api"` \| `"mqtt-publish"` |
+| `protocol` | string | legacy | inline HTTP protocol |
+| `clientId` | string | legacy | inline MQTT client id |
+| `qos` | number | legacy | inline MQTT QoS |
+| `retain` | boolean | legacy | inline MQTT retain |
 | `table` | string | ✓ | 테이블명, 저장 시 대문자 정규화 |
 | `columns` | array | ✓ | data column mapping |
 | `meta` | array | ✓ | metadata column mapping, LOG는 보통 `[]` |
+
+type별 제약:
+
+- `native`
+  - source/target 모두 가능
+- `http`
+  - source/target 모두 가능
+  - target TAG metadata는 별도 `insert metadata`, data append는 batch HTTP write
+- `mqtt-api`
+  - target 전용
+  - CGI 메타조회(`table/list`, `table/columns`) 지원
+  - runtime은 write-only target
+- `mqtt-publish`
+  - target 전용
+  - generic MQTT sink
+  - `table/list`, `table/columns` 미지원
 
 ### Column Mapping 규칙
 
@@ -298,6 +338,8 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 - TAG 테이블에서는 `target.columns` 의 PRIMARY KEY 슬롯이 반드시 source PRIMARY KEY 컬럼에 매핑되는지 추가로 검증한다.
 - `VARCHAR` 길이 초과 가능성은 오류가 아니라 warning으로 반환한다.
 - 응답에는 정규화된 config, source/target schema 요약, `warnings` 배열이 포함된다.
+- `mqtt-api`, `mqtt-publish` target은 `integrity=false` 로 강제 정규화되며 warning이 추가된다.
+- `mqtt-publish` target은 actual target schema 조회를 하지 않고, configured mapping 기준으로 payload schema를 구성한다.
 
 ## Table Columns API
 
@@ -307,6 +349,14 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | `POST` | `/api/table/columns.js` | 테이블 컬럼 정보 조회 |
 
 요청은 아래 두 방식 중 하나를 사용한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
+
+지원 type:
+
+- `native`
+- `http`
+- `mqtt-api`
+
+`mqtt-publish` 는 query-capable transport가 아니므로 `table/list`, `table/columns` 대상이 아니다.
 
 1. server profile 참조
 

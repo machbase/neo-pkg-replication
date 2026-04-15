@@ -3,6 +3,7 @@
 const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 const { MachbaseClient } = require('./client.js');
 const { MachbaseStream } = require('./stream.js');
+const { HttpApiClient, MqttApiClient, MqttPublishClient, createQueryClient, formatEpochNsToRfc3339NanoLocal, formatEpochNsToRfc3339NanoUtc } = require('./remote.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 const { buildQueryFilterSql } = require('../replication/rules.js');
 
@@ -19,7 +20,7 @@ const { buildQueryFilterSql } = require('../replication/rules.js');
  * @param {MachbaseClient} client - target 독립 연결
  * @returns {{ firstMissIdx: number|null, err: Error|null }}
  */
-function _findFirstMissRow(logicalTable, schema, rows, client) {
+async function _findFirstMissRow(logicalTable, schema, rows, client) {
   if (!rows || rows.length === 0) return { firstMissIdx: null, err: null };
 
   const keyCol = schema.columns.find(c => c.flag & FLAG_PRIMARY);
@@ -27,14 +28,20 @@ function _findFirstMissRow(logicalTable, schema, rows, client) {
   if (!keyCol || !baseTimeCol) {
     return { firstMissIdx: null, err: new Error(`findFirstMissRow: PRIMARY/BASETIME column not found in schema for '${logicalTable}'`) };
   }
-  const sql =
-    `SELECT 1 AS EXISTS_ROW FROM ${logicalTable} ` +
-    `WHERE ${keyCol.name} = ? AND ${baseTimeCol.name} = ? LIMIT 1`;
-
   try {
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      const foundRows = client.query(sql, [r.canonical, r.time]);
+      let sql =
+        `SELECT 1 AS EXISTS_ROW FROM ${logicalTable} ` +
+        `WHERE ${keyCol.name} = ? AND ${baseTimeCol.name} = ? LIMIT 1`;
+      let params = [r.canonical, r.time];
+      if (typeof r.time === 'bigint') {
+        sql =
+          `SELECT 1 AS EXISTS_ROW FROM ${logicalTable} ` +
+          `WHERE ${keyCol.name} = ? AND ${baseTimeCol.name} = ${r.time.toString()} LIMIT 1`;
+        params = [r.canonical];
+      }
+      const foundRows = await client.query(sql, params);
       if (!foundRows || foundRows.length === 0) {
         return { firstMissIdx: i, err: null };
       }
@@ -52,6 +59,54 @@ function _stringifyParams(params) {
   } catch (_) {
     return '[]';
   }
+}
+
+function _toEpochMs(value) {
+  if (value == null) return value;
+  if (typeof value === 'bigint') {
+    return Number(value / 1000000n);
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  const ms = date.getTime();
+  return Number.isFinite(ms) ? ms : value;
+}
+
+function _normalizeWriteValue(column, value, targetType) {
+  if (value == null) return value;
+  if (targetType === 'native' && column && column.columnType === ColumnType.DATETIME) {
+    return formatEpochNsToRfc3339NanoUtc(value);
+  }
+  if (targetType === 'http' && column && column.columnType === ColumnType.DATETIME) {
+    return formatEpochNsToRfc3339NanoUtc(value);
+  }
+  if (targetType === 'mqtt-api' && column && column.columnType === ColumnType.DATETIME) {
+    return formatEpochNsToRfc3339NanoUtc(value);
+  }
+  if (targetType === 'mqtt-publish' && column && column.columnType === ColumnType.DATETIME) {
+    return formatEpochNsToRfc3339NanoLocal(value);
+  }
+  return value;
+}
+
+function _createQueryClient(config) {
+  const type = String(config?.type || 'native').trim().toLowerCase();
+  if (type === 'native') return new MachbaseClient(config);
+  const client = createQueryClient(config);
+  if (!client) {
+    throw new Error(`query client not supported for type '${type}'`);
+  }
+  return client;
+}
+
+function _createWriter(config) {
+  const type = String(config?.type || 'native').trim().toLowerCase();
+  if (type === 'http') return new HttpApiClient(config);
+  if (type === 'mqtt-api') return new MqttApiClient(config);
+  if (type === 'mqtt-publish') return new MqttPublishClient(config);
+  return null;
 }
 
 
@@ -75,6 +130,17 @@ function _buildSelectColumns(schema, requestedColumns) {
   return result;
 }
 
+function _buildSelectList(schema, selectedColumns, config) {
+  const type = String(config?.type || 'native').trim().toLowerCase();
+  return selectedColumns.map((name) => {
+    const column = schema.columns.find((item) => item.name === name);
+    if (type === 'native' && column && column.columnType === ColumnType.DATETIME) {
+      return `TO_CHAR(TO_TIMESTAMP(${name})) AS ${name}`;
+    }
+    return name;
+  }).join(', ');
+}
+
 /**
  * LOG 테이블 복제 클래스
  *
@@ -90,17 +156,19 @@ class LogTable {
     this.logicalTable = (new MachbaseClient(config)).splitQualifiedTableName(logicalTable).table;
     this.config = config;
     this.client = null;
+    this.writer = null;
     /** @type {TableSchema|null} */
     this.schema = null;
     /** @type {MachbaseStream|null} */
     this.stream = null;
+    this.appendColumns = null;
   }
 
   /**
    * 테이블 컬럼 목록 조회
    * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
    */
-  getColumns() {
+  async getColumns() {
     return this.client.selectColumnsByQualifiedTableName(this.qualifiedTable);
   }
 
@@ -108,8 +176,8 @@ class LogTable {
    * 스키마 조회 후 반환
    * @returns {TableSchema}
    */
-  getSchema() {
-    const rows = this.getColumns();
+  async getSchema() {
+    const rows = await this.getColumns();
     const columns = rows.map(r => new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data', r.LENGTH ?? 0));
     return new TableSchema('LOG', this.logicalTable, columns);
   }
@@ -122,12 +190,25 @@ class LogTable {
     this.schema = schema;
   }
 
+  setAppendColumns(columnNames) {
+    this.appendColumns = Array.isArray(columnNames) ? columnNames.slice() : null;
+  }
+
   /**
    * DB 연결
    */
-  open() {
-    this.client = new MachbaseClient(this.config);
-    this.client.connect();
+  async open() {
+    const type = String(this.config?.type || 'native').toLowerCase();
+    if (type === 'native' || type === 'http') {
+      this.client = _createQueryClient(this.config);
+      await this.client.connect();
+      if (type === 'http') this.writer = this.client;
+      return;
+    }
+    this.writer = _createWriter(this.config);
+    if (this.writer && typeof this.writer.connect === 'function') {
+      await this.writer.connect();
+    }
   }
 
   /**
@@ -135,12 +216,20 @@ class LogTable {
    * @returns {Error|null}
    */
   openStream() {
-    if (!this.schema) this.schema = this.getSchema();
+    if (!this.schema) {
+      return new Error(`schema is required before openStream for '${this.logicalTable}'`);
+    }
+    const appendColumnNames = Array.isArray(this.appendColumns) && this.appendColumns.length > 0
+      ? this.appendColumns.slice()
+      : this.schema.columns.map((column) => column.name);
     this.stream = new MachbaseStream();
     return this.stream.open(
       this.client,
       this.qualifiedTable,
-      this.schema.columns.map(c => ({ name: c.name, type: c.sqlType() }))
+      appendColumnNames.map((name) => {
+        const column = this.schema.columns.find((item) => item.name === name);
+        return { name, type: column ? column.sqlType() : ColumnType.VARCHAR.ddlType || 'VARCHAR(400)' };
+      })
     );
   }
 
@@ -148,15 +237,21 @@ class LogTable {
    * append 스트림 + DB 연결 닫기
    * @returns {Error|null}
    */
-  close() {
+  async close() {
     let firstErr = null;
+    const client = this.client;
+    const writer = this.writer;
+    this.writer = null;
     if (this.stream) {
       firstErr = this.stream.close();
       this.stream = null;
     }
-    if (this.client) {
-      try { this.client.close(); } catch (err) { if (!firstErr) firstErr = err; }
+    if (client) {
+      try { await client.close(); } catch (err) { if (!firstErr) firstErr = err; }
       this.client = null;
+    }
+    if (writer && writer !== client) {
+      try { await writer.close(); } catch (err) { if (!firstErr) firstErr = err; }
     }
     return firstErr;
   }
@@ -165,7 +260,7 @@ class LogTable {
    * 테이블의 최대 RID 조회
    * @returns {bigint}
    */
-  getMaxRid() {
+  async getMaxRid() {
     return this.client.selectMaxRid(this.qualifiedTable);
   }
 
@@ -178,15 +273,15 @@ class LogTable {
    * @param {{ selectColumns?: string[], repTargetCond?: object|null, transform?: Array|null }} [options]
    * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
    */
-  read(startRid, endRid, limit = 1000, options) {
+  async read(startRid, endRid, limit = 1000, options) {
     const colNames = _buildSelectColumns(this.schema, options?.selectColumns);
+    const colList = ['_RID', _buildSelectList(this.schema, colNames, this.config)].join(', ');
     const filterSql = buildQueryFilterSql(options?.repTargetCond, options?.transform, {
       tableType: 'LOG',
       logicalTable: this.logicalTable,
       primaryColumnName: null,
     });
     const hintEndRid = endRid + 1n;
-    const colList = ['_RID', ...colNames].join(', ');
     const whereClause = filterSql.sql !== '1=1' ? ` WHERE ${filterSql.sql}` : '';
     const sql = `SELECT /*+ RID_RANGE(${this.qualifiedTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.qualifiedTable}${whereClause} ORDER BY _RID LIMIT ${limit}`;
     getLogger().trace('table_read_query', {
@@ -197,7 +292,7 @@ class LogTable {
       params: _stringifyParams(filterSql.params),
     });
     try {
-      const sqlRows = this.client.query(sql, filterSql.params) || [];
+      const sqlRows = (await this.client.query(sql, filterSql.params)) || [];
       const result = [];
       for (const row of sqlRows) {
         if (row._RID == null) {
@@ -221,24 +316,58 @@ class LogTable {
    * @param {Array<object>} rows - 컬럼명 기준 객체 배열
    * @returns {Error|null}
    */
-  append(rows) {
-    if (!this.stream) {
-      const err = this.openStream();
-      if (err) return err;
-    }
-
+  async append(rows) {
     if (!rows || rows.length === 0) return null;
 
+    const type = String(this.config?.type || 'native').toLowerCase();
+    const appendColumnNames = Array.isArray(this.appendColumns) && this.appendColumns.length > 0
+      ? this.appendColumns.slice()
+      : this.schema.columns.map((column) => column.name);
     const matrix = rows.map(row =>
-      this.schema.columns.map(col => {
-        const val = row[col.name];
+      appendColumnNames.map((name) => {
+        const col = this.schema.columns.find((item) => item.name === name) || { name, columnType: null };
+        const val = _normalizeWriteValue(col, row[col.name], type);
         if (typeof val === 'number' && !isFinite(val)) {
           getLogger().warn('stream', { table: this.logicalTable, col: col.name, val: String(val), msg: 'non-finite value will be stored as null' });
         }
         return val;
       })
     );
-    return this.stream.append(matrix);
+    if (type === 'native') {
+      if (!this.stream) {
+        const err = this.openStream();
+        if (err) return err;
+      }
+      return this.stream.append(matrix);
+    }
+    if (type === 'http') {
+      try {
+        await this.writer.writeRows(this.qualifiedTable, appendColumnNames, matrix, 'append');
+        return null;
+      } catch (err) {
+        return err;
+      }
+    }
+    if (type === 'mqtt-api') {
+      try {
+        await this.writer.writeRows(this.qualifiedTable, appendColumnNames, matrix);
+        return null;
+      } catch (err) {
+        return err;
+      }
+    }
+    if (type === 'mqtt-publish') {
+      try {
+        await this.writer.publish(String(this.qualifiedTable || '').toLowerCase(), {
+          columns: appendColumnNames,
+          rows: matrix,
+        });
+        return null;
+      } catch (err) {
+        return err;
+      }
+    }
+    return new Error(`append not supported for type '${type}'`);
   }
 
   /**
@@ -248,7 +377,7 @@ class LogTable {
    * @param {string} suffix
    * @returns {{ firstMissIdx: number|null, err: Error|null }}
    */
-  findFirstMissRow(rows, client, suffix) {
+  async findFirstMissRow(rows, client, suffix) {
     return _findFirstMissRow(this.logicalTable, this.schema, rows, client);
   }
 }
@@ -328,17 +457,19 @@ class TagTable {
     this.logicalTable = (new MachbaseClient(config)).splitQualifiedTableName(logicalTable).table;
     this.config = config;
     this.client = null;
+    this.writer = null;
     /** @type {TableSchema|null} */
     this.schema = null;
     /** @type {MachbaseStream|null} */
     this.stream = null;
+    this.appendColumns = null;
   }
 
   /**
    * 컬럼 목록 조회
    * @returns {Array<{ NAME: string, TYPE: number, ID: number, LENGTH: number, FLAG: number }>}
    */
-  getColumns() {
+  async getColumns() {
     return this.client.selectColumnsByQualifiedTableName(this.qualifiedTable);
   }
 
@@ -346,8 +477,8 @@ class TagTable {
    * TAG 스키마 조회 후 반환
    * @returns {TableSchema}
    */
-  getSchema() {
-    const rows = this.getColumns();
+  async getSchema() {
+    const rows = await this.getColumns();
     const cols = [];
     for (const r of rows) {
       if (r.NAME.startsWith('_')) continue;
@@ -365,7 +496,7 @@ class TagTable {
    * TAG 데이터 파티션 목록 조회
    * @returns {Array<{ data_table: string }>}
    */
-  getDataTables() {
+  async getDataTables() {
     return this.client.selectTagDataTables(this.logicalTable);
   }
 
@@ -377,12 +508,25 @@ class TagTable {
     this.schema = schema;
   }
 
+  setAppendColumns(columnNames) {
+    this.appendColumns = Array.isArray(columnNames) ? columnNames.slice() : null;
+  }
+
   /**
    * DB 연결
    */
-  open() {
-    this.client = new MachbaseClient(this.config);
-    this.client.connect();
+  async open() {
+    const type = String(this.config?.type || 'native').toLowerCase();
+    if (type === 'native' || type === 'http') {
+      this.client = _createQueryClient(this.config);
+      await this.client.connect();
+      if (type === 'http') this.writer = this.client;
+      return;
+    }
+    this.writer = _createWriter(this.config);
+    if (this.writer && typeof this.writer.connect === 'function') {
+      await this.writer.connect();
+    }
   }
 
   /**
@@ -390,12 +534,20 @@ class TagTable {
    * @returns {Error|null}
    */
   openStream() {
-    if (!this.schema) this.schema = this.getSchema();
+    if (!this.schema) {
+      return new Error(`schema is required before openStream for '${this.logicalTable}'`);
+    }
+    const appendColumnNames = Array.isArray(this.appendColumns) && this.appendColumns.length > 0
+      ? this.appendColumns.slice()
+      : this.schema.columns.map((column) => column.name);
     this.stream = new MachbaseStream();
     return this.stream.open(
       this.client,
       this.qualifiedTable,
-      this.schema.columns.map(c => ({ name: c.name, type: c.sqlType() }))
+      appendColumnNames.map((name) => {
+        const column = this.schema.columns.find((item) => item.name === name);
+        return { name, type: column ? column.sqlType() : 'VARCHAR(400)' };
+      })
     );
   }
 
@@ -403,15 +555,21 @@ class TagTable {
    * append 스트림 + DB 연결 닫기
    * @returns {Error|null}
    */
-  close() {
+  async close() {
     let firstErr = null;
+    const client = this.client;
+    const writer = this.writer;
+    this.writer = null;
     if (this.stream) {
       firstErr = this.stream.close();
       this.stream = null;
     }
-    if (this.client) {
-      try { this.client.close(); } catch (err) { if (!firstErr) firstErr = err; }
+    if (client) {
+      try { await client.close(); } catch (err) { if (!firstErr) firstErr = err; }
       this.client = null;
+    }
+    if (writer && writer !== client) {
+      try { await writer.close(); } catch (err) { if (!firstErr) firstErr = err; }
     }
     return firstErr;
   }
@@ -420,12 +578,12 @@ class TagTable {
    * 논리 테이블 전체 조회
    * @returns {Array<object>}
    */
-  read() {
+  async read() {
     const colNames = this.schema.columns.map(c => c.name);
     const colList = colNames.join(', ');
     const sql = `SELECT ${colList} FROM ${this.qualifiedTable}`;
     try {
-      const rows = this.client.query(sql);
+      const rows = await this.client.query(sql);
       return (rows || []).map(row => {
         const data = {};
         for (const col of colNames) {
@@ -444,25 +602,58 @@ class TagTable {
    * @param {Array<object>} rows - 컬럼명 기준 객체 배열
    * @returns {Error|null}
    */
-  append(rows) {
-    if (!this.stream) {
-      const err = this.openStream();
-      if (err) return err;
-    }
-
+  async append(rows) {
     if (!rows || rows.length === 0) return null;
 
+    const type = String(this.config?.type || 'native').toLowerCase();
+    const appendColumnNames = Array.isArray(this.appendColumns) && this.appendColumns.length > 0
+      ? this.appendColumns.slice()
+      : this.schema.columns.map((column) => column.name);
     const matrix = rows.map(row =>
-      this.schema.columns.map(col => {
-        const val = row[col.name];
+      appendColumnNames.map((name) => {
+        const col = this.schema.columns.find((item) => item.name === name) || { name, columnType: null };
+        const val = _normalizeWriteValue(col, row[col.name], type);
         if (typeof val === 'number' && !isFinite(val)) {
           getLogger().warn('stream', { table: this.logicalTable, col: col.name, val: String(val), msg: 'non-finite value will be stored as null' });
         }
         return val;
       })
     );
-
-    return this.stream.append(matrix);
+    if (type === 'native') {
+      if (!this.stream) {
+        const err = this.openStream();
+        if (err) return err;
+      }
+      return this.stream.append(matrix);
+    }
+    if (type === 'http') {
+      try {
+        await this.writer.writeRows(this.qualifiedTable, appendColumnNames, matrix, 'append');
+        return null;
+      } catch (err) {
+        return err;
+      }
+    }
+    if (type === 'mqtt-api') {
+      try {
+        await this.writer.writeRows(this.qualifiedTable, appendColumnNames, matrix);
+        return null;
+      } catch (err) {
+        return err;
+      }
+    }
+    if (type === 'mqtt-publish') {
+      try {
+        await this.writer.publish(String(this.qualifiedTable || '').toLowerCase(), {
+          columns: appendColumnNames,
+          rows: matrix,
+        });
+        return null;
+      } catch (err) {
+        return err;
+      }
+    }
+    return new Error(`append not supported for type '${type}'`);
   }
 
   /**
@@ -472,7 +663,7 @@ class TagTable {
    * @param {string} suffix
    * @returns {{ firstMissIdx: number|null, err: Error|null }}
    */
-  findFirstMissRow(rows, client, suffix) {
+  async findFirstMissRow(rows, client, suffix) {
     return _findFirstMissRow(this.logicalTable, this.schema, rows, client);
   }
 
@@ -481,7 +672,7 @@ class TagTable {
    * @param {{ in?: string[], like?: string }|null} [nameFilter=null]
    * @returns {TagMetaCache}
    */
-  loadTagMetaCache(nameFilter = null) {
+  async loadTagMetaCache(nameFilter = null) {
     const metaColNames = this.schema
       ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
       : [];
@@ -500,7 +691,7 @@ class TagTable {
     const where = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
     const sql = `SELECT _ID, name${extraCols} FROM _${this.logicalTable}_META${where}`;
 
-    const rows = this.client.query(sql, params.length > 0 ? params : undefined);
+    const rows = await this.client.query(sql, params.length > 0 ? params : undefined);
     const cache = new TagMetaCache();
     for (const row of (rows || [])) {
       const meta = {};
@@ -542,18 +733,18 @@ class TagDataTable {
   /**
    * DB 연결
    */
-  open() {
-    this.client = new MachbaseClient(this.config);
-    this.client.connect();
+  async open() {
+    this.client = _createQueryClient(this.config);
+    await this.client.connect();
   }
 
   /**
    * DB 연결 닫기
    * @returns {Error|null}
    */
-  close() {
+  async close() {
     if (this.client) {
-      try { this.client.close(); } catch (_) {}
+      try { await this.client.close(); } catch (_) {}
       this.client = null;
     }
     return null;
@@ -563,7 +754,7 @@ class TagDataTable {
    * 파티션의 최대 RID 조회
    * @returns {bigint}
    */
-  getMaxRid() {
+  async getMaxRid() {
     return this.client.selectMaxRid(this.dataTable);
   }
 
@@ -571,12 +762,12 @@ class TagDataTable {
    * _TAG_META 전체 로드 후 내부 aliasCache 구성 (metadata 컬럼 값 포함)
    * @returns {Error|null}
    */
-  cacheTagMetaAll() {
+  async cacheTagMetaAll() {
     try {
       const metaColNames = this.schema
         ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
         : [];
-      const rows = this.client.selectTagMeta(this.logicalTable, metaColNames);
+      const rows = await this.client.selectTagMeta(this.logicalTable, metaColNames);
       this.aliasCache = new TagMetaCache();
       for (const row of (rows || [])) {
         const meta = {};
@@ -595,11 +786,11 @@ class TagDataTable {
    * @param {*} tagId
    * @returns {boolean}
    */
-  cacheTagMetaByTagID(tagId) {
+  async cacheTagMetaByTagID(tagId) {
     const metaColNames = this.schema
       ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
       : [];
-    const row = this.client.selectTagMetaById(this.logicalTable, tagId, metaColNames);
+    const row = await this.client.selectTagMetaById(this.logicalTable, tagId, metaColNames);
     if (row == null) return false;
     const meta = {};
     for (const col of metaColNames) meta[col] = row[col];
@@ -616,9 +807,10 @@ class TagDataTable {
    * @param {{ selectColumns?: string[], repTargetCond?: object|null, transform?: Array|null }} [options]
    * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
    */
-  read(startRid, endRid, limit = 1000, options) {
+  async read(startRid, endRid, limit = 1000, options) {
     const cols = this.schema.columns.filter(c => !(c.flag & FLAG_METADATA));
     const colNames = _buildSelectColumns(this.schema, options?.selectColumns);
+    const colList = ['_RID', _buildSelectList(this.schema, colNames, this.config)].join(', ');
     const keyCol = cols.find(c => c.flag & FLAG_PRIMARY);
     const keyColName = keyCol ? keyCol.name : null;
     const filterSql = buildQueryFilterSql(options?.repTargetCond, options?.transform, {
@@ -628,7 +820,6 @@ class TagDataTable {
     });
 
     const hintEndRid = endRid + 1n;
-    const colList = ['_RID', ...colNames].join(', ');
     const whereClause = filterSql.sql !== '1=1' ? ` WHERE ${filterSql.sql}` : '';
     const sql = `SELECT /*+ RID_RANGE(${this.dataTable}, ${startRid}, ${hintEndRid}) */ ${colList} FROM ${this.dataTable}${whereClause} ORDER BY _RID LIMIT ${limit}`;
     getLogger().trace('table_read_query', {
@@ -640,7 +831,7 @@ class TagDataTable {
       params: _stringifyParams(filterSql.params),
     });
     try {
-      const sqlRows = this.client.query(sql, filterSql.params) || [];
+      const sqlRows = (await this.client.query(sql, filterSql.params)) || [];
       const result = [];
       for (const row of sqlRows) {
         if (row._RID == null) {
@@ -656,7 +847,7 @@ class TagDataTable {
           const tagId = data[keyColName];
           let entry = this.aliasCache._map.get(BigInt(tagId));
           if (!entry) {
-            const found = this.cacheTagMetaByTagID(tagId);
+            const found = await this.cacheTagMetaByTagID(tagId);
             if (!found) continue;
             entry = this.aliasCache._map.get(BigInt(tagId));
           }
