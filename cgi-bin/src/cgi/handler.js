@@ -5,7 +5,7 @@ const path = require('path');
 const process = require('process');
 const service = require('service');
 const { MachbaseClient, ColumnType } = require('../db/client.js');
-const { createQueryClient } = require('../db/remote.js');
+const { createQueryClient, MqttPublishClient } = require('../db/remote.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME, FLAG_SUMMARIZED } = require('../db/types.js');
 const {
   APP_DIR,
@@ -266,6 +266,262 @@ class Handler {
    */
   static validateServerProfile(profile) {
     return validateServerProfile(profile);
+  }
+
+  /**
+   * 저장 전 connection test용 server profile을 검증한다.
+   * name은 없어도 된다.
+   * @param {object} profile
+   * @returns {object}
+   */
+  static validateServerProfileForTest(profile) {
+    return validateServerProfile(profile, { requireName: false });
+  }
+
+  /**
+   * server type이 target 전용인지 반환한다.
+   * @param {string} type
+   * @returns {boolean}
+   */
+  static isTargetOnlyServerType(type) {
+    const normalized = String(type || 'native').trim().toLowerCase();
+    return normalized === 'mqtt-api' || normalized === 'mqtt-publish';
+  }
+
+  /**
+   * replication create용 기본 config 템플릿을 반환한다.
+   * @returns {object}
+   */
+  static buildDefaultReplicatorConfig() {
+    return {
+      id: '',
+      source: {
+        server: '',
+        table: '',
+        columns: null,
+        meta: null,
+        rep_target_cond: {
+          column: null,
+          op: 'ALL',
+          value: [],
+        },
+        transform: [],
+      },
+      target: {
+        server: '',
+        table: '',
+        columns: null,
+        meta: null,
+      },
+      startMode: 'full',
+      ridAfter: null,
+      queryLimit: 5000,
+      pollIntervalMs: 1000,
+      shutdownTimeoutMs: 30000,
+      onSaveFailure: 'continue',
+      retry: {
+        maxAttempts: 5,
+        baseDelayMs: 100,
+        maxDelayMs: 30000,
+      },
+      logging: {
+        level: 'info',
+        maxFiles: 10,
+      },
+    };
+  }
+
+  /**
+   * replication 기본 템플릿의 참고용 guide/examples를 반환한다.
+   * 저장 payload에는 포함되지 않는다.
+   * @returns {object}
+   */
+  static buildDefaultReplicatorGuide() {
+    return {
+      requiredOnCreate: [
+        'source.server',
+        'source.table',
+        'target.server',
+        'target.table',
+      ],
+      examples: {
+        rep_target_cond: [
+          { column: null, op: 'ALL', value: [] },
+          { column: 'NAME', op: 'IN', value: ['TAG-01', 'TAG-02'] },
+          { column: 'NAME', op: 'LIKE', value: ['TAG-%'] },
+        ],
+        transform: [
+          {
+            criteria: { column: null, op: 'ALL', value: [] },
+            expr: [
+              { column: 'NAME', type: 'prefix', value: 'SRC.' },
+            ],
+          },
+          {
+            criteria: { column: null, op: 'ALL', value: [] },
+            expr: [
+              { column: 'VALUE', type: 'calc', bias: 0, multiplier: 1, calcOrder: 'bm' },
+            ],
+          },
+          {
+            criteria: { column: null, op: 'ALL', value: [] },
+            expr: [
+              { column: 'VALUE', type: 'filter', min: 0, max: 100 },
+            ],
+          },
+        ],
+      },
+    };
+  }
+
+  /**
+   * server create용 기본 profile 템플릿을 반환한다.
+   * @param {string} type
+   * @returns {object}
+   */
+  static buildDefaultServerProfile(type) {
+    const normalizedType = String(type || '').trim().toLowerCase();
+    if (!normalizedType) {
+      throw new Error('type is required');
+    }
+    if (normalizedType === 'native') {
+      return {
+        name: '',
+        type: 'native',
+        host: '127.0.0.1',
+        port: 5656,
+        user: 'SYS',
+        password: '',
+        token: '',
+        protocol: null,
+        qos: null,
+        retain: null,
+      };
+    }
+    if (normalizedType === 'http') {
+      return {
+        name: '',
+        type: 'http',
+        host: '127.0.0.1',
+        port: 5654,
+        user: null,
+        password: '',
+        token: '',
+        protocol: 'http',
+        qos: null,
+        retain: null,
+      };
+    }
+    if (normalizedType === 'mqtt-api') {
+      return {
+        name: '',
+        type: 'mqtt-api',
+        host: '127.0.0.1',
+        port: 5653,
+        user: null,
+        password: '',
+        token: '',
+        protocol: null,
+        qos: 1,
+        retain: null,
+      };
+    }
+    if (normalizedType === 'mqtt-publish') {
+      return {
+        name: '',
+        type: 'mqtt-publish',
+        host: '127.0.0.1',
+        port: 5653,
+        user: null,
+        password: '',
+        token: '',
+        protocol: null,
+        qos: 1,
+        retain: false,
+      };
+    }
+    throw new Error(`type '${type}' is not supported`);
+  }
+
+  /**
+   * replication 기본 템플릿을 반환한다.
+   * @param {function(Error|null, object=): void} callback
+   */
+  static getDefaultReplicatorConfig(callback) {
+    try {
+      callback(null, {
+        config: Handler.buildDefaultReplicatorConfig(),
+        guide: Handler.buildDefaultReplicatorGuide(),
+      });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  /**
+   * server 기본 템플릿을 반환한다.
+   * @param {string} type
+   * @param {function(Error|null, object=): void} callback
+   */
+  static getDefaultServerProfile(type, callback) {
+    try {
+      const profile = Handler.buildDefaultServerProfile(type);
+      callback(null, {
+        profile,
+        targetOnly: Handler.isTargetOnlyServerType(profile.type),
+      });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  /**
+   * server profile로 실제 연결 테스트를 수행한다.
+   * query-capable target은 lightweight query, mqtt-publish는 connect만 수행한다.
+   * @param {object} profile
+   * @returns {Promise<{ type: string, targetOnly: boolean, probe: string }>}
+   */
+  static async probeServerConnection(profile) {
+    const type = String(profile?.type || 'native').trim().toLowerCase();
+    if (type === 'native') {
+      const client = new MachbaseClient(profile);
+      try {
+        client.connect();
+        const tables = client.selectVisibleTables();
+        if (!Array.isArray(tables)) {
+          throw new Error('connection test failed');
+        }
+        return { type, targetOnly: Handler.isTargetOnlyServerType(type), probe: 'query' };
+      } finally {
+        client.close();
+      }
+    }
+
+    if (type === 'http' || type === 'mqtt-api') {
+      const client = createQueryClient(profile);
+      try {
+        await client.connect();
+        const tables = await client.selectVisibleTables();
+        if (!Array.isArray(tables)) {
+          throw new Error('connection test failed');
+        }
+        return { type, targetOnly: Handler.isTargetOnlyServerType(type), probe: 'query' };
+      } finally {
+        try { await client.close(); } catch (_) {}
+      }
+    }
+
+    if (type === 'mqtt-publish') {
+      const client = new MqttPublishClient(profile);
+      try {
+        await client.connect();
+        return { type, targetOnly: true, probe: 'connect' };
+      } finally {
+        try { await client.close(); } catch (_) {}
+      }
+    }
+
+    throw new Error(`server.type '${type}' is not supported`);
   }
 
   /**
@@ -1008,6 +1264,50 @@ class Handler {
       data.push(sanitizeServerProfile(profile));
     }
     callback(null, data);
+  }
+
+  /**
+   * 저장된 server 또는 미저장 profile 기준으로 연결 테스트를 수행한다.
+   * body는 { name } 또는 { profile } 형식 중 하나여야 한다.
+   * @param {object} body
+   * @param {function(Error|null, object=): void} callback
+   */
+  static async testServerConnection(body, callback) {
+    const hasName = !!(body && typeof body.name === 'string' && body.name.trim());
+    const hasProfile = !!(body && body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile));
+    if (hasName === hasProfile) {
+      callback(new Error('exactly one of name or profile is required'));
+      return;
+    }
+
+    let profile;
+    let mode;
+    let name = null;
+    try {
+      if (hasName) {
+        name = String(body.name).trim();
+        profile = Handler.getServerConfig(name);
+        if (!profile) {
+          callback(new Error(`server '${name}' not found`));
+          return;
+        }
+        mode = 'saved';
+      } else {
+        profile = Handler.validateServerProfileForTest(body.profile);
+        mode = 'profile';
+      }
+
+      const result = await Handler.probeServerConnection(profile);
+      callback(null, {
+        mode,
+        name: mode === 'saved' ? name : undefined,
+        type: result.type,
+        targetOnly: result.targetOnly,
+        probe: result.probe,
+      });
+    } catch (err) {
+      callback(err);
+    }
   }
 
   /**

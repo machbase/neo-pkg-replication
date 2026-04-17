@@ -261,9 +261,10 @@ async function _describeTable(client, tableName) {
   };
 }
 
-function _validateServerProfile(profile) {
+function _validateServerProfile(profile, options = {}) {
+  const requireName = options.requireName !== false;
   const normalized = normalizeServerProfileForSave(profile);
-  if (!normalized.name) throw new Error('server.name is required');
+  if (requireName && !normalized.name) throw new Error('server.name is required');
   if (!normalized.host) throw new Error('server.host is required');
   if (!normalized.port) throw new Error('server.port is required');
   if (!normalized.type) normalized.type = 'native';

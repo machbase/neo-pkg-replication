@@ -65,15 +65,46 @@
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
 | `GET` | `/api/server/list.js` | server profile 목록 |
+| `GET` | `/api/server/default.js?type=...` | type별 server profile 기본 템플릿 |
 | `POST` | `/api/server.js` | server profile 생성 |
 | `GET` | `/api/server.js?name=...` | server profile 단건 조회 |
 | `PUT` | `/api/server.js?name=...` | server profile 수정 |
 | `DELETE` | `/api/server.js?name=...` | server profile 삭제 |
+| `POST` | `/api/server/test.js` | 저장된 server 또는 미저장 profile 연결 테스트 |
 | `GET` | `/api/log/list` | 로그 파일 목록 조회 |
 | `GET` | `/api/log/content?name=...` | 로그 파일 라인 범위 조회 |
 | `GET` | `/api/log/content/all?name=...` | 로그 파일 전체 내용 조회 |
 
 ### 예시
+
+### `GET /api/server/default.js?type=...`
+
+- `type` 은 필수이며 `native`, `http`, `mqtt-api`, `mqtt-publish` 중 하나여야 한다.
+- 응답의 `profile` 은 `POST /api/server.js` 와 같은 key 구조를 가진 create 템플릿이다.
+- `targetOnly` 는 저장되지 않는 파생 정보이며, 프론트엔드가 source 선택 가능 여부를 판단할 때 사용한다.
+
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "profile": {
+      "name": "",
+      "host": "127.0.0.1",
+      "port": 5654,
+      "user": null,
+      "password": "",
+      "token": "",
+      "protocol": "http",
+      "qos": null,
+      "retain": null,
+      "type": "http"
+    },
+    "targetOnly": false
+  }
+}
+```
 
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
@@ -91,6 +122,55 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 curl -sS -X POST -H 'Content-Type: application/json' \
   --data '{"name":"local_mqtt","host":"127.0.0.1","port":5653,"type":"mqtt-api","token":"","qos":1}' \
   http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
+```
+
+### `POST /api/server/test.js`
+
+- 요청 body는 `{ "name": "saved_profile_name" }` 또는 `{ "profile": { ... } }` 둘 중 하나만 허용한다.
+- 저장 전 테스트에서는 `profile.name` 이 없어도 된다.
+- probe 방식은 transport 제약에 따라 달라진다.
+  - `native`, `http`, `mqtt-api`: lightweight query probe
+  - `mqtt-publish`: connect-only probe
+
+저장된 server 테스트 예시:
+
+```json
+{
+  "name": "local_http"
+}
+```
+
+미저장 profile 테스트 예시:
+
+```json
+{
+  "profile": {
+    "name": "",
+    "host": "127.0.0.1",
+    "port": 5654,
+    "user": null,
+    "password": "",
+    "token": "",
+    "protocol": "http",
+    "qos": null,
+    "retain": null,
+    "type": "http"
+  }
+}
+```
+
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "mode": "profile",
+    "type": "http",
+    "targetOnly": false,
+    "probe": "query"
+  }
+}
 ```
 
 ## ReplicatorConfig
@@ -235,6 +315,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
 | `GET` | `/api/rc/list.js` | replication 목록 (`installed`, `running`) |
+| `GET` | `/api/rc/default.js` | replication create 기본 템플릿 |
 | `POST` | `/api/rc.js` | replication 생성 + service install |
 | `GET` | `/api/rc.js?name=...` | replication 단건 조회 + checkpoint |
 | `PUT` | `/api/rc.js?name=...` | replication 수정 |
@@ -274,6 +355,62 @@ curl -sS -X POST -H 'Content-Type: application/json' \
         "hasMore": false,
         "max_rid": "2799971"
       }
+    }
+  }
+}
+```
+
+### `GET /api/rc/default.js`
+
+- 응답의 `config` 는 `POST /api/rc.js` 와 호환되는 기본 템플릿이다.
+- 템플릿은 저장 형식 참고용이므로, `source.server`, `source.table`, `target.server`, `target.table` 같은 필수 값은 호출 측에서 채워야 한다.
+- `guide` 는 저장 대상이 아닌 참고 정보이며, `rep_target_cond` / `transform` 의 기본 구조 예시를 포함한다.
+
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "config": {
+      "id": "",
+      "source": {
+        "server": "",
+        "table": "",
+        "columns": null,
+        "meta": null,
+        "rep_target_cond": { "column": null, "op": "ALL", "value": [] },
+        "transform": []
+      },
+      "target": {
+        "server": "",
+        "table": "",
+        "columns": null,
+        "meta": null
+      },
+      "startMode": "full",
+      "ridAfter": null,
+      "queryLimit": 5000,
+      "pollIntervalMs": 1000,
+      "shutdownTimeoutMs": 30000,
+      "onSaveFailure": "continue",
+      "retry": {
+        "maxAttempts": 5,
+        "baseDelayMs": 100,
+        "maxDelayMs": 30000
+      },
+      "logging": {
+        "level": "info",
+        "maxFiles": 10
+      }
+    },
+    "guide": {
+      "requiredOnCreate": [
+        "source.server",
+        "source.table",
+        "target.server",
+        "target.table"
+      ]
     }
   }
 }
