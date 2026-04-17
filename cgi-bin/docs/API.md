@@ -47,7 +47,6 @@
 | `token` | string | 조건부 | `http`, `mqtt-api`, `mqtt-publish` 에서 사용 가능 |
 | `type` | string | | `"native"` \| `"http"` \| `"mqtt-api"` \| `"mqtt-publish"` |
 | `protocol` | string | 선택 | `http`에서 `"http"` 또는 `"https"` |
-| `clientId` | string | 선택 | `mqtt-api`, `mqtt-publish` client id |
 | `qos` | number | 선택 | `mqtt-api`, `mqtt-publish` publish QoS |
 | `retain` | boolean | 선택 | `mqtt-publish` retain flag |
 
@@ -55,6 +54,7 @@
 
 - `GET` 응답에는 `password`, `token`을 포함하지 않는다.
 - `GET` 응답에는 `targetOnly` 가 포함되며, `mqtt-api`, `mqtt-publish` 는 `true` 이다.
+- MQTT `clientId` 는 runtime connection마다 내부 생성되며 profile에 저장하지 않는다.
 - `PUT`에서 `password`, `token`이 없거나 `null` 또는 `""` 이면 기존 값을 유지한다.
 - 다른 replication config가 참조 중인 server profile은 `DELETE` 할 수 없다.
 - source로 사용할 수 있는 type은 현재 `native`, `http` 뿐이다.
@@ -89,7 +89,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
-  --data '{"name":"local_mqtt","host":"127.0.0.1","port":5653,"type":"mqtt-api","clientId":"rpl-mqtt-api","token":"","qos":1}' \
+  --data '{"name":"local_mqtt","host":"127.0.0.1","port":5653,"type":"mqtt-api","token":"","qos":1}' \
   http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
 ```
 
@@ -126,7 +126,6 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | `token` | string | legacy | inline token |
 | `type` | string | legacy | `"native"` \| `"http"` \| `"mqtt-api"` \| `"mqtt-publish"` |
 | `protocol` | string | legacy | inline HTTP protocol |
-| `clientId` | string | legacy | inline MQTT client id |
 | `qos` | number | legacy | inline MQTT QoS |
 | `retain` | boolean | legacy | inline MQTT retain |
 | `table` | string | ✓ | 테이블명, 저장 시 대문자 정규화 |

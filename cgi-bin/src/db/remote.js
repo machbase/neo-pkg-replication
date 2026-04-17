@@ -11,6 +11,7 @@ const DEFAULT_MQTT_QOS = 1;
 const DEFAULT_MQTT_REPLY_DELAY_MS = 50;
 const NS_PER_MS = 1000000n;
 const NS_PER_SEC = 1000000000n;
+let mqttClientSeq = 0;
 
 function _sqlLiteral(value) {
   if (value == null) return 'NULL';
@@ -51,6 +52,11 @@ function _normalizeInteger(value, defaultValue) {
   if (value == null || value === '') return defaultValue;
   const num = parseInt(value, 10);
   return Number.isFinite(num) ? num : defaultValue;
+}
+
+function _nextMqttClientId(prefix) {
+  mqttClientSeq += 1;
+  return `${prefix}-${Date.now()}-${mqttClientSeq}-${Math.floor(Math.random() * 100000)}`;
 }
 
 function _buildHttpHeaders(config, extraHeaders) {
@@ -472,14 +478,14 @@ class MqttApiClient extends SqlLikeClient {
     if (this.qos < 0 || this.qos > 2) this.qos = DEFAULT_MQTT_QOS;
     this.replyBase = String(config.replyTopicBase || 'db/reply/rpl').trim() || 'db/reply/rpl';
     this.replyDelayMs = _normalizeInteger(config.replyDelayMs, DEFAULT_MQTT_REPLY_DELAY_MS);
+    this.runtimeClientId = _nextMqttClientId('rpl');
     this.client = null;
     this.connected = false;
     this.busy = false;
   }
 
   _clientId() {
-    if (this.config.clientId) return String(this.config.clientId);
-    return `rpl-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    return this.runtimeClientId;
   }
 
   _buildOptions() {
@@ -706,13 +712,13 @@ class MqttPublishClient {
     this.qos = _normalizeInteger(config.qos, DEFAULT_MQTT_QOS);
     if (this.qos < 0 || this.qos > 2) this.qos = DEFAULT_MQTT_QOS;
     this.retain = _normalizeBoolean(config.retain, false);
+    this.runtimeClientId = _nextMqttClientId('rpl-pub');
     this.client = null;
     this.connected = false;
   }
 
   _clientId() {
-    if (this.config.clientId) return String(this.config.clientId);
-    return `rpl-pub-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    return this.runtimeClientId;
   }
 
   _buildOptions() {

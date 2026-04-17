@@ -241,7 +241,6 @@ function normalizeServerProfileForSave(profile) {
     user: normalizeOptionalString(profile.user),
     password: profile.password == null ? '' : String(profile.password),
     token: normalizeOptionalString(profile.token),
-    clientId: normalizeOptionalString(profile.clientId),
     protocol: normalizeProtocol(profile.protocol),
     qos: profile.qos == null || profile.qos === '' ? null : Number(profile.qos),
     retain: normalizeBoolean(profile.retain),
@@ -254,6 +253,7 @@ function sanitizeServerProfile(profile) {
   const safe = { ...profile };
   delete safe.password;
   delete safe.token;
+  delete safe.clientId;
   safe.targetOnly = safe.type === 'mqtt-api' || safe.type === 'mqtt-publish';
   return safe;
 }
@@ -262,6 +262,7 @@ function _normalizeEndpointForSave(endpoint) {
   if (!isObject(endpoint)) return endpoint;
 
   const normalized = { ...endpoint };
+  delete normalized.clientId;
   normalized.table = normalizeTableName(endpoint.table);
   if (endpoint.columns !== undefined) normalized.columns = normalizeNameArray(endpoint.columns);
   if (endpoint.meta !== undefined) normalized.meta = normalizeNameArray(endpoint.meta);
@@ -286,7 +287,6 @@ function _normalizeEndpointForSave(endpoint) {
     if (endpoint.password !== undefined) normalized.password = endpoint.password == null ? '' : String(endpoint.password);
     if (endpoint.type !== undefined) normalized.type = normalizeServerType(endpoint.type);
     if (endpoint.token !== undefined) normalized.token = normalizeOptionalString(endpoint.token);
-    if (endpoint.clientId !== undefined) normalized.clientId = normalizeOptionalString(endpoint.clientId);
     if (endpoint.protocol !== undefined) normalized.protocol = normalizeProtocol(endpoint.protocol);
     if (endpoint.qos !== undefined && endpoint.qos !== null && endpoint.qos !== '') {
       const qos = Number(endpoint.qos);
@@ -366,6 +366,7 @@ function resolveEndpointConnection(endpoint, readServerProfile, side) {
   }
 
   const resolved = profile ? { ...profile, ...normalized } : { ...normalized };
+  delete resolved.clientId;
   resolved.type = normalizeServerType(resolved.type);
   if (!resolved.host) throw new Error(`${side}.host is required`);
   if (!resolved.port) throw new Error(`${side}.port is required`);
