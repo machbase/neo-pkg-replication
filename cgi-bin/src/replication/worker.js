@@ -441,7 +441,7 @@ class Worker {
     }
 
     try {
-      const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists && this.config.integrity !== false;
+      const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists;
       if (doIntegrity) {
         const originalStartRid = startRid;
         const result = await this._runStartupIntegrity({

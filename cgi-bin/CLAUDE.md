@@ -101,8 +101,9 @@
   - `mqtt-api`: metadata를 별도 insert하지 않고 data write payload에 meta 컬럼을 함께 포함한다
   - `mqtt-publish`: metadata를 별도 insert하지 않고 publish payload columns/rows에 meta 컬럼을 함께 포함한다
 - target에 이미 있는 tag name은 메모리 cache로 건너뛴다
-- integrity check는 재기동 시 source batch를 읽고 target의 `PRIMARY + BASETIME` 존재 여부를 row-by-row로 확인한다
-- `mqtt-api`, `mqtt-publish` target은 integrity를 지원하지 않는다
+- startup integrity는 user config가 아니라 내부 동작이다
+- startup integrity는 TAG 재기동 시 source batch를 읽고 target의 `PRIMARY + BASETIME` 존재 여부를 row-by-row로 확인한다
+- startup integrity는 `native`, `http` target에서만 수행한다
 
 ## runtime 배치 루프
 

@@ -9,7 +9,7 @@
     }
   },
   "source": {
-    "host": "192.168.1.183",
+    "host": "127.0.0.1",
     "port": 5656,
     "user": "SYS",
     "password": "MANAGER",
@@ -19,21 +19,18 @@
     "transform": null
   },
   "target": {
-    "host": "192.168.1.183",
+    "host": "127.0.0.1",
     "port": 5656,
     "user": "SYS",
     "password": "MANAGER",
-    "table": "TAG_COPY",
-    "autoCreate": true
+    "table": "TAG_COPY"
   },
   "startMode": "now",
   "ridAfter": null,
   "pollIntervalMs": 1000,
   "queryLimit": 5000,
-  "ridRangeSize": 50000,
   "shutdownTimeoutMs": 30000,
   "onSaveFailure": "continue",
-  "integrity": true,
   "retry": {
     "maxAttempts": 5,
     "baseDelayMs": 100,

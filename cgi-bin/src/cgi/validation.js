@@ -20,7 +20,6 @@ const NUMERIC_TYPES = new Set([
 
 const VALID_START_MODES = { full: true, now: true, ridAfter: true };
 const VALID_LOG_LEVELS = { trace: true, debug: true, info: true, warn: true, error: true };
-const MQTT_TARGET_TYPES = { 'mqtt-api': true, 'mqtt-publish': true };
 
 const STRING_LIKE_TYPES = new Set([
   ColumnType.VARCHAR,
@@ -584,11 +583,6 @@ async function prepareReplicatorConfig(config, readServerProfile) {
   if (sourceType === 'mqtt-api' || sourceType === 'mqtt-publish') {
     throw new Error(`source.type '${sourceType}' is not supported`);
   }
-  if (MQTT_TARGET_TYPES[targetType] && storedConfig.integrity !== false) {
-    warnings.push(`target.type '${targetType}' forces integrity=false`);
-    storedConfig.integrity = false;
-    runtimeConfig.integrity = false;
-  }
 
   let sourceClient = null;
   let targetClient = null;
@@ -698,7 +692,7 @@ async function prepareReplicatorConfig(config, readServerProfile) {
         }))
       : null;
 
-    storedConfig._runtime = {
+    const runtimeHints = {
       source: {
         tableType: sourceInfo.tableType,
         logicalTable: sourceInfo.logicalTable,
@@ -710,6 +704,7 @@ async function prepareReplicatorConfig(config, readServerProfile) {
         metaColumns: _serializeColumns(targetInfo.metaColumns),
       },
     };
+    runtimeConfig._runtime = runtimeHints;
 
     return {
       storedConfig,

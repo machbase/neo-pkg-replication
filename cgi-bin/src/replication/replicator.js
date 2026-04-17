@@ -38,7 +38,6 @@ class Replicator {
     this.ridAfter = config.ridAfter ?? null;
     this.onSaveFailure = config.onSaveFailure ?? 'continue';
     this.shutdownTimeoutMs = config.shutdownTimeoutMs ?? 30000;
-    this.integrity = config.integrity ?? null;
     this.retry = config.retry ?? null;
     this.logging = config.logging ?? null;
     this.runtimeHints = config._runtime || null;
@@ -211,7 +210,6 @@ class Replicator {
       startMode: this.startMode,
       ridAfter: this.ridAfter,
       onSaveFailure: this.onSaveFailure,
-      integrity: this.integrity,
       retry: this.retry,
     };
 

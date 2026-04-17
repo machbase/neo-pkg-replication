@@ -325,6 +325,8 @@ function _normalizeEndpointForSave(endpoint) {
 function normalizeReplicatorConfigForSave(config) {
   if (!isObject(config)) return config;
   const normalized = { ...config };
+  delete normalized._runtime;
+  delete normalized.integrity;
 
   if (normalized.id !== undefined && normalized.id !== null) {
     normalized.id = String(normalized.id).trim();
@@ -409,6 +411,7 @@ function sanitizeReplicatorConfig(config) {
   if (!isObject(config)) return config;
   const safe = { ...config };
   delete safe._runtime;
+  delete safe.integrity;
   if (isObject(config.source)) {
     safe.source = { ...config.source };
     delete safe.source.password;

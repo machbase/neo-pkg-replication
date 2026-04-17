@@ -3,7 +3,7 @@
 /**
  * @fileoverview Replicator 통합 테스트
  *
- * 실제 DB(192.168.1.183:5656)에 접속하여 discover / replication / syncMeta를 검증한다.
+ * 기본값은 로컬 DB(127.0.0.1:5656)이며 fixtures.js 환경변수 override를 지원한다.
  * 사용법: jsh cgi-bin/tests/replication.test.js
  */
 
@@ -14,9 +14,16 @@ const TESTS_DIR = path.resolve(path.dirname(process.argv[1]));
 const ROOT = path.resolve(TESTS_DIR, '..');
 
 const { suite, test, assert, run } = require(TESTS_DIR + '/test.js');
-const { MachbaseClient } = require(ROOT + '/src/db/client.js');
+const { MachbaseClient, ColumnType, Column, TableSchema } = require(ROOT + '/src/db/client.js');
+const { TagTable, LogTable } = require(ROOT + '/src/db/table.js');
 const { Replicator } = require(ROOT + '/src/replication/replicator.js');
 const { SRC, DST, SRC_TABLE, DST_TABLE } = require(TESTS_DIR + '/fixtures.js');
+
+const TEMP_SUFFIX = String(Date.now());
+const SRC_LOG_TABLE = `RPL_SRC_${TEMP_SUFFIX}`;
+const DST_LOG_TABLE = `RPL_DST_${TEMP_SUFFIX}`;
+const LOG_JOB_ID = `rpl_log_${TEMP_SUFFIX}`;
+const LOG_NOW_JOB_ID = `rpl_log_now_${TEMP_SUFFIX}`;
 
 /**
  * 테스트용 ReplicatorConfig 기본값을 생성한다.
@@ -24,34 +31,120 @@ const { SRC, DST, SRC_TABLE, DST_TABLE } = require(TESTS_DIR + '/fixtures.js');
  * @returns {object}
  */
 function makeConfig(overrides = {}) {
-  return {
-    source: { ...SRC, table: SRC_TABLE, columns: null, filter: null, transform: null },
-    target: { ...DST, table: DST_TABLE, autoCreate: true },
+  const config = {
+    source: {
+      ...SRC,
+      table: SRC_TABLE,
+      columns: ['NAME', 'TIME', 'VALUE'],
+      meta: [],
+      rep_target_cond: { op: 'ALL', value: [] },
+      transform: null,
+    },
+    target: {
+      ...DST,
+      table: DST_TABLE,
+      columns: ['NAME', 'TIME', 'VALUE'],
+      meta: [],
+    },
     startMode: 'full',
     queryLimit: 100,
-    ridRangeSize: 50000,
     pollIntervalMs: 100,
     onSaveFailure: 'continue',
     shutdownTimeoutMs: 5000,
-    integrity: false,
     retry: null,
-    ...overrides,
   };
+  const next = { ...config, ...overrides };
+  if (overrides.source) next.source = { ...config.source, ...overrides.source };
+  if (overrides.target) next.target = { ...config.target, ...overrides.target };
+  return next;
 }
 
 /**
  * DST_TABLE이 존재하면 DROP하여 초기화한다.
  */
-function dropDstTable() {
-  const client = new MachbaseClient(DST);
+function dropTable(config, tableName) {
+  const client = new MachbaseClient(config);
   try {
     client.connect();
-    const t = client.selectTableType(DST_TABLE);
+    const t = client.selectTableTypeQualified(tableName);
     if (t.type !== 'UNSUPPORTED') {
-      client.execute(`DROP TABLE ${DST_TABLE}`);
+      client.execute(`DROP TABLE ${tableName}`);
     }
   } finally {
     client.close();
+  }
+}
+
+function dropDstTable() {
+  dropTable(DST, DST_TABLE);
+}
+
+/**
+ * DST_TABLE을 source schema 기준으로 다시 생성한다.
+ */
+async function recreateDstTable() {
+  const srcTable = new TagTable(SRC, SRC_TABLE);
+  const dstClient = new MachbaseClient(DST);
+  try {
+    await srcTable.open();
+    const schema = await srcTable.getSchema();
+    dstClient.connect();
+    const existing = dstClient.selectTableTypeQualified(DST_TABLE);
+    if (existing.type !== 'UNSUPPORTED') {
+      dstClient.execute(`DROP TABLE ${DST_TABLE}`);
+    }
+    dstClient.createTagTable(DST_TABLE, schema);
+  } finally {
+    try { await srcTable.close(); } catch (_) {}
+    dstClient.close();
+  }
+}
+
+function makeLogSchema(logicalTable) {
+  return new TableSchema('LOG', logicalTable, [
+    new Column('TIME', ColumnType.DATETIME, 0, 0, 0),
+    new Column('VALUE', ColumnType.DOUBLE, 1, 0, 0),
+  ]);
+}
+
+async function seedLogSourceAndTarget() {
+  const srcSchema = makeLogSchema(SRC_LOG_TABLE);
+  const dstSchema = makeLogSchema(DST_LOG_TABLE);
+  const srcClient = new MachbaseClient(SRC);
+  const dstClient = new MachbaseClient(DST);
+  const srcLog = new LogTable(SRC_LOG_TABLE, SRC);
+  const rows = [
+    { TIME: '2026-04-17T02:00:00Z', VALUE: 10.5 },
+    { TIME: '2026-04-17T02:00:01Z', VALUE: 20.5 },
+    { TIME: '2026-04-17T02:00:02Z', VALUE: 30.5 },
+    { TIME: '2026-04-17T02:00:03Z', VALUE: 40.5 },
+    { TIME: '2026-04-17T02:00:04Z', VALUE: 50.5 },
+  ];
+
+  dropTable(SRC, SRC_LOG_TABLE);
+  dropTable(DST, DST_LOG_TABLE);
+
+  try {
+    srcClient.connect();
+    srcClient.createLogTable(SRC_LOG_TABLE, srcSchema);
+  } finally {
+    srcClient.close();
+  }
+
+  try {
+    dstClient.connect();
+    dstClient.createLogTable(DST_LOG_TABLE, dstSchema);
+  } finally {
+    dstClient.close();
+  }
+
+  try {
+    await srcLog.open();
+    srcLog.setSchema(await srcLog.getSchema());
+    const err = await srcLog.append(rows);
+    assert.ok(err === null || err === undefined, `source seed append failed: ${err}`);
+  } finally {
+    await srcLog.close();
   }
 }
 
@@ -83,9 +176,10 @@ function deriveId(overrides = {}) {
 
 suite('Replicator - discover', () => {
 
-  test('TAG 테이블 discover 성공', () => {
+  test('TAG 테이블 discover 성공', async () => {
+    await recreateDstTable();
     const r = new Replicator(makeConfig());
-    const discovered = r.discover();
+    const discovered = await r.discover();
     assert.ok(discovered, 'discover should succeed');
     assert.equal(discovered.tableType, 'TAG');
     assert.ok(discovered.dataTables.length > 0);
@@ -93,18 +187,19 @@ suite('Replicator - discover', () => {
     assert.ok(discovered.dstSchema);
   });
 
-  test('존재하지 않는 source 테이블 - discover null 반환', () => {
+  test('존재하지 않는 source 테이블 - discover null 반환', async () => {
+    await recreateDstTable();
     const r = new Replicator(makeConfig({
       source: { ...SRC, table: 'NO_SUCH_TABLE_XYZ' },
     }));
-    const discovered = r.discover();
+    const discovered = await r.discover();
     assert.equal(discovered, null);
   });
 
-  test('autoCreate=false + 대상 테이블 없음 - discover null 반환', () => {
+  test('대상 테이블 없음 - discover null 반환', async () => {
     dropDstTable();
-    const r = new Replicator(makeConfig({ target: { ...DST, table: DST_TABLE, autoCreate: false } }));
-    const discovered = r.discover();
+    const r = new Replicator(makeConfig());
+    const discovered = await r.discover();
     assert.equal(discovered, null);
   });
 
@@ -112,59 +207,33 @@ suite('Replicator - discover', () => {
 
 suite('Replicator - replication', () => {
 
-  test('전체 복제 후 dst 테이블에 데이터 존재', async () => {
-    const id = deriveId();
-    dropDstTable();
-    dropCheckpoints(id);
-
-    const srcClient = new MachbaseClient(SRC);
-    let maxRid;
-    try {
-      srcClient.connect();
-      const parts = srcClient.selectTagDataTables(SRC_TABLE);
-      maxRid = srcClient.selectMaxRid(parts[0].data_table);
-    } finally {
-      srcClient.close();
-    }
-
-    if (maxRid === 0n) {
-      console.println('  SKIP: source table is empty');
-      return;
-    }
-
-    // pollIntervalMs를 길게 설정해서 첫 배치 완료 후 poll 대기 중 shutdown
-    const shutdownFlag = { value: false };
-    const config = makeConfig({ startMode: 'full', integrity: false, pollIntervalMs: 60000 });
-    const replicator = new Replicator(config, shutdownFlag);
-
-    const startPromise = replicator.start();
-    setTimeout(() => { shutdownFlag.value = true; }, 5000);
-    await startPromise;
-
-    const dstClient = new MachbaseClient(DST);
-    try {
-      dstClient.connect();
-      const t = dstClient.selectTableType(DST_TABLE);
-      assert.equal(t.type, 'TAG', 'dst table should be TAG');
-      const parts = dstClient.selectTagDataTables(DST_TABLE);
-      assert.ok(parts.length > 0, 'dst should have partitions');
-      const dstMaxRid = dstClient.selectMaxRid(parts[0].data_table);
-      assert.ok(dstMaxRid > 0n, 'dst should have rows');
-    } finally {
-      dstClient.close();
-    }
-  });
-
-  test('startMode=now - dst 테이블 autoCreate 확인', async () => {
-    const id = deriveId({ startMode: 'now' });
-    dropDstTable();
-    dropCheckpoints(id);
+  test('정적 LOG source 복제 후 dst 테이블에 데이터 존재', async () => {
+    await seedLogSourceAndTarget();
+    dropCheckpoints(LOG_JOB_ID);
 
     const shutdownFlag = { value: false };
-    const config = makeConfig({ startMode: 'now', integrity: false });
+    const config = makeConfig({
+      id: LOG_JOB_ID,
+      source: {
+        ...SRC,
+        table: SRC_LOG_TABLE,
+        columns: ['TIME', 'VALUE'],
+        meta: [],
+        rep_target_cond: { op: 'ALL', value: [] },
+        transform: null,
+      },
+      target: {
+        ...DST,
+        table: DST_LOG_TABLE,
+        columns: ['TIME', 'VALUE'],
+        meta: [],
+      },
+      startMode: 'full',
+      queryLimit: 10,
+      pollIntervalMs: 200,
+    });
     const replicator = new Replicator(config, shutdownFlag);
 
-    // discover+syncMeta 후 바로 shutdown
     const startPromise = replicator.start();
     setTimeout(() => { shutdownFlag.value = true; }, 1000);
     await startPromise;
@@ -172,8 +241,52 @@ suite('Replicator - replication', () => {
     const dstClient = new MachbaseClient(DST);
     try {
       dstClient.connect();
-      const t = dstClient.selectTableType(DST_TABLE);
-      assert.equal(t.type, 'TAG');
+      const t = dstClient.selectTableType(DST_LOG_TABLE);
+      assert.equal(t.type, 'LOG', 'dst table should be LOG');
+      const rows = dstClient.query(`SELECT COUNT(*) AS CNT FROM ${DST_LOG_TABLE}`);
+      assert.equal(Number(rows[0].CNT), 5, 'dst row count mismatch');
+    } finally {
+      dstClient.close();
+    }
+  });
+
+  test('startMode=now - 기존 LOG dst 테이블로 정상 시작', async () => {
+    await seedLogSourceAndTarget();
+    dropCheckpoints(LOG_NOW_JOB_ID);
+
+    const shutdownFlag = { value: false };
+    const config = makeConfig({
+      id: LOG_NOW_JOB_ID,
+      source: {
+        ...SRC,
+        table: SRC_LOG_TABLE,
+        columns: ['TIME', 'VALUE'],
+        meta: [],
+        rep_target_cond: { op: 'ALL', value: [] },
+        transform: null,
+      },
+      target: {
+        ...DST,
+        table: DST_LOG_TABLE,
+        columns: ['TIME', 'VALUE'],
+        meta: [],
+      },
+      startMode: 'now',
+      queryLimit: 10,
+      pollIntervalMs: 200,
+    });
+    const replicator = new Replicator(config, shutdownFlag);
+
+    // discover 후 바로 shutdown
+    const startPromise = replicator.start();
+    setTimeout(() => { shutdownFlag.value = true; }, 1000);
+    await startPromise;
+
+    const dstClient = new MachbaseClient(DST);
+    try {
+      dstClient.connect();
+      const t = dstClient.selectTableType(DST_LOG_TABLE);
+      assert.equal(t.type, 'LOG');
     } finally {
       dstClient.close();
     }
@@ -181,14 +294,17 @@ suite('Replicator - replication', () => {
 
 });
 
-suite('Replicator - syncMeta', () => {
+suite('Replicator - cleanup', () => {
 
-  test('TAG 테이블 syncMeta 성공', () => {
-    const r = new Replicator(makeConfig());
-    const discovered = r.discover();
-    assert.ok(discovered);
-    const result = r.syncMeta(discovered.srcSchema);
-    assert.ok(result === true);
+  test('dst table / checkpoint cleanup', () => {
+    dropDstTable();
+    dropTable(SRC, SRC_LOG_TABLE);
+    dropTable(DST, DST_LOG_TABLE);
+    dropCheckpoints(deriveId());
+    dropCheckpoints(deriveId({ startMode: 'now' }));
+    dropCheckpoints(LOG_JOB_ID);
+    dropCheckpoints(LOG_NOW_JOB_ID);
+    assert.ok(true);
   });
 
 });

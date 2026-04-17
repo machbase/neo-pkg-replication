@@ -108,7 +108,6 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | `pollIntervalMs` | number | idle poll 주기 |
 | `shutdownTimeoutMs` | number | shutdown timeout |
 | `onSaveFailure` | string | `"continue"` \| `"abort"` |
-| `integrity` | boolean \| null | TAG 재기동 integrity check 사용 여부 |
 | `retry` | object \| null | 재시도 설정 |
 | `logging` | object | 로그 설정 |
 
@@ -118,21 +117,12 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 | 필드 | 타입 | 필수 | 설명 |
 |------|------|------|------|
-| `server` | string | 권장 | `conf.d/server/{name}.json` 참조 |
-| `host` | string | legacy | inline 접속정보. `server`가 없을 때만 사용 |
-| `port` | number | legacy | inline 접속정보 |
-| `user` | string | legacy | inline 접속정보 |
-| `password` | string | legacy | inline 접속정보 |
-| `token` | string | legacy | inline token |
-| `type` | string | legacy | `"native"` \| `"http"` \| `"mqtt-api"` \| `"mqtt-publish"` |
-| `protocol` | string | legacy | inline HTTP protocol |
-| `qos` | number | legacy | inline MQTT QoS |
-| `retain` | boolean | legacy | inline MQTT retain |
+| `server` | string | ✓ | `conf.d/server/{name}.json` 참조 |
 | `table` | string | ✓ | 테이블명, 저장 시 대문자 정규화 |
 | `columns` | array | ✓ | data column mapping |
 | `meta` | array | ✓ | metadata column mapping, LOG는 보통 `[]` |
 
-type별 제약:
+참조하는 server profile의 `type` 기준 제약:
 
 - `native`
   - source/target 모두 가능
@@ -217,7 +207,6 @@ type별 제약:
 - `filter` 는 query 단계에서 SQL WHERE로 내려간다.
 - `prefix` / `suffix` / `calc` 는 read 후 메모리에서 적용된다.
 - transform criteria는 원본 source row 값을 기준으로 판단하고, expr 적용은 순서대로 누적된다.
-- legacy `surfix`, `multplier`, `add`, 기존 `filter`/구형 `transform` 형식도 입력 시 새 형식으로 정규화한다.
 
 ### RetryConfig
 
@@ -318,7 +307,6 @@ type별 제약:
     "pollIntervalMs": 1000,
     "shutdownTimeoutMs": 30000,
     "onSaveFailure": "continue",
-    "integrity": true,
     "retry": {
       "maxAttempts": 5,
       "baseDelayMs": 100,
@@ -334,7 +322,6 @@ type별 제약:
 
 ### `PUT /api/rc.js?name=...`
 
-- inline 접속정보를 사용하는 legacy config에서는 `source.password` / `target.password` 가 없거나 `null` 또는 `""` 이면 기존 값을 유지한다.
 - service가 install되지 않았거나 running이 아니면 config만 저장한다.
 
 ### `POST /api/rc/dryrun.js`
@@ -344,7 +331,7 @@ type별 제약:
 - TAG 테이블에서는 `target.columns` 의 PRIMARY KEY 슬롯이 반드시 source PRIMARY KEY 컬럼에 매핑되는지 추가로 검증한다.
 - `VARCHAR` 길이 초과 가능성은 오류가 아니라 warning으로 반환한다.
 - 응답에는 정규화된 config, source/target schema 요약, `warnings` 배열이 포함된다.
-- `mqtt-api`, `mqtt-publish` target은 `integrity=false` 로 강제 정규화되며 warning이 추가된다.
+- startup integrity는 user config가 아니라 내부 동작이며, TAG + native/http target 재기동 경로에서만 자동 수행된다.
 - `mqtt-publish` target은 actual target schema 조회를 하지 않고, configured mapping 기준으로 payload schema를 구성한다.
 
 ## Table Columns API
@@ -355,7 +342,7 @@ type별 제약:
 | `POST` | `/api/table/columns.js` | 테이블 컬럼 정보 조회 |
 | `POST` | `/api/table/tags.js` | TAG 이름 목록 페이지 조회 |
 
-요청은 아래 두 방식 중 하나를 사용한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
+요청은 server profile 참조 방식만 문서화한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
 
 지원 type:
 
@@ -365,23 +352,11 @@ type별 제약:
 
 `mqtt-publish` 는 query-capable transport가 아니므로 `table/list`, `table/columns` 대상이 아니다.
 
-1. server profile 참조
+요청 예시:
 
 ```json
 {
   "server": "local",
-  "table": "HOME"
-}
-```
-
-2. inline 접속정보
-
-```json
-{
-  "host": "127.0.0.1",
-  "port": 5656,
-  "user": "SYS",
-  "password": "manager",
   "table": "HOME"
 }
 ```
@@ -406,9 +381,7 @@ type별 제약:
 
 ### `POST /api/table/list.js`
 
-요청은 `table` 없이 접속정보만 전달한다.
-
-1. server profile 참조
+요청은 `table` 없이 server profile만 전달한다.
 
 ```json
 {
@@ -503,31 +476,6 @@ type별 제약:
   "data": {
     "name": "collector-a.log",
     "content": "[INFO] 2026-04-15 ..."
-  }
-}
-```
-
-2. inline 접속정보
-
-```json
-{
-  "host": "127.0.0.1",
-  "port": 5656,
-  "user": "SYS",
-  "password": "manager"
-}
-```
-
-응답 예시:
-
-```json
-{
-  "ok": true,
-  "data": {
-    "tables": [
-      { "name": "HOME", "tableType": "TAG", "owner": "SYS" },
-      { "name": "HOME_LOG", "tableType": "LOG", "owner": "SYS" }
-    ]
   }
 }
 ```
