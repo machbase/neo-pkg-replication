@@ -574,10 +574,9 @@ class Handler {
    */
   static readBody() {
     try {
-      // TODO : enable, neo-regress pass를 위해 disalbe 처리함.
-      //const len = parseInt(process.env.get('CONTENT_LENGTH') || '0', 10);
-      //if (!len) return {};
-      //const raw = process.stdin.read(len);
+      // 일부 CGI/neo-regress 환경에서는 CONTENT_LENGTH 기반 read(len)이 빈 body를 돌려준 적이 있어
+      // 현재는 stdin 전체를 읽는 쪽을 기본값으로 유지한다.
+      // 이 경로를 되돌릴 때는 실제 배포 환경과 regress 환경에서 모두 body parsing이 같은지 먼저 확인해야 한다.
       const raw = process.stdin.read();
       return raw ? JSON.parse(raw) : {};
     } catch (_) {

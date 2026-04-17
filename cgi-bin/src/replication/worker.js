@@ -149,6 +149,18 @@ class Worker {
     }
   }
 
+  /**
+   * worker가 반복적으로 참조하는 transport별 실행 정책을 한 번만 계산한다.
+   *
+   * 의도:
+   * - state machine 내부에서는 source/target type 분기를 매번 다시 해석하지 않게 한다.
+   * - native/http target은 schema 조회와 restart integrity가 가능하므로 복구 경로를 적극 사용한다.
+   * - mqtt-api/mqtt-publish target은 write 중심 target으로 간주하고 payload 기반 write만 수행한다.
+   *
+   * 주의:
+   * - target type 정책을 바꿀 때는 metadata 전달 방식, 별도 metadata insert 여부,
+   *   integrity 가능 여부를 함께 조정해야 재시작/중복방지 동작이 깨지지 않는다.
+   */
   _buildPlan() {
     const sourceColumns = Array.isArray(this.config.source.columns) ? this.config.source.columns.slice() : [];
     const targetColumns = Array.isArray(this.config.target.columns) ? this.config.target.columns.slice() : [];
@@ -165,10 +177,13 @@ class Worker {
     const targetDataCols = this.dstSchema.columns.filter((column) => !(column.flag & FLAG_METADATA)).map((column) => column.name);
     const targetMetaCols = this.dstSchema.columns.filter((column) => column.flag & FLAG_METADATA).map((column) => column.name);
     const targetType = String(this.config.target?.type || 'native').toLowerCase();
+    // http/mqtt 계열은 한 번의 payload에 data+meta를 실어 보낼 수 있다.
     const targetUsesPayloadMeta = targetType === 'http'
       || targetType === 'mqtt-api'
       || targetType === 'mqtt-publish';
+    // native/http는 기존 DB 동작과 동일하게 metadata를 별도 insert 경로로도 맞춰 준다.
     const targetSeparateMetadataInsert = targetType === 'native' || targetType === 'http';
+    // restart 시 target 상태를 조회해 시작점을 조정할 수 있는 transport만 integrity를 수행한다.
     const supportsIntegrity = targetType === 'native' || targetType === 'http';
     const integrityUsesEpochNs = supportsIntegrity;
     const referencedColumns = collectReferencedColumns(repTargetCond, transform);

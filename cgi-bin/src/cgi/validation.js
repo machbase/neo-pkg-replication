@@ -60,6 +60,13 @@ function _parseSafeInteger(value, label, options = {}) {
   return num;
 }
 
+/**
+ * 파일에 저장되는 runtime 옵션의 형식과 상호 제약을 먼저 정리한다.
+ *
+ * 의도:
+ * - DB 연결 전 단계에서 시작 모드와 재시도/로그 설정의 명백한 오류를 제거한다.
+ * - 내부 기본값과 persisted user 값의 경계를 여기서 고정해 downstream 로직을 단순화한다.
+ */
 function _validateRuntimeOptions(storedConfig) {
   const startMode = storedConfig.startMode == null || storedConfig.startMode === ''
     ? 'full'
@@ -131,6 +138,16 @@ function _validateRuntimeOptions(storedConfig) {
   }
 }
 
+/**
+ * source/target schema 조회에 필요한 query-capable client만 연다.
+ *
+ * 의도:
+ * - validation/discover 단계에서는 실제 query가 가능한 transport만 허용한다.
+ * - mqtt-api/mqtt-publish는 현재 source로 사용할 수 없는 정책이므로 초기에 차단한다.
+ *
+ * 주의:
+ * - 새 transport를 추가할 때는 "query는 되지만 source는 금지"인지 여부를 여기서 함께 결정해야 한다.
+ */
 async function _openQueryClient(endpoint, side) {
   const type = String(endpoint?.type || 'native').toLowerCase();
   if (type === 'mqtt-api' && side === 'source') {
@@ -157,6 +174,14 @@ function _serializeColumns(columns) {
   }));
 }
 
+/**
+ * query가 불가능한 target을 위해 source mapping 기준의 가상 target schema를 만든다.
+ *
+ * 의도:
+ * - mqtt-publish처럼 target에서 실제 스키마를 조회할 수 없는 경우에도
+ *   validation/runtime이 공통 schema 객체를 사용할 수 있게 한다.
+ * - 이 스키마는 "target 실제 컬럼 introspection"이 아니라 "보내게 될 payload 모양"을 나타낸다.
+ */
 function _buildDerivedTargetInfo(storedConfig, runtimeConfig, sourceInfo) {
   const sourceColumns = _normalizeMappingArray(storedConfig.source.columns, sourceInfo.dataColumns.map((column) => column.NAME));
   const targetColumns = _normalizeMappingArray(storedConfig.target.columns, sourceColumns.slice());

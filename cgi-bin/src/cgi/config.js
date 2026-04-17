@@ -136,6 +136,16 @@ function normalizeCriteria(criteria) {
   return normalized;
 }
 
+/**
+ * 과거 inline transform 저장 형식을 현재 rule 배열 형식으로 승격한다.
+ *
+ * 의도:
+ * - 외부 문서에는 신규 구조만 노출하되, 기존 저장 파일은 최대한 그대로 읽히게 유지한다.
+ * - 정규화 이후 단계는 legacy 형식을 몰라도 되도록 여기서만 호환 분기를 흡수한다.
+ *
+ * 주의:
+ * - legacy calc는 연산 순서 정보를 갖지 않으므로 기존 동작을 보존하기 위해 기본값을 `bm`으로 둔다.
+ */
 function normalizeLegacyTransformRule(rule) {
   if (!isObject(rule)) return null;
   const column = normalizeColumnName(rule.column);
@@ -163,6 +173,11 @@ function normalizeLegacyTransformRule(rule) {
   return { criteria: { column: null, op: 'ALL', value: [] }, expr };
 }
 
+/**
+ * transform 설정을 항상 현재 rule 배열 형식으로 정규화한다.
+ *
+ * 새 형식과 legacy 형식을 둘 다 받아도 이후 validation/runtime 단계는 동일한 구조를 보게 하는 것이 목적이다.
+ */
 function normalizeTransformRules(rules) {
   if (!Array.isArray(rules)) return null;
   const normalized = [];
@@ -185,6 +200,13 @@ function normalizeTransformRules(rules) {
   return normalized.length > 0 ? normalized : [];
 }
 
+/**
+ * 과거 filter 배열 형식을 rep_target_cond / transform 구조로 나눈다.
+ *
+ * 주의:
+ * - 문자열 조건은 현재 구조상 하나의 rep_target_cond만 허용하므로, legacy에서도 여러 개를 병합하지 않는다.
+ * - 숫자 범위 조건은 row drop 정책이므로 transform.filter 로 승격한다.
+ */
 function normalizeLegacyFilterRules(filter) {
   const result = { repTargetCond: null, transform: [] };
   if (!Array.isArray(filter)) return result;

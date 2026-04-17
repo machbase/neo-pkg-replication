@@ -110,6 +110,19 @@ function _coerceIntegerFamilyValue(value) {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : value;
 }
 
+/**
+ * transport별 write payload 직렬화 차이를 흡수한다.
+ *
+ * 의도:
+ * - DB가 직접 해석하는 native/http/mqtt-api 경로는 DATETIME을 UTC RFC3339Nano로 맞춰
+ *   target 쪽 time parsing 결과를 일관되게 유지한다.
+ * - mqtt-publish는 generic sink이므로 DB 전용 timeformat 약속이 없고, 기존 consumer 기대값에 맞춰
+ *   local timestamp 문자열을 보낸다.
+ * - http/mqtt-api는 JSON 숫자 직렬화 과정에서 정수 계열이 흔들리지 않도록 integer family를 한 번 더 정리한다.
+ *
+ * 주의:
+ * - 여기 포맷을 바꾸면 restart integrity나 외부 consumer가 기대하는 payload 모양이 함께 바뀐다.
+ */
 function _normalizeWriteValue(column, value, targetType) {
   if (value == null) return value;
   if (targetType === 'native' && column && column.columnType === ColumnType.DATETIME) {
@@ -142,6 +155,7 @@ function _createQueryClient(config) {
 
 function _createWriter(config) {
   const type = String(config?.type || 'native').trim().toLowerCase();
+  // query 경로와 writer 경로를 분리해 두어, write-only transport도 동일한 Table API로 다룰 수 있게 한다.
   if (type === 'http') return new HttpApiClient(config);
   if (type === 'mqtt-api') return new MqttApiClient(config);
   if (type === 'mqtt-publish') return new MqttPublishClient(config);
