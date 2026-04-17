@@ -772,6 +772,15 @@ class Handler {
    */
   static async readCheckpoints(name, config) {
     const result = {};
+    const ensureEntry = (dataTable) => {
+      if (!dataTable || result[dataTable]) return;
+      result[dataTable] = {
+        lastSuccessRid: '',
+        totalRowsWritten: '0',
+        hasMore: false,
+        max_rid: '',
+      };
+    };
 
     // source 파티션 목록으로 result 초기화
     const source = config?.source;
@@ -792,7 +801,7 @@ class Handler {
           const dataTable = value.trim();
           if (!dataTable || seen[dataTable]) return;
           seen[dataTable] = true;
-          result[dataTable] = { lastSuccessRid: '', totalRowsWritten: '0', hasMore: false };
+          ensureEntry(dataTable);
         };
         if (tableType === 'TAG') {
           for (const part of (await client.selectTagDataTables(normalizedTable))) {
@@ -800,6 +809,11 @@ class Handler {
           }
         } else if (tableType === 'LOG') {
           push(normalizedTable);
+        }
+        for (const dataTable of Object.keys(result)) {
+          try {
+            result[dataTable].max_rid = String(await client.selectMaxRid(dataTable));
+          } catch (_) {}
         }
       } catch (_) {
         // checkpoint 조회는 best-effort로 동작한다.
@@ -844,10 +858,12 @@ class Handler {
         } catch (_) {}
       }
       for (const dataTable in records) {
+        ensureEntry(dataTable);
         result[dataTable] = {
           lastSuccessRid: records[dataTable].lastSuccessRid,
           totalRowsWritten: records[dataTable].totalRowsWritten || '0',
           hasMore: records[dataTable].hasMore === true,
+          max_rid: result[dataTable].max_rid || '',
         };
       }
     }
@@ -1291,11 +1307,70 @@ class Handler {
   }
 
   /**
+   * 지정한 TAG 테이블의 이름 목록을 페이지 단위로 조회한다.
+   * @param {{ server?: string, host?: string, port?: number|string, user?: string, password?: string, type?: string, table: string, page: number|string, size: number|string }} body
+   * @param {function(Error|null, { total_tags: number, tags: Array<string> }=): void} callback
+   */
+  static async getTagList(body, callback) {
+    const { table } = body || {};
+    if (!table) { callback(new Error('table is required')); return; }
+
+    const page = Number(body?.page);
+    const size = Number(body?.size);
+    if (!Number.isSafeInteger(page) || page < 1) {
+      callback(new Error('page must be >= 1'));
+      return;
+    }
+    if (!Number.isSafeInteger(size) || size < 1) {
+      callback(new Error('size must be >= 1'));
+      return;
+    }
+
+    let endpoint;
+    try {
+      endpoint = resolveEndpointConnection(body || {}, (serverName) => Handler.getServerConfig(serverName), 'server');
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    const type = String(endpoint.type || 'native').toLowerCase();
+    const client = type === 'native' ? new MachbaseClient(endpoint) : createQueryClient(endpoint);
+    try {
+      await client.connect();
+      const qualified = client.splitQualifiedTableName(table);
+      const qualifiedTable = qualified.owner ? `${qualified.owner}.${qualified.table}` : qualified.table;
+      const { type: tableType } = await client.selectTableTypeQualified(qualifiedTable);
+      if (tableType === 'UNSUPPORTED') {
+        callback(new Error(`table '${table}' not found`));
+        return;
+      }
+      if (tableType !== 'TAG') {
+        callback(new Error(`table '${table}' is not a TAG table`));
+        return;
+      }
+      const offset = (page - 1) * size;
+      const totalTags = await client.countTagNames(qualifiedTable);
+      const rows = await client.selectTagNamesPaged(qualifiedTable, offset, size);
+      callback(null, {
+        total_tags: Number(totalTags) || 0,
+        tags: (rows || []).map((row) => row.NAME != null ? row.NAME : row.name).filter((name) => name != null),
+      });
+    } catch (err) {
+      callback(err);
+    } finally {
+      try { await client.close(); } catch (_) {}
+    }
+  }
+
+  /**
    * 로그 파일 목록을 반환한다.
+   * @param {{ name?: string }|null} query
    * @param {function(Error|null, { files: Array }=): void} callback
    */
-  static getLogList(callback) {
+  static getLogList(query, callback) {
     const logDir = Handler.getLogDir();
+    const prefix = typeof query?.name === 'string' ? query.name.trim() : '';
     let names = [];
     try {
       names = fs.readdirSync(logDir);
@@ -1306,6 +1381,7 @@ class Handler {
 
     const files = [];
     for (const name of names) {
+      if (prefix && !name.startsWith(prefix)) continue;
       const filePath = path.join(logDir, name);
       let stat;
       try {
@@ -1314,11 +1390,22 @@ class Handler {
         continue;
       }
       if (!stat.isFile()) continue;
-      files.push({ name, size: stat.size });
+      const birthtimeMs = Number(stat.birthtimeMs);
+      const createdAtMs = Number.isFinite(birthtimeMs) && birthtimeMs > 0
+        ? birthtimeMs
+        : (Number.isFinite(Number(stat.ctimeMs)) && Number(stat.ctimeMs) > 0
+          ? Number(stat.ctimeMs)
+          : Number(stat.mtimeMs) || 0);
+      files.push({ name, size: stat.size, _createdAtMs: createdAtMs });
     }
 
-    files.sort((a, b) => a.name.localeCompare(b.name));
-    callback(null, { files });
+    files.sort((a, b) => {
+      if (b._createdAtMs !== a._createdAtMs) return b._createdAtMs - a._createdAtMs;
+      return a.name.localeCompare(b.name);
+    });
+    callback(null, {
+      files: files.map((file) => ({ name: file.name, size: file.size })),
+    });
   }
 
   /**

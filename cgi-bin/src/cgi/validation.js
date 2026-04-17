@@ -486,10 +486,16 @@ function _validateTransformRules(transform, sourceInfo) {
       if (type === 'calc') {
         const bias = item.bias !== undefined ? Number(item.bias) : 0;
         const multiplier = item.multiplier !== undefined ? Number(item.multiplier) : 1;
+        const calcOrder = item.calcOrder == null || item.calcOrder === ''
+          ? 'bm'
+          : String(item.calcOrder).trim().toLowerCase();
         if (!Number.isFinite(bias) || !Number.isFinite(multiplier)) {
           throw new Error(`source.transform[${i}].expr[${j}] calc requires numeric bias/multiplier`);
         }
-        normalizedExpr.push({ column, type, bias, multiplier });
+        if (calcOrder !== 'bm' && calcOrder !== 'mb') {
+          throw new Error(`source.transform[${i}].expr[${j}] calcOrder must be 'bm' or 'mb'`);
+        }
+        normalizedExpr.push({ column, type, bias, multiplier, calcOrder });
         continue;
       }
 

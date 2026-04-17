@@ -393,6 +393,12 @@ class Worker {
     if (cpExists && cp) {
       startRid = cp.lastSuccessRid + 1n;
       getLogger().debug('worker', { ...logCtx, startRid: String(startRid), msg: 'resume from checkpoint' });
+      getLogger().info('worker', {
+        ...logCtx,
+        checkpointRid: String(cp.lastSuccessRid),
+        startRid: String(startRid),
+        msg: 'start position loaded from checkpoint',
+      });
     } else {
       const startMode = this.config.startMode;
       if (startMode === 'now') {
@@ -437,6 +443,7 @@ class Worker {
     try {
       const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists && this.config.integrity !== false;
       if (doIntegrity) {
+        const originalStartRid = startRid;
         const result = await this._runStartupIntegrity({
           startRid,
           totalRowsWritten,
@@ -451,6 +458,14 @@ class Worker {
         if (result === null) return;
         startRid = result.startRid;
         totalRowsWritten = result.totalRowsWritten;
+        if (startRid !== originalStartRid) {
+          getLogger().info('worker', {
+            ...logCtx,
+            fromRid: String(originalStartRid),
+            toRid: String(startRid),
+            msg: 'start position adjusted by target integrity check',
+          });
+        }
       }
 
       while (!shutdownFlag.value) {

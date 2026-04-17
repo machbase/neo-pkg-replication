@@ -13,6 +13,7 @@ const DEFAULT_LOG_DIR = '/work/public/neo-pkg-replication/logs';
 const CONDITION_OPS = { ALL: true, IN: true, LIKE: true };
 const EXPR_TYPES = { prefix: true, suffix: true, calc: true, filter: true };
 const SERVER_TYPES = { native: true, http: true, 'mqtt-api': true, 'mqtt-publish': true };
+const CALC_ORDERS = { bm: true, mb: true };
 
 function isObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -96,6 +97,12 @@ function normalizeExprType(type) {
   return text;
 }
 
+function normalizeCalcOrder(value) {
+  if (value == null) return null;
+  const text = String(value).trim().toLowerCase();
+  return text || null;
+}
+
 function normalizeExpr(expr) {
   if (!isObject(expr)) return null;
   const type = normalizeExprType(expr.type);
@@ -111,6 +118,8 @@ function normalizeExpr(expr) {
     if (expr.multiplier !== undefined) normalized.multiplier = Number(expr.multiplier);
     else if (expr.multplier !== undefined) normalized.multiplier = Number(expr.multplier);
     else if (expr.multiply !== undefined) normalized.multiplier = Number(expr.multiply);
+    const calcOrder = normalizeCalcOrder(expr.calcOrder);
+    if (calcOrder) normalized.calcOrder = calcOrder;
   } else if (type === 'filter') {
     if (expr.min !== undefined && expr.min !== null && expr.min !== '') normalized.min = Number(expr.min);
     if (expr.max !== undefined && expr.max !== null && expr.max !== '') normalized.max = Number(expr.max);
@@ -148,7 +157,7 @@ function normalizeLegacyTransformRule(rule) {
     if (rule.multiplier !== undefined) multiplier = Number(rule.multiplier);
     else if (rule.multplier !== undefined) multiplier = Number(rule.multplier);
     else if (rule.multiply !== undefined) multiplier = Number(rule.multiply);
-    expr.push({ column, type: 'calc', bias, multiplier });
+    expr.push({ column, type: 'calc', bias, multiplier, calcOrder: 'bm' });
   }
   if (expr.length === 0) return null;
   return { criteria: { column: null, op: 'ALL', value: [] }, expr };
@@ -245,6 +254,7 @@ function sanitizeServerProfile(profile) {
   const safe = { ...profile };
   delete safe.password;
   delete safe.token;
+  safe.targetOnly = safe.type === 'mqtt-api' || safe.type === 'mqtt-publish';
   return safe;
 }
 
@@ -420,6 +430,7 @@ module.exports = {
   DEFAULT_LOG_DIR,
   EXPR_TYPES,
   CONDITION_OPS,
+  CALC_ORDERS,
   isObject,
   normalizeOptionalString,
   normalizePort,
@@ -428,6 +439,7 @@ module.exports = {
   normalizeNameArray,
   normalizeServerType,
   normalizeProtocol,
+  normalizeCalcOrder,
   normalizeBoolean,
   normalizeCondition,
   normalizeTransformRules,

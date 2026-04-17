@@ -54,6 +54,7 @@
 ### 규칙
 
 - `GET` 응답에는 `password`, `token`을 포함하지 않는다.
+- `GET` 응답에는 `targetOnly` 가 포함되며, `mqtt-api`, `mqtt-publish` 는 `true` 이다.
 - `PUT`에서 `password`, `token`이 없거나 `null` 또는 `""` 이면 기존 값을 유지한다.
 - 다른 replication config가 참조 중인 server profile은 `DELETE` 할 수 없다.
 - source로 사용할 수 있는 type은 현재 `native`, `http` 뿐이다.
@@ -203,13 +204,17 @@ type별 제약:
 |------|------|
 | `prefix` | 문자열 앞에 추가 |
 | `suffix` | 문자열 뒤에 추가 |
-| `calc` | `(value + bias) * multiplier` |
+| `calc` | `calcOrder` 에 따라 `bm` 또는 `mb` |
 | `filter` | `value < min` 또는 `value > max` 인 row 제외 |
 
 규칙:
 
 - `prefix` / `suffix` 는 string-like 컬럼에만 허용된다.
 - `calc` / `filter` 는 numeric 컬럼에만 허용된다.
+- `calcOrder`
+  - `"bm"`: `(value + bias) * multiplier`
+  - `"mb"`: `value * multiplier + bias`
+  - 생략 시 기본값은 `"bm"`
 - `filter` 는 query 단계에서 SQL WHERE로 내려간다.
 - `prefix` / `suffix` / `calc` 는 read 후 메모리에서 적용된다.
 - transform criteria는 원본 source row 값을 기준으로 판단하고, expr 적용은 순서대로 누적된다.
@@ -278,7 +283,8 @@ type별 제약:
       "_HOME_DATA_0": {
         "lastSuccessRid": "2799971",
         "totalRowsWritten": "2799972",
-        "hasMore": false
+        "hasMore": false,
+        "max_rid": "2799971"
       }
     }
   }
@@ -348,6 +354,7 @@ type별 제약:
 |--------|------|------|
 | `POST` | `/api/table/list.js` | 테이블 목록 조회 |
 | `POST` | `/api/table/columns.js` | 테이블 컬럼 정보 조회 |
+| `POST` | `/api/table/tags.js` | TAG 이름 목록 페이지 조회 |
 
 요청은 아래 두 방식 중 하나를 사용한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
 
@@ -410,6 +417,34 @@ type별 제약:
 }
 ```
 
+### `POST /api/table/tags.js`
+
+요청:
+
+```json
+{
+  "server": "local",
+  "table": "TAG_REAL",
+  "page": 1,
+  "size": 50
+}
+```
+
+- `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
+- 내부적으로 `_{table}_META` 또는 `OWNER._{table}_META` 를 조회한다.
+
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "total_tags": 4,
+    "tags": ["TAG-01", "TAG-02", "TAG-03", "TAG-04"]
+  }
+}
+```
+
 ## Log API
 
 ### 로그 경로
@@ -417,6 +452,9 @@ type별 제약:
 - `/work/public/neo-pkg-replication/logs`
 
 ### `GET /api/log/list`
+
+- `name` query parameter를 주면 해당 문자열로 시작하는 로그 파일만 반환한다.
+- 반환 순서는 최신 생성 파일이 먼저 오도록 정렬한다.
 
 응답 예시:
 

@@ -236,6 +236,12 @@ class SqlLikeClient {
     };
   }
 
+  qualifiedTagMetaTable(logicalTable) {
+    const qualified = this.splitQualifiedTableName(logicalTable);
+    const metaTable = `_${qualified.table}_META`;
+    return qualified.owner ? `${qualified.owner}.${metaTable}` : metaTable;
+  }
+
   async selectTableInfoQualified(tableName) {
     const qualified = this.splitQualifiedTableName(tableName);
     let rows;
@@ -321,21 +327,30 @@ class SqlLikeClient {
   }
 
   async selectTagNames(logicalTable) {
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    return this.query(`SELECT _ID, name FROM _${table}_META`);
+    return this.query(`SELECT _ID, name FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
   }
 
   async selectTagMeta(logicalTable, metaColNames) {
     const extraCols = metaColNames && metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    return this.query(`SELECT _ID, name${extraCols} FROM _${table}_META`);
+    return this.query(`SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
   }
 
   async selectTagMetaById(logicalTable, tagId, metaColNames) {
     const extraCols = metaColNames && metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    const rows = await this.query(`SELECT _ID, name${extraCols} FROM _${table}_META WHERE _ID = ?`, [tagId]);
+    const rows = await this.query(`SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE _ID = ?`, [tagId]);
     return rows?.[0] ?? null;
+  }
+
+  async countTagNames(logicalTable) {
+    const rows = await this.query(`SELECT COUNT(*) as total_tags FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    const raw = rows?.[0]?.total_tags;
+    return raw == null ? 0 : Number(raw);
+  }
+
+  async selectTagNamesPaged(logicalTable, offset, limit) {
+    return this.query(
+      `SELECT NAME FROM ${this.qualifiedTagMetaTable(logicalTable)} ORDER BY NAME LIMIT ${offset}, ${limit}`
+    );
   }
 
   async insertTagMeta(logicalTable, values) {
@@ -645,14 +660,14 @@ class MqttApiClient extends SqlLikeClient {
   }
 
   async writeRows(tableName, columns, rows) {
-    await this.connect();
-    if (!this.client) throw new Error('mqtt client is not connected');
     getLogger().trace('remote_mqtt_api_write', {
       table: String(tableName),
       qos: this.qos,
       columns: columns.length,
       rows: rows.length,
     });
+    await this.connect();
+    if (!this.client) throw new Error('mqtt client is not connected');
     let ack = null;
     try {
       ack = this.client.publish(
