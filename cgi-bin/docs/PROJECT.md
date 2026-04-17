@@ -287,7 +287,9 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 
 - TAG + native/http target에서만 사용한다.
 - data partition checkpoint와 분리된 job-level 상태다.
-- 초기 metadata 선동기화, rep_target_cond 변경 diff, 실행 중 catch-up 진행률을 여기 기록한다.
+- 초기 metadata 선동기화, rep_target_cond 변경 diff, 실행 중 data-driven catch-up 진행률을 여기 기록한다.
+- 실행 중 catch-up 은 source data batch에서 관찰한 최대 tag id까지만 metadata를 전진시킨다.
+- 설정 변화가 없는 일반 재시작은 저장된 `lastMetaId`를 그대로 재사용하고, metadata-only tag를 맞추기 위한 별도 bootstrap은 수행하지 않는다.
 - `GET /api/rc.js?name=...` 의 `metaSync` 필드는 이 파일을 그대로 읽어 요약한 값이다.
 - `hasMore`: `rowsRead === queryLimit` 기준으로 다음 작업이 남아있을 가능성 표시
 - `source.dataTable` 불일치 시 손상으로 처리하고 무효화

@@ -392,11 +392,6 @@ class Worker {
         const maxRid = await this._getMaxRid(srcTable, retry, shutdownFlag, logCtx, 'STEADY_MAXRID');
         if (maxRid == null) return;
 
-        if (plan.isTag && plan.targetSeparateMetadataInsert && this.metaSyncManager) {
-          const pollOk = await this.metaSyncManager.pollSourceMeta(logCtx);
-          if (!pollOk) return;
-        }
-
         if (startRid > maxRid) {
           const idleCpRid = startRid > 0n ? (startRid - 1n) : -1n;
           this._saveCheckpoint(checkpointStore, idleCpRid, totalRowsWritten, {

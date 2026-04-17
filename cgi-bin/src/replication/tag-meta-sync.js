@@ -187,8 +187,6 @@ class TagMetaSyncManager {
     this.targetClient = null;
     this.state = null;
     this.plan = this._buildPlan();
-    this.metaPollIntervalMs = Math.max(200, Number(config.pollIntervalMs || 1000));
-    this.lastSourceMetaPollAt = 0;
   }
 
   static supports(config, srcSchema) {
@@ -258,7 +256,6 @@ class TagMetaSyncManager {
   async bootstrap() {
     return this._runExclusive(async () => {
       await this.open();
-      const maxMetaId = await this._selectSourceMaxMetaId();
       const loaded = this.store.load();
       this.state = loaded.exists ? loaded.state : null;
 
@@ -271,6 +268,7 @@ class TagMetaSyncManager {
       const savedNameSig = _stableJson(this.state?.nameTransformRules);
 
       if (!this.state) {
+        const maxMetaId = await this._selectSourceMaxMetaId();
         this.state = this._createState({
           status: 'initial-sync',
           message: 'initial metadata sync in progress',
@@ -283,6 +281,7 @@ class TagMetaSyncManager {
       }
 
       if (savedNameSig !== currentNameSig) {
+        const maxMetaId = await this._selectSourceMaxMetaId();
         getLogger().info('meta_sync', {
           job_id: this.config.id,
           msg: 'name transform changed, restarting metadata sync from the beginning',
@@ -299,10 +298,12 @@ class TagMetaSyncManager {
       }
 
       if (this.state.status === 'condition-diff' && savedPendingCondSig === currentCondSig) {
+        const maxMetaId = await this._selectSourceMaxMetaId();
         return this._runConditionDiff(this.state, this.state.repTargetCond, currentCond, maxMetaId);
       }
 
       if (savedCondSig !== currentCondSig) {
+        const maxMetaId = await this._selectSourceMaxMetaId();
         this.state = this._createState({
           status: 'condition-diff',
           message: 'condition changed, comparing metadata candidates',
@@ -315,27 +316,27 @@ class TagMetaSyncManager {
         return this._runConditionDiff(this.state, this.state.repTargetCond, currentCond, maxMetaId);
       }
 
-      if (this.state.status === 'initial-sync' || this.state.status === 'steady-sync') {
+      if (this.state.status === 'initial-sync') {
+        const maxMetaId = await this._selectSourceMaxMetaId();
         return this._syncForwardRange(this.state, currentCond, maxMetaId, this.state.status, this.state.message || 'metadata sync resuming');
       }
 
-      if (maxMetaId > this.state.lastMetaId) {
-        this.state.status = 'steady-sync';
-        this.state.message = 'metadata catch-up in progress';
-        this.state.goalMetaId = maxMetaId;
-        this.state.repTargetCond = currentCond;
-        this.state.nameTransformRules = currentNameRules;
-        return this._syncForwardRange(this.state, currentCond, maxMetaId, 'steady-sync', 'metadata catch-up in progress');
-      }
-
+      // 재시작 시 ordinary bootstrap은 metadata-only tag까지 강제로 따라잡지 않는다.
+      // 설정 변화가 없으면 저장된 lastMetaId를 그대로 유지하고 ready 상태로 복귀한다.
+      // 이후 더 큰 tag id를 가진 data batch가 실제로 들어올 때만 ensureUpToTagId()가 다시 전진한다.
       this.state.status = 'ready';
       this.state.message = 'metadata sync ready';
       this.state.progress = 100;
-      this.state.goalMetaId = this.state.lastMetaId > maxMetaId ? this.state.lastMetaId : maxMetaId;
+      this.state.goalMetaId = this.state.lastMetaId;
       this.state.repTargetCond = currentCond;
       this.state.pendingRepTargetCond = null;
       this.state.nameTransformRules = currentNameRules;
       this._saveState(this.state);
+      getLogger().info('meta_sync', {
+        job_id: this.config.id,
+        lastMetaId: this.state.lastMetaId >= 0n ? this.state.lastMetaId.toString() : '',
+        msg: 'metadata bootstrap skipped on restart; runtime sync remains data-driven',
+      });
       return true;
     });
   }
@@ -358,59 +359,14 @@ class TagMetaSyncManager {
       }
       if (goalMetaId <= this.state.lastMetaId) return true;
       this.state.status = 'steady-sync';
+      // runtime metadata sync는 현재 batch가 실제로 참조한 tag id 범위까지만 전진한다.
+      // data가 없는 meta-only tag는 다음에 해당 tag data가 들어올 때 함께 따라오게 둔다.
       this.state.message = 'metadata catch-up in progress';
       this.state.goalMetaId = goalMetaId;
       this.state.repTargetCond = _cloneCondition(this.plan.repTargetCond);
       this.state.pendingRepTargetCond = null;
       this.state.nameTransformRules = _cloneRules(this.plan.nameTransformRules);
       return this._syncForwardRange(this.state, this.plan.repTargetCond, goalMetaId, 'steady-sync', 'metadata catch-up in progress', logCtx);
-    });
-  }
-
-  /**
-   * data append가 없는 meta-only tag 추가도 놓치지 않기 위해 source max meta id를 주기적으로 다시 확인한다.
-   *
-   * 의도:
-   * - 별도 tag/meta 추가는 data RID 증가와 무관하므로 worker batch의 maxSourceTagId만으로는 놓칠 수 있다.
-   * - source max meta id를 가볍게 polling해서 runtime 중 metadata-only 추가분도 target에 따라오게 한다.
-   *
-   * 주의:
-   * - 여러 worker가 동시에 호출해도 manager 내부 직렬화와 poll interval throttling으로 과도한 max(_ID) 조회를 피한다.
-   *
-   * @param {object} [logCtx]
-   * @returns {Promise<boolean>}
-   */
-  async pollSourceMeta(logCtx) {
-    return this._runExclusive(async () => {
-      await this.open();
-      if (!this.state) {
-        const loaded = this.store.load();
-        this.state = loaded.exists ? loaded.state : null;
-      }
-      const now = Date.now();
-      if (now - this.lastSourceMetaPollAt < this.metaPollIntervalMs) {
-        return true;
-      }
-      this.lastSourceMetaPollAt = now;
-      if (!this.state) return true;
-
-      const maxMetaId = await this._selectSourceMaxMetaId();
-      if (maxMetaId <= this.state.lastMetaId) return true;
-
-      this.state.status = 'steady-sync';
-      this.state.message = 'metadata catch-up in progress';
-      this.state.goalMetaId = maxMetaId;
-      this.state.repTargetCond = _cloneCondition(this.plan.repTargetCond);
-      this.state.pendingRepTargetCond = null;
-      this.state.nameTransformRules = _cloneRules(this.plan.nameTransformRules);
-      return this._syncForwardRange(
-        this.state,
-        this.plan.repTargetCond,
-        maxMetaId,
-        'steady-sync',
-        'metadata catch-up in progress',
-        logCtx
-      );
     });
   }
 

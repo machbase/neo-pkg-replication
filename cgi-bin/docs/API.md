@@ -341,7 +341,9 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 ### `GET /api/rc.js?name=...`
 
 - `metaSync` 는 TAG + native/http target 조합에서만 의미가 있다.
-- 초기 TAG metadata 동기화 또는 catch-up 이 진행 중이면 `status`, `progress`, `message` 로 상태를 확인할 수 있다.
+- 초기 TAG metadata 전체 동기화 또는 data-driven catch-up 이 진행 중이면 `status`, `progress`, `message` 로 상태를 확인할 수 있다.
+- 실행 중 catch-up 은 source data batch에서 실제로 관찰한 최대 tag id 범위까지만 metadata를 전진시킨다.
+- 설정 변화가 없는 일반 재시작은 metadata-only tag까지 다시 bootstrap하지 않으며, 이후 data batch가 더 큰 tag id를 관찰할 때만 catch-up 이 재개된다.
 - 그 외 조합이거나 아직 상태 파일이 없으면 `metaSync` 는 `null` 일 수 있다.
 
 응답 예시:
