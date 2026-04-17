@@ -96,6 +96,7 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
   "target": {
     "server": "target-a",
     "table": "TAG_COPY",
+    "topic": null,
     "columns": ["NAME", "TIME", "VALUE"],
     "meta": []
   },
@@ -116,6 +117,7 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
 | `id` | 자동 생성 | 미설정 시 `{source.table}_{target.table}` |
 | `source.server` | - | source server profile 이름 |
 | `target.server` | - | target server profile 이름 |
+| `target.topic` | `null` | `mqtt-publish` target publish topic. 미지정 시 legacy fallback으로 `target.table.toLowerCase()` 사용 |
 | `startMode` | `"full"` | `"full"` (RID 0부터) \| `"now"` (현재 이후) \| `"ridAfter"` |
 | `source.columns` | `[]` | 복제할 source data column 매핑 |
 | `target.columns` | `[]` | target data column 매핑 |
@@ -125,6 +127,7 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
 
 - `source.server`, `target.server` 에서 참조하는 server profile은 미리 생성되어 있어야 한다.
 - 대상 테이블 자동 생성 옵션은 없다. target 테이블은 사전에 준비되어 있어야 한다.
+- `mqtt-publish` target은 `target.topic` 지정이 권장되며, topic은 영문자/숫자/`.`, `_`, `-`, `/` 만 허용한다.
 - startup integrity는 user config가 아니라 내부 동작이며, TAG + native/http target 재기동 시 자동 수행된다.
 
 ---

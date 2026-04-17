@@ -162,6 +162,19 @@ function _createWriter(config) {
   return null;
 }
 
+/**
+ * mqtt-publish target topic을 결정한다.
+ *
+ * 의도:
+ * - 신규 설정은 config.topic을 우선 사용한다.
+ * - 기존 저장 job과의 호환을 위해 topic이 없으면 예전 규칙인 table.toLowerCase()를 유지한다.
+ */
+function _resolveMqttPublishTopic(config, qualifiedTable) {
+  const explicit = typeof config?.topic === 'string' ? config.topic.trim() : '';
+  if (explicit) return explicit;
+  return String(qualifiedTable || '').toLowerCase();
+}
+
 
 function _buildSelectColumns(schema, requestedColumns) {
   const seen = {};
@@ -411,7 +424,7 @@ class LogTable {
     }
     if (type === 'mqtt-publish') {
       try {
-        await this.writer.publish(String(this.qualifiedTable || '').toLowerCase(), {
+        await this.writer.publish(_resolveMqttPublishTopic(this.config, this.qualifiedTable), {
           columns: appendColumnNames,
           rows: matrix,
         });
@@ -697,7 +710,7 @@ class TagTable {
     }
     if (type === 'mqtt-publish') {
       try {
-        await this.writer.publish(String(this.qualifiedTable || '').toLowerCase(), {
+        await this.writer.publish(_resolveMqttPublishTopic(this.config, this.qualifiedTable), {
           columns: appendColumnNames,
           rows: matrix,
         });

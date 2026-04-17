@@ -311,6 +311,7 @@ class Handler {
       target: {
         server: '',
         table: '',
+        topic: null,
         columns: null,
         meta: null,
       },
@@ -345,7 +346,14 @@ class Handler {
         'target.server',
         'target.table',
       ],
+      recommendedOnMqttPublish: [
+        'target.topic',
+      ],
       examples: {
+        mqtt_publish_target: {
+          table: 'TAG_COPY',
+          topic: 'factory/line1/tag-copy',
+        },
         rep_target_cond: [
           { column: null, op: 'ALL', value: [] },
           { column: 'NAME', op: 'IN', value: ['TAG-01', 'TAG-02'] },

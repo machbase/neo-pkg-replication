@@ -199,6 +199,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 |------|------|------|------|
 | `server` | string | ✓ | `conf.d/server/{name}.json` 참조 |
 | `table` | string | ✓ | 테이블명, 저장 시 대문자 정규화 |
+| `topic` | string \| null | 조건부 | `mqtt-publish` target publish topic, 대소문자 유지 |
 | `columns` | array | ✓ | data column mapping |
 | `meta` | array | ✓ | metadata column mapping, LOG는 보통 `[]` |
 
@@ -216,7 +217,18 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 - `mqtt-publish`
   - target 전용
   - generic MQTT sink
+  - `target.topic` 이 있으면 그 값으로 publish 한다.
+  - `target.topic` 이 없으면 legacy 호환을 위해 `target.table.toLowerCase()` 를 topic으로 사용한다.
   - `table/list`, `table/columns` 미지원
+
+`target.topic` 정책:
+
+- `mqtt-publish` target에서만 사용할 수 있다.
+- 빈 문자열, `+`, `#`, null 문자, 공백 문자는 허용하지 않는다.
+- `$` 로 시작할 수 없다.
+- `//`, 시작 `/`, 끝 `/` 는 허용하지 않는다.
+- 허용 문자는 영문자, 숫자, `.`, `_`, `-`, `/` 이다.
+- UTF-8 인코딩 길이는 65535 bytes 이하여야 한다.
 
 ### Column Mapping 규칙
 
@@ -386,6 +398,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 - 응답의 `config` 는 `POST /api/rc.js` 와 호환되는 기본 템플릿이다.
 - 템플릿은 저장 형식 참고용이므로, `source.server`, `source.table`, `target.server`, `target.table` 같은 필수 값은 호출 측에서 채워야 한다.
 - `guide` 는 저장 대상이 아닌 참고 정보이며, `rep_target_cond` / `transform` 의 기본 구조 예시를 포함한다.
+- `mqtt-publish` target을 만들 때는 `target.topic` 을 함께 채우는 것을 권장한다.
 
 응답 예시:
 
@@ -406,6 +419,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
       "target": {
         "server": "",
         "table": "",
+        "topic": null,
         "columns": null,
         "meta": null
       },
@@ -431,6 +445,9 @@ curl -sS -X POST -H 'Content-Type: application/json' \
         "source.table",
         "target.server",
         "target.table"
+      ],
+      "recommendedOnMqttPublish": [
+        "target.topic"
       ]
     }
   }
@@ -457,6 +474,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
     "target": {
       "server": "local",
       "table": "HOME_COPY",
+      "topic": null,
       "columns": ["NAME", "TIME", "VALUE"],
       "meta": []
     },
@@ -486,6 +504,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 - body는 `config` 또는 `{ "config": ... }` 둘 다 허용한다.
 - 실제 저장/설치 없이 DB 연결, 테이블 존재, columns/meta 길이/타입, `startMode`/`ridAfter`, 수치 설정 범위, filter/transform 구조를 검증한다.
+- `mqtt-publish` target의 `target.topic` 도 같은 규칙으로 검증하며, 값이 없으면 legacy fallback warning을 반환할 수 있다.
 - TAG 테이블에서는 `target.columns` 의 PRIMARY KEY 슬롯이 반드시 source PRIMARY KEY 컬럼에 매핑되는지 추가로 검증한다.
 - `VARCHAR` 길이 초과 가능성은 오류가 아니라 warning으로 반환한다.
 - 응답에는 정규화된 config, source/target schema 요약, `warnings` 배열이 포함된다.

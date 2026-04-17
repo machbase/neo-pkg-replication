@@ -203,6 +203,7 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 | `target.user` | string | yes | - | 대상 DB 사용자명 |
 | `target.password` | string | yes | - | 대상 DB 비밀번호 |
 | `target.table` | string | yes | - | 대상 테이블명 |
+| `target.topic` | string\|null | | null | `mqtt-publish` target publish topic. 미지정 시 legacy fallback으로 `target.table.toLowerCase()` 사용 |
 | `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
 | `ridAfter` | number\|null | | null | `startMode: "ridAfter"` 시 기준 RID |
 | `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |

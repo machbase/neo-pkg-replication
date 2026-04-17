@@ -26,6 +26,10 @@ function normalizeOptionalString(value) {
   return text ? text : null;
 }
 
+function normalizeTopicName(value) {
+  return normalizeOptionalString(value);
+}
+
 function normalizePort(value) {
   if (value == null || value === '') return null;
   const port = parseInt(value, 10);
@@ -286,6 +290,7 @@ function _normalizeEndpointForSave(endpoint) {
   const normalized = { ...endpoint };
   delete normalized.clientId;
   normalized.table = normalizeTableName(endpoint.table);
+  if (endpoint.topic !== undefined) normalized.topic = normalizeTopicName(endpoint.topic);
   if (endpoint.columns !== undefined) normalized.columns = normalizeNameArray(endpoint.columns);
   if (endpoint.meta !== undefined) normalized.meta = normalizeNameArray(endpoint.meta);
 
@@ -459,6 +464,7 @@ module.exports = {
   CALC_ORDERS,
   isObject,
   normalizeOptionalString,
+  normalizeTopicName,
   normalizePort,
   normalizeTableName,
   normalizeColumnName,
