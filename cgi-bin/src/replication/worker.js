@@ -78,30 +78,14 @@ function _toEpochNs(value) {
   return parseEpochNsLike(value);
 }
 
-function _isDuplicateMetadataError(err) {
-  const message = err && err.message ? String(err.message).toLowerCase() : '';
-  return message.indexOf('duplicate') >= 0
-    || message.indexOf('already exists') >= 0
-    || message.indexOf('unique') >= 0;
-}
-
-function _createQueryClientForRuntime(config) {
-  const type = String(config?.type || 'native').toLowerCase();
-  if (type === 'native') return new MachbaseClient(config);
-  const client = createQueryClient(config);
-  if (!client) {
-    throw new Error(`query client not supported for type '${type}'`);
-  }
-  return client;
-}
-
 class Worker {
-  constructor(config, dataTable, srcSchema, dstSchema, shutdownFlag) {
+  constructor(config, dataTable, srcSchema, dstSchema, shutdownFlag, metaSyncManager) {
     this.config = config;
     this.dataTable = dataTable;
     this.srcSchema = srcSchema;
     this.dstSchema = dstSchema;
     this.shutdownFlag = shutdownFlag;
+    this.metaSyncManager = metaSyncManager || null;
   }
 
   async run(signal) {
@@ -249,21 +233,10 @@ class Worker {
     return out;
   }
 
-  _buildTargetMetaValues(sourceRow, plan) {
-    const values = [];
-    for (let i = 0; i < plan.targetMeta.length; i++) {
-      const targetName = plan.targetMeta[i];
-      if (!targetName) continue;
-      const sourceName = plan.sourceMeta[i];
-      values.push(sourceName ? sourceRow[sourceName] : null);
-    }
-    return values;
-  }
-
   _processRows(rows, plan, logCtx) {
     const appendRows = [];
     const resolved = [];
-    const pendingMetaByName = {};
+    let maxSourceTagId = null;
 
     for (const item of rows) {
       const transformed = applyTransformRules(item.data, plan.transform);
@@ -283,19 +256,17 @@ class Worker {
         if (plan.integrityUsesEpochNs) {
           resolved[resolved.length - 1].time = _toEpochNs(time);
         }
-        if (!pendingMetaByName[canonical]) {
-          pendingMetaByName[canonical] = this._buildTargetMetaValues(transformed.row, plan);
+        if (item.tagId != null) {
+          const sourceTagId = BigInt(item.tagId);
+          if (maxSourceTagId == null || sourceTagId > maxSourceTagId) {
+            maxSourceTagId = sourceTagId;
+          }
         }
       }
       appendRows.push(targetRow);
     }
 
-    const metadataRows = Object.keys(pendingMetaByName).map((name) => ({
-      name,
-      values: pendingMetaByName[name],
-    }));
-
-    return { appendRows, resolved, metadataRows };
+    return { appendRows, resolved, maxSourceTagId };
   }
 
   _saveCheckpoint(checkpointStore, rid, totalRowsWritten, stats, hasMore, queryLimit) {
@@ -334,55 +305,6 @@ class Worker {
     return result.ok ? result.value : null;
   }
 
-  async _ensureTagMetadata(metaClient, targetMetaNames, metadataRows, retry, shutdownFlag, logCtx) {
-    if (!metaClient || !Array.isArray(metadataRows) || metadataRows.length === 0) return true;
-
-    let inserted = 0;
-    let skippedExisting = 0;
-    for (const row of metadataRows) {
-      if (shutdownFlag.value) return false;
-      if (targetMetaNames[row.name]) {
-        skippedExisting++;
-        continue;
-      }
-      const ok = await _withRetry({
-        fn: async () => {
-          try {
-            await metaClient.insertTagMeta(this.config.target.table, [row.name].concat(row.values));
-            targetMetaNames[row.name] = true;
-            inserted++;
-            return { done: true, value: true };
-          } catch (err) {
-            if (_isDuplicateMetadataError(err)) {
-              targetMetaNames[row.name] = true;
-              skippedExisting++;
-              return { done: true, value: true };
-            }
-            return {
-              done: false,
-              retryable: retry.shouldRetry(err),
-              msg: `non-retryable metadata insert error: ${err.message}`,
-            };
-          }
-        },
-        retry,
-        shutdownFlag,
-        logCtx: { ...logCtx, tag_name: row.name },
-        exhaustedMsg: 'metadata insert retry exhausted, stopping worker',
-        retryMsg: 'metadata insert retry',
-        phase: 'METADATA',
-      });
-      if (!ok.ok) return false;
-    }
-    getLogger().debug('worker_metadata', {
-      ...logCtx,
-      inserted,
-      skippedExisting,
-      msg: 'metadata sync completed',
-    });
-    return true;
-  }
-
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
     const batchSize = this.config.queryLimit;
     const pollIntervalMs = this.config.pollIntervalMs;
@@ -398,9 +320,6 @@ class Worker {
       getLogger().error('worker', { ...logCtx, msg: 'TAG key columns not found in source/target schema' });
       return;
     }
-
-    let metaClient = null;
-    let targetMetaNames = {};
 
     const { cp, exists: cpExists } = checkpointStore.load();
     let startRid;
@@ -441,22 +360,8 @@ class Worker {
         getLogger().warn('worker', { ...logCtx, msg: `loadTagMetaCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
     }
-    if (plan.isTag && plan.targetSeparateMetadataInsert) {
-      metaClient = _createQueryClientForRuntime(this.config.target);
-      try {
-        await metaClient.connect();
-        const rows = await metaClient.selectTagNames(this.config.target.table);
-        for (const row of (rows || [])) {
-          targetMetaNames[row.name] = true;
-        }
-      } catch (err) {
-        getLogger().error('worker', { ...logCtx, msg: `target metadata preload failed: ${err.message}` });
-        return;
-      }
-    }
-
+    const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists;
     try {
-      const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists;
       if (doIntegrity) {
         const originalStartRid = startRid;
         const result = await this._runStartupIntegrity({
@@ -487,6 +392,11 @@ class Worker {
         const maxRid = await this._getMaxRid(srcTable, retry, shutdownFlag, logCtx, 'STEADY_MAXRID');
         if (maxRid == null) return;
 
+        if (plan.isTag && plan.targetSeparateMetadataInsert && this.metaSyncManager) {
+          const pollOk = await this.metaSyncManager.pollSourceMeta(logCtx);
+          if (!pollOk) return;
+        }
+
         if (startRid > maxRid) {
           const idleCpRid = startRid > 0n ? (startRid - 1n) : -1n;
           this._saveCheckpoint(checkpointStore, idleCpRid, totalRowsWritten, {
@@ -516,8 +426,8 @@ class Worker {
         const processed = this._processRows(readResult.rows, plan, logCtx);
         if (shutdownFlag.value) return;
 
-        if (plan.isTag && plan.targetSeparateMetadataInsert) {
-          const metadataOk = await this._ensureTagMetadata(metaClient, targetMetaNames, processed.metadataRows, retry, shutdownFlag, logCtx);
+        if (plan.isTag && plan.targetSeparateMetadataInsert && processed.maxSourceTagId != null && this.metaSyncManager) {
+          const metadataOk = await this.metaSyncManager.ensureUpToTagId(processed.maxSourceTagId, logCtx);
           if (!metadataOk) return;
         }
 
@@ -548,7 +458,7 @@ class Worker {
         startRid = endRid + 1n;
       }
     } finally {
-      try { metaClient && await metaClient.close(); } catch (_) {}
+      // metadata sync client는 worker마다 열지 않고 replicator-level manager가 소유한다.
     }
   }
 
@@ -591,7 +501,10 @@ class Worker {
         continue;
       }
 
-      const intConn = _createQueryClientForRuntime(this.config.target);
+      const targetType = String(this.config.target?.type || 'native').toLowerCase();
+      const intConn = targetType === 'native'
+        ? new MachbaseClient(this.config.target)
+        : createQueryClient(this.config.target);
       try {
         await intConn.connect();
         const result = await dstTable.findFirstMissRow(processed.resolved, intConn, this.dataTable);

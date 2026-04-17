@@ -908,7 +908,11 @@ class TagDataTable {
           data[keyColName] = entry.name;
           Object.assign(data, entry.meta);
         }
-        result.push({ rid, data });
+        result.push({
+          rid,
+          tagId: keyColName && Object.prototype.hasOwnProperty.call(row, keyColName) ? row[keyColName] : null,
+          data,
+        });
       }
 
       return { rows: result, err: null };

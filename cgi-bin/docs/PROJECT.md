@@ -79,12 +79,14 @@ cgi-bin/
 │       └── stop.js               # CGI: POST ?name=xxx -- service 종료
 ├── conf.d/
 │   └── {name}.json               # replicator별 설정 파일 (ReplicatorConfig 형식)
-├── data/                         # 런타임 생성 -- replicator별 파티션 cp 파일
+├── data/                         # 런타임 생성 -- replicator별 파티션 cp + TAG metadata sync 상태 파일
 ├── run/                          # 런타임 생성 -- PID 파일
 ├── src/
 │   ├── replication/
 │   │   ├── replicator.js         # Replicator -- discover -> Workers 루프
-│   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
+│   │   ├── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
+│   │   ├── tag-meta-sync.js      # TAG metadata sync manager -- native/http target metadata 선동기화
+│   │   └── meta-sync-state.js    # job-level metadata sync state file helper
 │   ├── cgi/
 │   │   └── handler.js            # Handler 클래스 -- conf.d CRUD + service install/start/stop/uninstall + checkpoint 조회/정리
 │   ├── db/
@@ -115,6 +117,7 @@ machbase-neo HTTP 서버
        └─ Replicator
            ├─ discover() -- 소스/대상 스키마 수집, 파티션 목록 조회
            └─ runWorkers()
+               ├─ TagMetaSyncManager -- TAG + native/http target metadata 선동기화 / catch-up
                └─ Worker x N  (Promise.all -- cooperative multitasking)
                    ├─ TagDataTable/LogTable -- 소스 DB 읽기 (machcli 동기)
                    ├─ TagTable/LogTable     -- 대상 DB 쓰기 (machcli 동기)
@@ -277,6 +280,15 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 ```
 
 - `lastSuccessRid`: BigInt를 string으로 직렬화
+
+### 3.6 TAG metadata sync 상태 파일
+
+**저장 경로**: `cgi-bin/data/{replicatorId}/meta-sync.json`
+
+- TAG + native/http target에서만 사용한다.
+- data partition checkpoint와 분리된 job-level 상태다.
+- 초기 metadata 선동기화, rep_target_cond 변경 diff, 실행 중 catch-up 진행률을 여기 기록한다.
+- `GET /api/rc.js?name=...` 의 `metaSync` 필드는 이 파일을 그대로 읽어 요약한 값이다.
 - `hasMore`: `rowsRead === queryLimit` 기준으로 다음 작업이 남아있을 가능성 표시
 - `source.dataTable` 불일치 시 손상으로 처리하고 무효화
 - atomic write (`.tmp` -> `renameSync`)

@@ -27,6 +27,7 @@ const {
   prepareReplicatorConfig,
   validateServerProfile,
 } = require('./validation.js');
+const { MetaSyncStateStore } = require('../replication/meta-sync-state.js');
 
 const SERVICE_RETRY_DELAY_MS = 1000;
 const SERVICE_RETRY_MAX_ATTEMPTS = 3;
@@ -1126,6 +1127,24 @@ class Handler {
     return result;
   }
 
+  /**
+   * job-level TAG metadata sync 상태를 반환한다.
+   *
+   * 의도:
+   * - metadata sync는 data partition checkpoint와 독립된 logical-table 상태이므로 별도 응답으로 노출한다.
+   * - frontend는 이 값을 보고 "초기 TAG metadata 동기화중" 상태와 진행률을 표시할 수 있다.
+   *
+   * @param {string} name - replicator id
+   * @returns {object|null}
+   */
+  static readMetaSync(name) {
+    if (!name || typeof name !== 'string' || !name.trim()) return null;
+    const store = new MetaSyncStateStore(path.join(DATA_DIR, name.trim()));
+    const { exists, state } = store.load();
+    if (!exists || !state) return null;
+    return MetaSyncStateStore.toPublic(state);
+  }
+
   // ── 비즈니스 로직 ─────────────────────────────────────────────────────────
 
   /**
@@ -1372,7 +1391,7 @@ class Handler {
   /**
    * replicator 설정과 checkpoint 정보를 반환한다. password는 제거된다.
    * @param {string} name
-   * @param {function(Error|null, { name: string, config: object, checkpoints: object }=): void} callback
+   * @param {function(Error|null, { name: string, config: object, checkpoints: object, metaSync: object|null }=): void} callback
    */
   static async getReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
@@ -1389,7 +1408,8 @@ class Handler {
     const targetTable = config.target?.table || sourceTable;
     const replicatorId = config.id || (sourceTable && targetTable ? `${sourceTable}_${targetTable}` : '');
     const checkpoints = await Handler.readCheckpoints(replicatorId, runtimeConfig);
-    callback(null, { name, config: safeConfig, checkpoints });
+    const metaSync = Handler.readMetaSync(replicatorId);
+    callback(null, { name, config: safeConfig, checkpoints, metaSync });
   }
 
   /**

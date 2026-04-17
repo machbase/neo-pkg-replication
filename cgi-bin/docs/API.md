@@ -317,7 +317,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | `GET` | `/api/rc/list.js` | replication 목록 (`installed`, `running`) |
 | `GET` | `/api/rc/default.js` | replication create 기본 템플릿 |
 | `POST` | `/api/rc.js` | replication 생성 + service install |
-| `GET` | `/api/rc.js?name=...` | replication 단건 조회 + checkpoint |
+| `GET` | `/api/rc.js?name=...` | replication 단건 조회 + checkpoint + metaSync |
 | `PUT` | `/api/rc.js?name=...` | replication 수정 |
 | `DELETE` | `/api/rc.js?name=...` | replication 삭제 + cleanup |
 | `POST` | `/api/rc/install.js?name=...` | 기존 config 기준 service install |
@@ -340,6 +340,10 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 ### `GET /api/rc.js?name=...`
 
+- `metaSync` 는 TAG + native/http target 조합에서만 의미가 있다.
+- 초기 TAG metadata 동기화 또는 catch-up 이 진행 중이면 `status`, `progress`, `message` 로 상태를 확인할 수 있다.
+- 그 외 조합이거나 아직 상태 파일이 없으면 `metaSync` 는 `null` 일 수 있다.
+
 응답 예시:
 
 ```json
@@ -355,6 +359,21 @@ curl -sS -X POST -H 'Content-Type: application/json' \
         "hasMore": false,
         "max_rid": "2799971"
       }
+    },
+    "metaSync": {
+      "enabled": true,
+      "status": "ready",
+      "message": "metadata sync ready",
+      "progress": 100,
+      "lastMetaId": "2799971",
+      "goalMetaId": "2799971",
+      "repTargetCond": {
+        "column": "NAME",
+        "op": "LIKE",
+        "value": ["SENSOR_%"]
+      },
+      "startedAt": "2026-04-17T06:02:47.395Z",
+      "updatedAt": "2026-04-17T06:02:47.412Z"
     }
   }
 }
