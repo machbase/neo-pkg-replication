@@ -204,4 +204,11 @@ ntf testsuite/package/replication/replication.ts
 
 테스트 구성은 `~/neo-regress/testsuite/package/replication/README` 참고.
 
+### 수동 통합 테스트
+
+장시간/재시작/설정 변경까지 포함하는 운영형 수동 검증은 아래 문서를 따른다.
+
+- [cgi-bin/docs/MANUAL_INTEGRATION_TEST.md](cgi-bin/docs/MANUAL_INTEGRATION_TEST.md)
+- [cgi-bin/docs/NEO_REGRESS_PHASE1.md](cgi-bin/docs/NEO_REGRESS_PHASE1.md)
+
 ---
