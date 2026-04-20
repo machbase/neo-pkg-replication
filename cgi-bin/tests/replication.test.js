@@ -24,6 +24,10 @@ const SRC_LOG_TABLE = `RPL_SRC_${TEMP_SUFFIX}`;
 const DST_LOG_TABLE = `RPL_DST_${TEMP_SUFFIX}`;
 const LOG_JOB_ID = `rpl_log_${TEMP_SUFFIX}`;
 const LOG_NOW_JOB_ID = `rpl_log_now_${TEMP_SUFFIX}`;
+const SRC_JSON_LOG_TABLE = `RPL_JSRC_${TEMP_SUFFIX}`;
+const DST_JSON_HTTP_LOG_TABLE = `RPL_JHTTP_${TEMP_SUFFIX}`;
+const LOG_JSON_HTTP_JOB_ID = `rpl_log_json_http_${TEMP_SUFFIX}`;
+const DST_HTTP = { host: '127.0.0.1', port: 5654, protocol: 'http', type: 'http' };
 
 /**
  * 테스트용 ReplicatorConfig 기본값을 생성한다.
@@ -100,8 +104,8 @@ async function recreateDstTable() {
   }
 }
 
-function makeLogSchema(logicalTable) {
-  return new TableSchema('LOG', logicalTable, [
+function makeLogSchema(logicalTable, columns) {
+  return new TableSchema('LOG', logicalTable, columns || [
     new Column('TIME', ColumnType.DATETIME, 0, 0, 0),
     new Column('VALUE', ColumnType.DOUBLE, 1, 0, 0),
   ]);
@@ -143,6 +147,55 @@ async function seedLogSourceAndTarget() {
     srcLog.setSchema(await srcLog.getSchema());
     const err = await srcLog.append(rows);
     assert.ok(err === null || err === undefined, `source seed append failed: ${err}`);
+  } finally {
+    await srcLog.close();
+  }
+}
+
+async function seedJsonLogSourceAndTarget() {
+  const srcSchema = makeLogSchema(SRC_JSON_LOG_TABLE, [
+    new Column('TIME', ColumnType.DATETIME, 0, 0, 0),
+    new Column('ID', ColumnType.INTEGER, 1, 0, 0),
+    new Column('PAYLOAD', ColumnType.JSON, 2, 0, 0),
+  ]);
+  const dstSchema = makeLogSchema(DST_JSON_HTTP_LOG_TABLE, [
+    new Column('TIME', ColumnType.DATETIME, 0, 0, 0),
+    new Column('ID', ColumnType.INTEGER, 1, 0, 0),
+    new Column('PAYLOAD', ColumnType.JSON, 2, 0, 0),
+  ]);
+  const srcClient = new MachbaseClient(SRC);
+  const dstClient = new MachbaseClient(DST);
+  const srcLog = new LogTable(SRC_JSON_LOG_TABLE, SRC);
+  const rows = [
+    { TIME: '2026-04-20T03:00:00Z', ID: 1, PAYLOAD: '{"a":1,"b":[true,null,"x"]}' },
+    { TIME: '2026-04-20T03:00:01Z', ID: 2, PAYLOAD: '[1,2,3,{"k":"v"}]' },
+    { TIME: '2026-04-20T03:00:02Z', ID: 3, PAYLOAD: '{"nested":{"arr":[1,{"deep":2}]}}' },
+    { TIME: '2026-04-20T03:00:03Z', ID: 4, PAYLOAD: '{"message":"hello","num":42}' },
+    { TIME: '2026-04-20T03:00:04Z', ID: 5, PAYLOAD: '{"empty":[],"obj":{}}' },
+  ];
+
+  dropTable(SRC, SRC_JSON_LOG_TABLE);
+  dropTable(DST, DST_JSON_HTTP_LOG_TABLE);
+
+  try {
+    srcClient.connect();
+    srcClient.createLogTable(SRC_JSON_LOG_TABLE, srcSchema);
+  } finally {
+    srcClient.close();
+  }
+
+  try {
+    dstClient.connect();
+    dstClient.createLogTable(DST_JSON_HTTP_LOG_TABLE, dstSchema);
+  } finally {
+    dstClient.close();
+  }
+
+  try {
+    await srcLog.open();
+    srcLog.setSchema(await srcLog.getSchema());
+    const err = await srcLog.append(rows);
+    assert.ok(err === null || err === undefined, `json source seed append failed: ${err}`);
   } finally {
     await srcLog.close();
   }
@@ -292,6 +345,70 @@ suite('Replicator - replication', () => {
     }
   });
 
+  test('LOG JSON native->http 복제 성공', async () => {
+    await seedJsonLogSourceAndTarget();
+    dropCheckpoints(LOG_JSON_HTTP_JOB_ID);
+
+    const shutdownFlag = { value: false };
+    const config = makeConfig({
+      id: LOG_JSON_HTTP_JOB_ID,
+      source: {
+        ...SRC,
+        table: SRC_JSON_LOG_TABLE,
+        columns: ['TIME', 'ID', 'PAYLOAD'],
+        meta: [],
+        rep_target_cond: { op: 'ALL', value: [] },
+        transform: null,
+      },
+      target: {
+        ...DST_HTTP,
+        table: DST_JSON_HTTP_LOG_TABLE,
+        columns: ['TIME', 'ID', 'PAYLOAD'],
+        meta: [],
+      },
+      startMode: 'full',
+      queryLimit: 10,
+      pollIntervalMs: 200,
+    });
+    const replicator = new Replicator(config, shutdownFlag);
+
+    const startPromise = replicator.start();
+    const deadline = Date.now() + 5000;
+    let count = 0;
+    while (Date.now() < deadline) {
+      const dstClient = new MachbaseClient(DST);
+      try {
+        dstClient.connect();
+        const rows = dstClient.query(`SELECT COUNT(*) AS CNT FROM ${DST_JSON_HTTP_LOG_TABLE}`);
+        count = Number(rows[0].CNT);
+      } finally {
+        dstClient.close();
+      }
+      if (count === 5) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    shutdownFlag.value = true;
+    await startPromise;
+
+    const dstClient = new MachbaseClient(DST);
+    try {
+      dstClient.connect();
+      const countRows = dstClient.query(`SELECT COUNT(*) AS CNT FROM ${DST_JSON_HTTP_LOG_TABLE}`);
+      assert.equal(Number(countRows[0].CNT), 5, 'http json target row count mismatch');
+      const payloadRows = dstClient.query(`SELECT ID, PAYLOAD FROM ${DST_JSON_HTTP_LOG_TABLE} ORDER BY ID`);
+      const actual = payloadRows.map((row) => ({ ID: Number(row.ID), PAYLOAD: String(row.PAYLOAD) }));
+      assert.deepEqual(actual, [
+        { ID: 1, PAYLOAD: '{"a":1,"b":[true,null,"x"]}' },
+        { ID: 2, PAYLOAD: '[1,2,3,{"k":"v"}]' },
+        { ID: 3, PAYLOAD: '{"nested":{"arr":[1,{"deep":2}]}}' },
+        { ID: 4, PAYLOAD: '{"message":"hello","num":42}' },
+        { ID: 5, PAYLOAD: '{"empty":[],"obj":{}}' },
+      ], 'http json payload mismatch');
+    } finally {
+      dstClient.close();
+    }
+  });
+
 });
 
 suite('Replicator - cleanup', () => {
@@ -299,11 +416,14 @@ suite('Replicator - cleanup', () => {
   test('dst table / checkpoint cleanup', () => {
     dropDstTable();
     dropTable(SRC, SRC_LOG_TABLE);
+    dropTable(SRC, SRC_JSON_LOG_TABLE);
     dropTable(DST, DST_LOG_TABLE);
+    dropTable(DST, DST_JSON_HTTP_LOG_TABLE);
     dropCheckpoints(deriveId());
     dropCheckpoints(deriveId({ startMode: 'now' }));
     dropCheckpoints(LOG_JOB_ID);
     dropCheckpoints(LOG_NOW_JOB_ID);
+    dropCheckpoints(LOG_JSON_HTTP_JOB_ID);
     assert.ok(true);
   });
 
