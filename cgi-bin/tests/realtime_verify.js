@@ -49,10 +49,15 @@ function withConn(fn) {
 }
 
 function firstValue(conn, sql, field) {
-  for (const row of conn.query(sql)) {
-    return row[field];
+  const rows = conn.query(sql);
+  try {
+    for (const row of rows) {
+      return row[field];
+    }
+    return null;
+  } finally {
+    try { rows.close(); } catch (_) {}
   }
-  return null;
 }
 
 function jsonOut(obj) {
@@ -103,17 +108,27 @@ function compareMaps(expectedMap, actualMap) {
 
 function loadTargetMap(conn, tableName) {
   const out = {};
-  for (const row of conn.query(`select NAME, TIME, VALUE from ${tableName}`)) {
-    const k = key(row.NAME, row.TIME);
-    (out[k] || (out[k] = [])).push(Number(row.VALUE));
+  const rows = conn.query(`select NAME, TIME, VALUE from ${tableName}`);
+  try {
+    for (const row of rows) {
+      const k = key(row.NAME, row.TIME);
+      (out[k] || (out[k] = [])).push(Number(row.VALUE));
+    }
+  } finally {
+    try { rows.close(); } catch (_) {}
   }
   return out;
 }
 
 function loadMetaIdMap(conn, metaTable) {
   const out = {};
-  for (const row of conn.query(`select _ID, NAME from ${metaTable}`)) {
-    out[String(row._ID)] = row.NAME;
+  const rows = conn.query(`select _ID, NAME from ${metaTable}`);
+  try {
+    for (const row of rows) {
+      out[String(row._ID)] = row.NAME;
+    }
+  } finally {
+    try { rows.close(); } catch (_) {}
   }
   return out;
 }
@@ -159,12 +174,17 @@ function minMaxRids() {
     const out = {};
     for (const tableName of TAG_REAL_PARTITIONS) {
       const sql = `select min(_RID) MN, max(_RID) MX from ${tableName}`;
-      for (const r of conn.query(sql)) {
-        out[tableName] = {
-          min: r.MN == null ? null : Number(r.MN),
-          max: r.MX == null ? null : Number(r.MX),
-        };
-        break;
+      const rows = conn.query(sql);
+      try {
+        for (const r of rows) {
+          out[tableName] = {
+            min: r.MN == null ? null : Number(r.MN),
+            max: r.MX == null ? null : Number(r.MX),
+          };
+          break;
+        }
+      } finally {
+        try { rows.close(); } catch (_) {}
       }
     }
     return out;
@@ -187,10 +207,15 @@ function verifyAfterRid(ridAfter) {
     const expectedMap = {};
 
     for (const tableName of TAG_REAL_PARTITIONS) {
-      for (const r of conn.query(`select NAME, TIME, VALUE from ${tableName} where _RID >= ${ridAfter}`)) {
-        const name = meta[String(r.NAME)] || String(r.NAME);
-        const k = key(name, r.TIME);
-        (expectedMap[k] || (expectedMap[k] = [])).push(Number(r.VALUE));
+      const rows = conn.query(`select NAME, TIME, VALUE from ${tableName} where _RID >= ${ridAfter}`);
+      try {
+        for (const r of rows) {
+          const name = meta[String(r.NAME)] || String(r.NAME);
+          const k = key(name, r.TIME);
+          (expectedMap[k] || (expectedMap[k] = [])).push(Number(r.VALUE));
+        }
+      } finally {
+        try { rows.close(); } catch (_) {}
       }
     }
 
@@ -227,10 +252,15 @@ function verifyAfterCp(cp) {
     const expectedMap = {};
 
     for (const table of Object.keys(cp)) {
-      for (const r of conn.query(`select NAME, TIME, VALUE from ${table} where _RID > ${cp[table]}`)) {
-        const name = meta[String(r.NAME)] || String(r.NAME);
-        const k = key(name, r.TIME);
-        (expectedMap[k] || (expectedMap[k] = [])).push(Number(r.VALUE));
+      const rows = conn.query(`select NAME, TIME, VALUE from ${table} where _RID > ${cp[table]}`);
+      try {
+        for (const r of rows) {
+          const name = meta[String(r.NAME)] || String(r.NAME);
+          const k = key(name, r.TIME);
+          (expectedMap[k] || (expectedMap[k] = [])).push(Number(r.VALUE));
+        }
+      } finally {
+        try { rows.close(); } catch (_) {}
       }
     }
 

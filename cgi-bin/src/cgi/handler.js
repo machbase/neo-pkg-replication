@@ -763,7 +763,9 @@ class Handler {
   static buildServiceInstallConfig(name) {
     return {
       name: Handler.serviceName(name),
-      enable: false,
+      // 현재 정책은 replicator를 설치하면 neo 시작 시 자동 기동되도록 기본 enable=true를 사용한다.
+      // 추후 자동 재시작/자동 기동 정책이 사용자 설정으로 분리되면 여기 기본값도 함께 재검토한다.
+      enable: true,
       working_dir: APP_DIR,
       executable: path.join(APP_DIR, 'replication.js'),
       args: [name],

@@ -10,6 +10,12 @@
 const { Client } = require('machcli');
 const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 
+function _isStructureModifiedErrorMessage(message) {
+  const text = String(message || '');
+  return text.indexOf('MACHCLI-ERR-2361') >= 0
+    || text.toLowerCase().indexOf('structure was modified') >= 0;
+}
+
 
 /**
  * Machbase Neo DB 연결 및 쿼리 클라이언트
@@ -49,18 +55,45 @@ class MachbaseClient {
    * @returns {Array<object>}
    */
   query(sql, values) {
-    try {
-      const rows = values && values.length > 0
-        ? this._conn.query(sql, ...values)
-        : this._conn.query(sql);
+    const runQuery = () => {
+      let rows = null;
+      try {
+        rows = values && values.length > 0
+          ? this._conn.query(sql, ...values)
+          : this._conn.query(sql);
 
-      const result = [];
-      for (const row of rows) {
-        result.push(row);
+        const result = [];
+        for (const row of rows) {
+          result.push(row);
+        }
+        return result;
+      } finally {
+        // machcli result cursor는 소비 후 명시적으로 닫아야 native query handle 누수를 막을 수 있다.
+        // 이 wrapper는 worker의 maxRid polling/read/meta lookup 공통 경로이므로 누수가 쌓이면
+        // 장시간 복제 중 간헐적인 query 실패로 이어질 수 있다.
+        try { rows && rows.close && rows.close(); } catch (_) {}
       }
-      return result;
+    };
+
+    try {
+      return runQuery();
     } catch (err) {
-      throw new Error(err.message);
+      if (_isStructureModifiedErrorMessage(err.message)) {
+        // TAG 신규 등록처럼 source 내부 구조가 바뀌는 순간 기존 native connection이 stale 상태가 될 수 있다.
+        // query는 읽기 전용이므로 연결을 새로 열고 한 번 더 시도한다.
+        try { this.close(); } catch (_) {}
+        this.connect();
+        try {
+          return runQuery();
+        } catch (retryErr) {
+          const wrapped = new Error(retryErr.message);
+          wrapped.retryable = _isStructureModifiedErrorMessage(retryErr.message);
+          throw wrapped;
+        }
+      }
+      const wrapped = new Error(err.message);
+      wrapped.retryable = _isStructureModifiedErrorMessage(err.message);
+      throw wrapped;
     }
   }
 

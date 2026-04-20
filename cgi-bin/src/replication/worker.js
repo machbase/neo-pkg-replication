@@ -23,6 +23,7 @@ const INTEGRITY_BATCH_LIMIT = 500;
 async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retryMsg, phase }) {
   const ctx = phase ? { ...logCtx, phase } : logCtx;
   let attempt = 0;
+  let lastDetail = null;
   while (true) {
     if (shutdownFlag.value) return { ok: false };
     if (attempt > 0) {
@@ -32,13 +33,17 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
       }
       const delay = retry.nextDelay(attempt - 1);
       if (retryMsg) {
-        getLogger().warn('worker', { ...ctx, attempt, msg: `${retryMsg}, delay=${delay}ms` });
+        const warnFields = { ...ctx, attempt };
+        if (lastDetail) warnFields.cause = lastDetail;
+        warnFields.msg = `${retryMsg}, delay=${delay}ms`;
+        getLogger().warn('worker', warnFields);
       }
       const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
       if (signal === 'shutdown') return { ok: false };
     }
     const result = await fn();
     if (result.done) return { ok: true, value: result.value };
+    lastDetail = result.detail || null;
     if (!result.retryable) {
       getLogger().error('worker', { ...ctx, msg: result.msg });
       return { ok: false };
@@ -51,7 +56,7 @@ async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
   const result = await _withRetry({
     fn: async () => {
       const err = await dstTable.append(outRows);
-      if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable append error: ${err.message}` };
+      if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable append error: ${err.message}`, detail: err.message };
       return { done: true, value: true };
     },
     retry,
@@ -61,6 +66,30 @@ async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
     retryMsg: 'append retry',
   });
   return result.ok;
+}
+
+async function _readRows(srcTable, startRid, endRid, batchSize, options, retry, shutdownFlag, logCtx, phase) {
+  const result = await _withRetry({
+    fn: async () => {
+      const readResult = await srcTable.read(startRid, endRid, batchSize, options);
+      if (readResult.err) {
+        return {
+          done: false,
+          retryable: retry.shouldRetry(readResult.err),
+          msg: `non-retryable read error: ${readResult.err.message}`,
+          detail: readResult.err.message,
+        };
+      }
+      return { done: true, value: readResult };
+    },
+    retry,
+    shutdownFlag,
+    logCtx,
+    exhaustedMsg: 'read retry exhausted, stopping worker',
+    retryMsg: 'read retry',
+    phase,
+  });
+  return result.ok ? result.value : null;
 }
 
 function _uniqueNames(values) {
@@ -408,15 +437,12 @@ class Worker {
         let endRid = startRid + BigInt(batchSize) - 1n;
         if (endRid > maxRid) endRid = maxRid;
 
-        const readResult = await srcTable.read(startRid, endRid, batchSize, {
+        const readResult = await _readRows(srcTable, startRid, endRid, batchSize, {
           selectColumns: plan.readColumns,
           repTargetCond: plan.repTargetCond,
           transform: plan.transform,
-        });
-        if (readResult.err) {
-          getLogger().error('worker', { ...logCtx, phase: 'STEADY', msg: `read failed: ${readResult.err.message}` });
-          return;
-        }
+        }, retry, shutdownFlag, logCtx, 'STEADY_READ');
+        if (readResult == null) return;
 
         const processed = this._processRows(readResult.rows, plan, logCtx);
         if (shutdownFlag.value) return;
@@ -474,15 +500,12 @@ class Worker {
       let endRid = integrityRid + BigInt(integrityBatchSize) - 1n;
       if (endRid > maxRid) endRid = maxRid;
 
-      const readResult = await srcTable.read(integrityRid, endRid, integrityBatchSize, {
+      const readResult = await _readRows(srcTable, integrityRid, endRid, integrityBatchSize, {
         selectColumns: plan.readColumns,
         repTargetCond: plan.repTargetCond,
         transform: plan.transform,
-      });
-      if (readResult.err) {
-        getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readResult.err.message}` });
-        return null;
-      }
+      }, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY_READ');
+      if (readResult == null) return null;
 
       const processed = this._processRows(readResult.rows, plan, logCtx);
       if (processed.resolved.length === 0) {
