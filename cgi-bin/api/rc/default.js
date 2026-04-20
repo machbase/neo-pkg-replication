@@ -1,7 +1,5 @@
 /**
- * GET /cgi-bin/api/log/list
- *
- * 로그 디렉토리 파일 목록과 파일 크기를 반환한다.
+ * GET /cgi-bin/api/rc/default  -- replication create 기본 템플릿 조회
  */
 
 const path = require('path');
@@ -10,7 +8,7 @@ const ROOT = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/') +
 const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 
 function GET() {
-  Handler.getLogList(Handler.parseQuery(), (err, data) => {
+  Handler.getDefaultReplicatorConfig((err, data) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
   });
 }

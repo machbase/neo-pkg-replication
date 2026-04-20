@@ -4,12 +4,18 @@
  * @fileoverview Replicator — 소스→대상 데이터 복제 오케스트레이터
  */
 
+const path = require('path');
+const process = require('process');
 const { MachbaseClient } = require('../db/client.js');
 const { createQueryClient } = require('../db/remote.js');
 const { TagTable, LogTable } = require('../db/table.js');
 const { Worker } = require('./worker.js');
+const { TagMetaSyncManager } = require('./tag-meta-sync.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 const { ColumnType, Column, TableSchema, FLAG_METADATA } = require('../db/types.js');
+
+const CHECKPOINT_BASE = path.resolve(path.dirname(process.argv[1]));
+const CHECKPOINT_DIRECTORY = path.join(CHECKPOINT_BASE, 'data');
 
 class AbortSignal {
   constructor() { this.aborted = false; }
@@ -38,7 +44,6 @@ class Replicator {
     this.ridAfter = config.ridAfter ?? null;
     this.onSaveFailure = config.onSaveFailure ?? 'continue';
     this.shutdownTimeoutMs = config.shutdownTimeoutMs ?? 30000;
-    this.integrity = config.integrity ?? null;
     this.retry = config.retry ?? null;
     this.logging = config.logging ?? null;
     this.runtimeHints = config._runtime || null;
@@ -211,12 +216,27 @@ class Replicator {
       startMode: this.startMode,
       ridAfter: this.ridAfter,
       onSaveFailure: this.onSaveFailure,
-      integrity: this.integrity,
       retry: this.retry,
     };
 
+    let metaSyncManager = null;
+    if (TagMetaSyncManager.supports(workerConfig, srcSchema)) {
+      metaSyncManager = new TagMetaSyncManager(
+        workerConfig,
+        srcSchema,
+        dstSchema,
+        path.join(CHECKPOINT_DIRECTORY, this.id),
+        this.shutdownFlag
+      );
+      const bootOk = await metaSyncManager.bootstrap();
+      if (!bootOk) {
+        try { await metaSyncManager.close(); } catch (_) {}
+        return false;
+      }
+    }
+
     const workers = dataTables.map((dataTable) =>
-      new Worker(workerConfig, dataTable, srcSchema, dstSchema, this.shutdownFlag)
+      new Worker(workerConfig, dataTable, srcSchema, dstSchema, this.shutdownFlag, metaSyncManager)
     );
 
     const ac = new AbortController();
@@ -242,6 +262,8 @@ class Replicator {
         getLogger().info('replicator', { ...this.logCtx, msg: 'workers aborted, restarting' });
       }
       return false;
+    } finally {
+      try { metaSyncManager && await metaSyncManager.close(); } catch (_) {}
     }
   }
 

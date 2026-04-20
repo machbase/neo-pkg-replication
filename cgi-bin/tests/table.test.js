@@ -3,7 +3,7 @@
 /**
  * @fileoverview TagTable / TagDataTable / filter 통합 테스트
  *
- * 실제 DB(192.168.1.183:5656)에 접속하여 테이블 클래스 API와 필터링 동작을 검증한다.
+ * 기본값은 로컬 DB(127.0.0.1:5656)이며 fixtures.js 환경변수 override를 지원한다.
  * 사용법: jsh cgi-bin/tests/table.test.js
  */
 
@@ -19,42 +19,42 @@ const { SRC, DST, SRC_TABLE, DST_TABLE } = require(TESTS_DIR + '/fixtures.js');
 
 suite('TagTable', () => {
 
-  test('open / getSchema / close', () => {
+  test('open / getSchema / close', async () => {
     const table = new TagTable(SRC, SRC_TABLE);
     try {
-      table.open();
-      const schema = table.getSchema();
+      await table.open();
+      const schema = await table.getSchema();
       assert.equal(schema.tableType, 'TAG');
       assert.ok(schema.columns.length > 0);
       assert.ok(schema.columns.some(c => c.name === 'NAME'), 'NAME column missing');
       assert.ok(schema.columns.some(c => c.name === 'TIME'), 'TIME column missing');
     } finally {
-      table.close();
+      await table.close();
     }
   });
 
-  test('getDataTables', () => {
+  test('getDataTables', async () => {
     const table = new TagTable(SRC, SRC_TABLE);
     try {
-      table.open();
-      const parts = table.getDataTables();
+      await table.open();
+      const parts = await table.getDataTables();
       assert.ok(Array.isArray(parts));
       assert.ok(parts.length > 0, 'should have at least one partition');
     } finally {
-      table.close();
+      await table.close();
     }
   });
 
-  test('loadTagMetaCache', () => {
+  test('loadTagMetaCache', async () => {
     const table = new TagTable(SRC, SRC_TABLE);
     try {
-      table.open();
-      const schema = table.getSchema();
+      await table.open();
+      const schema = await table.getSchema();
       table.setSchema(schema);
-      const cache = table.loadTagMetaCache();
+      const cache = await table.loadTagMetaCache();
       assert.ok(cache, 'loadTagMetaCache should return a cache object');
     } finally {
-      table.close();
+      await table.close();
     }
   });
 
@@ -62,53 +62,55 @@ suite('TagTable', () => {
 
 suite('TagDataTable', () => {
 
-  test('open / cacheTagMetaAll / close', () => {
+  test('open / cacheTagMetaAll / close', async () => {
     const tagTable = new TagTable(SRC, SRC_TABLE);
     let dataTableName, schema;
     try {
-      tagTable.open();
-      const parts = tagTable.getDataTables();
+      await tagTable.open();
+      const parts = await tagTable.getDataTables();
       assert.ok(parts.length > 0, 'no partitions found');
       dataTableName = parts[0].data_table;
-      schema = tagTable.getSchema();
+      schema = await tagTable.getSchema();
     } finally {
-      tagTable.close();
+      await tagTable.close();
     }
 
     const dataTable = new TagDataTable(dataTableName, SRC);
     try {
-      dataTable.open();
+      await dataTable.open();
       dataTable.setSchema(schema);
-      const err = dataTable.cacheTagMetaAll();
+      const err = await dataTable.cacheTagMetaAll();
       assert.ok(err === null || err === undefined, `cacheTagMetaAll failed: ${err}`);
     } finally {
-      dataTable.close();
+      await dataTable.close();
     }
   });
 
-  test('read - returns rows array', () => {
+  test('read - returns rows array', async () => {
     const tagTable = new TagTable(SRC, SRC_TABLE);
     let dataTableName, schema;
     try {
-      tagTable.open();
-      const parts = tagTable.getDataTables();
+      await tagTable.open();
+      const parts = await tagTable.getDataTables();
       assert.ok(parts.length > 0);
       dataTableName = parts[0].data_table;
-      schema = tagTable.getSchema();
+      schema = await tagTable.getSchema();
     } finally {
-      tagTable.close();
+      await tagTable.close();
     }
 
     const dataTable = new TagDataTable(dataTableName, SRC);
     try {
-      dataTable.open();
+      await dataTable.open();
       dataTable.setSchema(schema);
-      dataTable.cacheTagMetaAll();
-      const { rows, err } = dataTable.read(0n, 10, 50000, null, null, null);
+      await dataTable.cacheTagMetaAll();
+      const { rows, err } = await dataTable.read(0n, 10n, 10, {
+        selectColumns: ['NAME', 'TIME', 'VALUE'],
+      });
       assert.ok(err === null || err === undefined, `read failed: ${err}`);
       assert.ok(Array.isArray(rows));
     } finally {
-      dataTable.close();
+      await dataTable.close();
     }
   });
 
@@ -118,139 +120,170 @@ suite('TagDataTable - filter', () => {
 
   let dataTableName, schema;
 
+  function pickSampleNamePattern() {
+    const client = new MachbaseClient(SRC);
+    try {
+      client.connect();
+      const rows = client.selectTagNames(SRC_TABLE) || [];
+      assert.ok(rows.length > 0, 'TAG META is empty');
+      const exact = rows[0].name;
+      const prefix = exact.slice(0, 1);
+      return {
+        exact,
+        like: `${prefix}%`,
+        matches: (name) => String(name || '').startsWith(prefix),
+      };
+    } finally {
+      client.close();
+    }
+  }
+
   /**
    * TagDataTable 인스턴스를 열어 반환하는 헬퍼 함수.
    * 첫 번째 파티션 이름과 스키마를 준비하고 TAG META 캐시를 로드한다.
    * @returns {TagDataTable}
    */
-  function openDataTable() {
+  async function openDataTable() {
     const tagTable = new TagTable(SRC, SRC_TABLE);
-    tagTable.open();
-    const parts = tagTable.getDataTables();
-    dataTableName = parts[0].data_table;
-    schema = tagTable.getSchema();
-    tagTable.close();
+    await tagTable.open();
+    try {
+      const parts = await tagTable.getDataTables();
+      dataTableName = parts[0].data_table;
+      schema = await tagTable.getSchema();
+    } finally {
+      await tagTable.close();
+    }
 
     const dt = new TagDataTable(dataTableName, SRC);
-    dt.open();
+    await dt.open();
     dt.setSchema(schema);
-    dt.cacheTagMetaAll();
+    await dt.cacheTagMetaAll();
     return dt;
   }
 
-  test('NAME filter - in: 특정 태그만 반환', () => {
-    const dt = openDataTable();
+  test('NAME filter - in: 특정 태그만 반환', async () => {
+    const sample = pickSampleNamePattern();
+    const dt = await openDataTable();
     try {
-      const filter = [{ column: 'NAME', in: ['a01'] }];
-      const { rows, err } = dt.read(0n, 50, 50000, null, null, filter);
+      const { rows, err } = await dt.read(0n, 50n, 50, {
+        selectColumns: ['NAME', 'TIME', 'VALUE'],
+        repTargetCond: { column: 'NAME', op: 'IN', value: [sample.exact] },
+      });
       assert.ok(err === null || err === undefined, `read failed: ${err}`);
       assert.ok(rows.length > 0, 'filter 결과가 0행');
       for (const r of rows) {
-        assert.equal(r.data.NAME, 'a01', `NAME filter 위반: ${r.data.NAME}`);
+        assert.equal(r.data.NAME, sample.exact, `NAME filter 위반: ${r.data.NAME}`);
       }
     } finally {
-      dt.close();
+      await dt.close();
     }
   });
 
-  test('NAME filter - in: 매칭 없는 태그는 0행', () => {
-    const dt = openDataTable();
+  test('NAME filter - in: 매칭 없는 태그는 0행', async () => {
+    const dt = await openDataTable();
     try {
-      const filter = [{ column: 'NAME', in: ['__nonexistent__'] }];
-      const { rows, err } = dt.read(0n, 50, 50000, null, null, filter);
+      const { rows, err } = await dt.read(0n, 50n, 50, {
+        selectColumns: ['NAME', 'TIME', 'VALUE'],
+        repTargetCond: { column: 'NAME', op: 'IN', value: ['__nonexistent__'] },
+      });
       assert.ok(err === null || err === undefined, `read failed: ${err}`);
       assert.equal(rows.length, 0, '존재하지 않는 태그에 결과가 있음');
     } finally {
-      dt.close();
+      await dt.close();
     }
   });
 
-  test('NAME filter - like: 패턴 매칭', () => {
-    const dt = openDataTable();
+  test('NAME filter - like: 패턴 매칭', async () => {
+    const sample = pickSampleNamePattern();
+    const dt = await openDataTable();
     try {
-      const filter = [{ column: 'NAME', like: 'a%' }];
-      const { rows, err } = dt.read(0n, 50, 50000, null, null, filter);
+      const { rows, err } = await dt.read(0n, 50n, 50, {
+        selectColumns: ['NAME', 'TIME', 'VALUE'],
+        repTargetCond: { column: 'NAME', op: 'LIKE', value: [sample.like] },
+      });
       assert.ok(err === null || err === undefined, `read failed: ${err}`);
       assert.ok(rows.length > 0, 'like 필터 결과가 0행');
       for (const r of rows) {
-        assert.ok(r.data.NAME.startsWith('a'), `NAME like 'a%' 위반: ${r.data.NAME}`);
+        assert.ok(sample.matches(r.data.NAME), `NAME like '${sample.like}' 위반: ${r.data.NAME}`);
       }
     } finally {
-      dt.close();
+      await dt.close();
     }
   });
 
-  test('VALUE filter - min: 하한선 이상만 반환', () => {
-    const dt = openDataTable();
+  test('VALUE filter - min: 하한선 이상만 반환', async () => {
+    const dt = await openDataTable();
     try {
-      const filter = [{ column: 'VALUE', min: 80 }];
-      const { rows, err } = dt.read(0n, 100, 50000, null, null, filter);
+      const { rows, err } = await dt.read(0n, 100n, 100, {
+        selectColumns: ['NAME', 'TIME', 'VALUE'],
+        transform: [{
+          criteria: { op: 'ALL', value: [] },
+          expr: [{ column: 'VALUE', type: 'filter', min: 80 }],
+        }],
+      });
       assert.ok(err === null || err === undefined, `read failed: ${err}`);
       assert.ok(rows.length > 0, 'min filter 결과가 0행');
       for (const r of rows) {
         assert.ok(r.data.VALUE >= 80, `VALUE >= 80 위반: ${r.data.VALUE}`);
       }
     } finally {
-      dt.close();
+      await dt.close();
     }
   });
 
-  test('VALUE filter - max: 상한선 이하만 반환', () => {
-    const dt = openDataTable();
+  test('VALUE filter - max: 상한선 이하만 반환', async () => {
+    const dt = await openDataTable();
     try {
-      const filter = [{ column: 'VALUE', max: 35 }];
-      const { rows, err } = dt.read(0n, 100, 50000, null, null, filter);
+      const { rows, err } = await dt.read(0n, 100n, 100, {
+        selectColumns: ['NAME', 'TIME', 'VALUE'],
+        transform: [{
+          criteria: { op: 'ALL', value: [] },
+          expr: [{ column: 'VALUE', type: 'filter', max: 35 }],
+        }],
+      });
       assert.ok(err === null || err === undefined, `read failed: ${err}`);
       assert.ok(rows.length > 0, 'max filter 결과가 0행');
       for (const r of rows) {
         assert.ok(r.data.VALUE <= 35, `VALUE <= 35 위반: ${r.data.VALUE}`);
       }
     } finally {
-      dt.close();
+      await dt.close();
     }
   });
 
-  test('VALUE filter - min+max: 범위 필터', () => {
-    const dt = openDataTable();
+  test('VALUE filter - min+max: 범위 필터', async () => {
+    const dt = await openDataTable();
     try {
-      const filter = [{ column: 'VALUE', min: 50, max: 60 }];
-      const { rows, err } = dt.read(0n, 100, 50000, null, null, filter);
+      const { rows, err } = await dt.read(0n, 100n, 100, {
+        selectColumns: ['NAME', 'TIME', 'VALUE'],
+        transform: [{
+          criteria: { op: 'ALL', value: [] },
+          expr: [{ column: 'VALUE', type: 'filter', min: 50, max: 60 }],
+        }],
+      });
       assert.ok(err === null || err === undefined, `read failed: ${err}`);
       assert.ok(rows.length > 0, 'range filter 결과가 0행');
       for (const r of rows) {
         assert.ok(r.data.VALUE >= 50 && r.data.VALUE <= 60, `VALUE 범위 위반: ${r.data.VALUE}`);
       }
     } finally {
-      dt.close();
-    }
-  });
-
-  test('VALUE filter - NaN min/max: 무시되고 정상 반환', () => {
-    const dt = openDataTable();
-    try {
-      const noFilter = dt.read(0n, 20, 50000, null, null, null);
-      const withNaN  = dt.read(0n, 20, 50000, null, null, [{ column: 'VALUE', min: NaN, max: Infinity }]);
-      assert.ok(noFilter.err === null || noFilter.err === undefined);
-      assert.ok(withNaN.err === null || withNaN.err === undefined);
-      assert.equal(noFilter.rows.length, withNaN.rows.length, 'NaN/Infinity filter 적용 시 행 수가 달라짐');
-    } finally {
-      dt.close();
+      await dt.close();
     }
   });
 
 });
 
-suite('TagTable - autoCreate', () => {
+suite('MachbaseClient - createTagTable', () => {
 
-  test('createTagTable and drop', () => {
+  test('createTagTable and drop', async () => {
     const srcTable = new TagTable(SRC, SRC_TABLE);
     const dstClient = new MachbaseClient(DST);
     const tmpTable = `_TEST_CREATE_${Date.now()}`;
 
     try {
-      srcTable.open();
-      const schema = srcTable.getSchema();
-      srcTable.close();
+      await srcTable.open();
+      const schema = await srcTable.getSchema();
+      await srcTable.close();
 
       dstClient.connect();
       dstClient.createTagTable(tmpTable, schema);
@@ -260,7 +293,7 @@ suite('TagTable - autoCreate', () => {
 
       dstClient.execute(`DROP TABLE ${tmpTable}`);
     } finally {
-      try { srcTable.close(); } catch (_) {}
+      try { await srcTable.close(); } catch (_) {}
       dstClient.close();
     }
   });

@@ -23,6 +23,7 @@ const INTEGRITY_BATCH_LIMIT = 500;
 async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retryMsg, phase }) {
   const ctx = phase ? { ...logCtx, phase } : logCtx;
   let attempt = 0;
+  let lastDetail = null;
   while (true) {
     if (shutdownFlag.value) return { ok: false };
     if (attempt > 0) {
@@ -32,13 +33,17 @@ async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retry
       }
       const delay = retry.nextDelay(attempt - 1);
       if (retryMsg) {
-        getLogger().warn('worker', { ...ctx, attempt, msg: `${retryMsg}, delay=${delay}ms` });
+        const warnFields = { ...ctx, attempt };
+        if (lastDetail) warnFields.cause = lastDetail;
+        warnFields.msg = `${retryMsg}, delay=${delay}ms`;
+        getLogger().warn('worker', warnFields);
       }
       const signal = await retry.sleepOrShutdown(delay, shutdownFlag);
       if (signal === 'shutdown') return { ok: false };
     }
     const result = await fn();
     if (result.done) return { ok: true, value: result.value };
+    lastDetail = result.detail || null;
     if (!result.retryable) {
       getLogger().error('worker', { ...ctx, msg: result.msg });
       return { ok: false };
@@ -51,7 +56,7 @@ async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
   const result = await _withRetry({
     fn: async () => {
       const err = await dstTable.append(outRows);
-      if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable append error: ${err.message}` };
+      if (err) return { done: false, retryable: retry.shouldRetry(err), msg: `non-retryable append error: ${err.message}`, detail: err.message };
       return { done: true, value: true };
     },
     retry,
@@ -61,6 +66,30 @@ async function _appendRows(dstTable, outRows, retry, shutdownFlag, logCtx) {
     retryMsg: 'append retry',
   });
   return result.ok;
+}
+
+async function _readRows(srcTable, startRid, endRid, batchSize, options, retry, shutdownFlag, logCtx, phase) {
+  const result = await _withRetry({
+    fn: async () => {
+      const readResult = await srcTable.read(startRid, endRid, batchSize, options);
+      if (readResult.err) {
+        return {
+          done: false,
+          retryable: retry.shouldRetry(readResult.err),
+          msg: `non-retryable read error: ${readResult.err.message}`,
+          detail: readResult.err.message,
+        };
+      }
+      return { done: true, value: readResult };
+    },
+    retry,
+    shutdownFlag,
+    logCtx,
+    exhaustedMsg: 'read retry exhausted, stopping worker',
+    retryMsg: 'read retry',
+    phase,
+  });
+  return result.ok ? result.value : null;
 }
 
 function _uniqueNames(values) {
@@ -78,30 +107,14 @@ function _toEpochNs(value) {
   return parseEpochNsLike(value);
 }
 
-function _isDuplicateMetadataError(err) {
-  const message = err && err.message ? String(err.message).toLowerCase() : '';
-  return message.indexOf('duplicate') >= 0
-    || message.indexOf('already exists') >= 0
-    || message.indexOf('unique') >= 0;
-}
-
-function _createQueryClientForRuntime(config) {
-  const type = String(config?.type || 'native').toLowerCase();
-  if (type === 'native') return new MachbaseClient(config);
-  const client = createQueryClient(config);
-  if (!client) {
-    throw new Error(`query client not supported for type '${type}'`);
-  }
-  return client;
-}
-
 class Worker {
-  constructor(config, dataTable, srcSchema, dstSchema, shutdownFlag) {
+  constructor(config, dataTable, srcSchema, dstSchema, shutdownFlag, metaSyncManager) {
     this.config = config;
     this.dataTable = dataTable;
     this.srcSchema = srcSchema;
     this.dstSchema = dstSchema;
     this.shutdownFlag = shutdownFlag;
+    this.metaSyncManager = metaSyncManager || null;
   }
 
   async run(signal) {
@@ -149,6 +162,18 @@ class Worker {
     }
   }
 
+  /**
+   * worker가 반복적으로 참조하는 transport별 실행 정책을 한 번만 계산한다.
+   *
+   * 의도:
+   * - state machine 내부에서는 source/target type 분기를 매번 다시 해석하지 않게 한다.
+   * - native/http target은 schema 조회와 restart integrity가 가능하므로 복구 경로를 적극 사용한다.
+   * - mqtt-api/mqtt-publish target은 write 중심 target으로 간주하고 payload 기반 write만 수행한다.
+   *
+   * 주의:
+   * - target type 정책을 바꿀 때는 metadata 전달 방식, 별도 metadata insert 여부,
+   *   integrity 가능 여부를 함께 조정해야 재시작/중복방지 동작이 깨지지 않는다.
+   */
   _buildPlan() {
     const sourceColumns = Array.isArray(this.config.source.columns) ? this.config.source.columns.slice() : [];
     const targetColumns = Array.isArray(this.config.target.columns) ? this.config.target.columns.slice() : [];
@@ -165,10 +190,13 @@ class Worker {
     const targetDataCols = this.dstSchema.columns.filter((column) => !(column.flag & FLAG_METADATA)).map((column) => column.name);
     const targetMetaCols = this.dstSchema.columns.filter((column) => column.flag & FLAG_METADATA).map((column) => column.name);
     const targetType = String(this.config.target?.type || 'native').toLowerCase();
+    // http/mqtt 계열은 한 번의 payload에 data+meta를 실어 보낼 수 있다.
     const targetUsesPayloadMeta = targetType === 'http'
       || targetType === 'mqtt-api'
       || targetType === 'mqtt-publish';
+    // native/http는 기존 DB 동작과 동일하게 metadata를 별도 insert 경로로도 맞춰 준다.
     const targetSeparateMetadataInsert = targetType === 'native' || targetType === 'http';
+    // restart 시 target 상태를 조회해 시작점을 조정할 수 있는 transport만 integrity를 수행한다.
     const supportsIntegrity = targetType === 'native' || targetType === 'http';
     const integrityUsesEpochNs = supportsIntegrity;
     const referencedColumns = collectReferencedColumns(repTargetCond, transform);
@@ -234,21 +262,10 @@ class Worker {
     return out;
   }
 
-  _buildTargetMetaValues(sourceRow, plan) {
-    const values = [];
-    for (let i = 0; i < plan.targetMeta.length; i++) {
-      const targetName = plan.targetMeta[i];
-      if (!targetName) continue;
-      const sourceName = plan.sourceMeta[i];
-      values.push(sourceName ? sourceRow[sourceName] : null);
-    }
-    return values;
-  }
-
   _processRows(rows, plan, logCtx) {
     const appendRows = [];
     const resolved = [];
-    const pendingMetaByName = {};
+    let maxSourceTagId = null;
 
     for (const item of rows) {
       const transformed = applyTransformRules(item.data, plan.transform);
@@ -268,19 +285,17 @@ class Worker {
         if (plan.integrityUsesEpochNs) {
           resolved[resolved.length - 1].time = _toEpochNs(time);
         }
-        if (!pendingMetaByName[canonical]) {
-          pendingMetaByName[canonical] = this._buildTargetMetaValues(transformed.row, plan);
+        if (item.tagId != null) {
+          const sourceTagId = BigInt(item.tagId);
+          if (maxSourceTagId == null || sourceTagId > maxSourceTagId) {
+            maxSourceTagId = sourceTagId;
+          }
         }
       }
       appendRows.push(targetRow);
     }
 
-    const metadataRows = Object.keys(pendingMetaByName).map((name) => ({
-      name,
-      values: pendingMetaByName[name],
-    }));
-
-    return { appendRows, resolved, metadataRows };
+    return { appendRows, resolved, maxSourceTagId };
   }
 
   _saveCheckpoint(checkpointStore, rid, totalRowsWritten, stats, hasMore, queryLimit) {
@@ -319,55 +334,6 @@ class Worker {
     return result.ok ? result.value : null;
   }
 
-  async _ensureTagMetadata(metaClient, targetMetaNames, metadataRows, retry, shutdownFlag, logCtx) {
-    if (!metaClient || !Array.isArray(metadataRows) || metadataRows.length === 0) return true;
-
-    let inserted = 0;
-    let skippedExisting = 0;
-    for (const row of metadataRows) {
-      if (shutdownFlag.value) return false;
-      if (targetMetaNames[row.name]) {
-        skippedExisting++;
-        continue;
-      }
-      const ok = await _withRetry({
-        fn: async () => {
-          try {
-            await metaClient.insertTagMeta(this.config.target.table, [row.name].concat(row.values));
-            targetMetaNames[row.name] = true;
-            inserted++;
-            return { done: true, value: true };
-          } catch (err) {
-            if (_isDuplicateMetadataError(err)) {
-              targetMetaNames[row.name] = true;
-              skippedExisting++;
-              return { done: true, value: true };
-            }
-            return {
-              done: false,
-              retryable: retry.shouldRetry(err),
-              msg: `non-retryable metadata insert error: ${err.message}`,
-            };
-          }
-        },
-        retry,
-        shutdownFlag,
-        logCtx: { ...logCtx, tag_name: row.name },
-        exhaustedMsg: 'metadata insert retry exhausted, stopping worker',
-        retryMsg: 'metadata insert retry',
-        phase: 'METADATA',
-      });
-      if (!ok.ok) return false;
-    }
-    getLogger().debug('worker_metadata', {
-      ...logCtx,
-      inserted,
-      skippedExisting,
-      msg: 'metadata sync completed',
-    });
-    return true;
-  }
-
   async _runStateMachine({ srcTable, dstTable, shutdownFlag }) {
     const batchSize = this.config.queryLimit;
     const pollIntervalMs = this.config.pollIntervalMs;
@@ -384,15 +350,18 @@ class Worker {
       return;
     }
 
-    let metaClient = null;
-    let targetMetaNames = {};
-
     const { cp, exists: cpExists } = checkpointStore.load();
     let startRid;
     let totalRowsWritten = cpExists && cp && cp.totalRowsWritten != null ? BigInt(String(cp.totalRowsWritten)) : 0n;
     if (cpExists && cp) {
       startRid = cp.lastSuccessRid + 1n;
       getLogger().debug('worker', { ...logCtx, startRid: String(startRid), msg: 'resume from checkpoint' });
+      getLogger().info('worker', {
+        ...logCtx,
+        checkpointRid: String(cp.lastSuccessRid),
+        startRid: String(startRid),
+        msg: 'start position loaded from checkpoint',
+      });
     } else {
       const startMode = this.config.startMode;
       if (startMode === 'now') {
@@ -420,23 +389,10 @@ class Worker {
         getLogger().warn('worker', { ...logCtx, msg: `loadTagMetaCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
     }
-    if (plan.isTag && plan.targetSeparateMetadataInsert) {
-      metaClient = _createQueryClientForRuntime(this.config.target);
-      try {
-        await metaClient.connect();
-        const rows = await metaClient.selectTagNames(this.config.target.table);
-        for (const row of (rows || [])) {
-          targetMetaNames[row.name] = true;
-        }
-      } catch (err) {
-        getLogger().error('worker', { ...logCtx, msg: `target metadata preload failed: ${err.message}` });
-        return;
-      }
-    }
-
+    const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists;
     try {
-      const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists && this.config.integrity !== false;
       if (doIntegrity) {
+        const originalStartRid = startRid;
         const result = await this._runStartupIntegrity({
           startRid,
           totalRowsWritten,
@@ -451,6 +407,14 @@ class Worker {
         if (result === null) return;
         startRid = result.startRid;
         totalRowsWritten = result.totalRowsWritten;
+        if (startRid !== originalStartRid) {
+          getLogger().info('worker', {
+            ...logCtx,
+            fromRid: String(originalStartRid),
+            toRid: String(startRid),
+            msg: 'start position adjusted by target integrity check',
+          });
+        }
       }
 
       while (!shutdownFlag.value) {
@@ -473,21 +437,18 @@ class Worker {
         let endRid = startRid + BigInt(batchSize) - 1n;
         if (endRid > maxRid) endRid = maxRid;
 
-        const readResult = await srcTable.read(startRid, endRid, batchSize, {
+        const readResult = await _readRows(srcTable, startRid, endRid, batchSize, {
           selectColumns: plan.readColumns,
           repTargetCond: plan.repTargetCond,
           transform: plan.transform,
-        });
-        if (readResult.err) {
-          getLogger().error('worker', { ...logCtx, phase: 'STEADY', msg: `read failed: ${readResult.err.message}` });
-          return;
-        }
+        }, retry, shutdownFlag, logCtx, 'STEADY_READ');
+        if (readResult == null) return;
 
         const processed = this._processRows(readResult.rows, plan, logCtx);
         if (shutdownFlag.value) return;
 
-        if (plan.isTag && plan.targetSeparateMetadataInsert) {
-          const metadataOk = await this._ensureTagMetadata(metaClient, targetMetaNames, processed.metadataRows, retry, shutdownFlag, logCtx);
+        if (plan.isTag && plan.targetSeparateMetadataInsert && processed.maxSourceTagId != null && this.metaSyncManager) {
+          const metadataOk = await this.metaSyncManager.ensureUpToTagId(processed.maxSourceTagId, logCtx);
           if (!metadataOk) return;
         }
 
@@ -518,7 +479,7 @@ class Worker {
         startRid = endRid + 1n;
       }
     } finally {
-      try { metaClient && await metaClient.close(); } catch (_) {}
+      // metadata sync client는 worker마다 열지 않고 replicator-level manager가 소유한다.
     }
   }
 
@@ -539,15 +500,12 @@ class Worker {
       let endRid = integrityRid + BigInt(integrityBatchSize) - 1n;
       if (endRid > maxRid) endRid = maxRid;
 
-      const readResult = await srcTable.read(integrityRid, endRid, integrityBatchSize, {
+      const readResult = await _readRows(srcTable, integrityRid, endRid, integrityBatchSize, {
         selectColumns: plan.readColumns,
         repTargetCond: plan.repTargetCond,
         transform: plan.transform,
-      });
-      if (readResult.err) {
-        getLogger().error('worker', { ...logCtx, phase: 'STARTUP_INTEGRITY', msg: `read failed: ${readResult.err.message}` });
-        return null;
-      }
+      }, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY_READ');
+      if (readResult == null) return null;
 
       const processed = this._processRows(readResult.rows, plan, logCtx);
       if (processed.resolved.length === 0) {
@@ -561,7 +519,10 @@ class Worker {
         continue;
       }
 
-      const intConn = _createQueryClientForRuntime(this.config.target);
+      const targetType = String(this.config.target?.type || 'native').toLowerCase();
+      const intConn = targetType === 'native'
+        ? new MachbaseClient(this.config.target)
+        : createQueryClient(this.config.target);
       try {
         await intConn.connect();
         const result = await dstTable.findFirstMissRow(processed.resolved, intConn, this.dataTable);

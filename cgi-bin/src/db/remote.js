@@ -11,6 +11,7 @@ const DEFAULT_MQTT_QOS = 1;
 const DEFAULT_MQTT_REPLY_DELAY_MS = 50;
 const NS_PER_MS = 1000000n;
 const NS_PER_SEC = 1000000000n;
+let mqttClientSeq = 0;
 
 function _sqlLiteral(value) {
   if (value == null) return 'NULL';
@@ -51,6 +52,11 @@ function _normalizeInteger(value, defaultValue) {
   if (value == null || value === '') return defaultValue;
   const num = parseInt(value, 10);
   return Number.isFinite(num) ? num : defaultValue;
+}
+
+function _nextMqttClientId(prefix) {
+  mqttClientSeq += 1;
+  return `${prefix}-${Date.now()}-${mqttClientSeq}-${Math.floor(Math.random() * 100000)}`;
 }
 
 function _buildHttpHeaders(config, extraHeaders) {
@@ -236,6 +242,12 @@ class SqlLikeClient {
     };
   }
 
+  qualifiedTagMetaTable(logicalTable) {
+    const qualified = this.splitQualifiedTableName(logicalTable);
+    const metaTable = `_${qualified.table}_META`;
+    return qualified.owner ? `${qualified.owner}.${metaTable}` : metaTable;
+  }
+
   async selectTableInfoQualified(tableName) {
     const qualified = this.splitQualifiedTableName(tableName);
     let rows;
@@ -321,21 +333,30 @@ class SqlLikeClient {
   }
 
   async selectTagNames(logicalTable) {
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    return this.query(`SELECT _ID, name FROM _${table}_META`);
+    return this.query(`SELECT _ID, name FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
   }
 
   async selectTagMeta(logicalTable, metaColNames) {
     const extraCols = metaColNames && metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    return this.query(`SELECT _ID, name${extraCols} FROM _${table}_META`);
+    return this.query(`SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
   }
 
   async selectTagMetaById(logicalTable, tagId, metaColNames) {
     const extraCols = metaColNames && metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    const rows = await this.query(`SELECT _ID, name${extraCols} FROM _${table}_META WHERE _ID = ?`, [tagId]);
+    const rows = await this.query(`SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE _ID = ?`, [tagId]);
     return rows?.[0] ?? null;
+  }
+
+  async countTagNames(logicalTable) {
+    const rows = await this.query(`SELECT COUNT(*) as total_tags FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    const raw = rows?.[0]?.total_tags;
+    return raw == null ? 0 : Number(raw);
+  }
+
+  async selectTagNamesPaged(logicalTable, offset, limit) {
+    return this.query(
+      `SELECT NAME FROM ${this.qualifiedTagMetaTable(logicalTable)} ORDER BY NAME LIMIT ${offset}, ${limit}`
+    );
   }
 
   async insertTagMeta(logicalTable, values) {
@@ -457,14 +478,14 @@ class MqttApiClient extends SqlLikeClient {
     if (this.qos < 0 || this.qos > 2) this.qos = DEFAULT_MQTT_QOS;
     this.replyBase = String(config.replyTopicBase || 'db/reply/rpl').trim() || 'db/reply/rpl';
     this.replyDelayMs = _normalizeInteger(config.replyDelayMs, DEFAULT_MQTT_REPLY_DELAY_MS);
+    this.runtimeClientId = _nextMqttClientId('rpl');
     this.client = null;
     this.connected = false;
     this.busy = false;
   }
 
   _clientId() {
-    if (this.config.clientId) return String(this.config.clientId);
-    return `rpl-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    return this.runtimeClientId;
   }
 
   _buildOptions() {
@@ -645,14 +666,14 @@ class MqttApiClient extends SqlLikeClient {
   }
 
   async writeRows(tableName, columns, rows) {
-    await this.connect();
-    if (!this.client) throw new Error('mqtt client is not connected');
     getLogger().trace('remote_mqtt_api_write', {
       table: String(tableName),
       qos: this.qos,
       columns: columns.length,
       rows: rows.length,
     });
+    await this.connect();
+    if (!this.client) throw new Error('mqtt client is not connected');
     let ack = null;
     try {
       ack = this.client.publish(
@@ -691,13 +712,13 @@ class MqttPublishClient {
     this.qos = _normalizeInteger(config.qos, DEFAULT_MQTT_QOS);
     if (this.qos < 0 || this.qos > 2) this.qos = DEFAULT_MQTT_QOS;
     this.retain = _normalizeBoolean(config.retain, false);
+    this.runtimeClientId = _nextMqttClientId('rpl-pub');
     this.client = null;
     this.connected = false;
   }
 
   _clientId() {
-    if (this.config.clientId) return String(this.config.clientId);
-    return `rpl-pub-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    return this.runtimeClientId;
   }
 
   _buildOptions() {

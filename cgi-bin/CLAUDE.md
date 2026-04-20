@@ -34,6 +34,8 @@
   - `POST` validate only
 - `api/table/columns.js`
   - `POST` table schema lookup
+- `api/table/tags.js`
+  - `POST` tag name list with paging
 
 ## Server Profile 규칙
 
@@ -50,6 +52,7 @@
   - `mqtt-api`
   - `mqtt-publish`
 - `GET` 응답에서는 `password`, `token` 제외
+- `GET` 응답에는 `targetOnly` 포함
 - `PUT`에서 `password`, `token`이 없거나 `null` 또는 `""` 이면 기존값 유지
 - 다른 replication config가 참조 중이면 `DELETE` 거부
 - source로 사용할 수 있는 type은 `native`, `http` 뿐이다
@@ -79,7 +82,10 @@
 - row transform: `source.transform[]`
 - `criteria` 는 `ALL`, `IN`, `LIKE`
 - `expr.type` 은 `prefix`, `suffix`, `calc`, `filter`
-- `calc` 수식: `(value + bias) * multiplier`
+- `calcOrder`
+  - `bm`: `(value + bias) * multiplier`
+  - `mb`: `value * multiplier + bias`
+  - 미지정 시 `bm`
 - `expr.type == filter` 는 메모리 단계가 아니라 SQL WHERE 단계로 내려간다
 - transform criteria는 원본 source row 기준으로 평가하고, expr 적용은 순서대로 누적한다
 - legacy 구형 `source.filter`, 구형 `source.transform`, `surfix`, `multplier`, `add` 입력은 save/validate 시 새 모델로 정규화한다
@@ -95,8 +101,9 @@
   - `mqtt-api`: metadata를 별도 insert하지 않고 data write payload에 meta 컬럼을 함께 포함한다
   - `mqtt-publish`: metadata를 별도 insert하지 않고 publish payload columns/rows에 meta 컬럼을 함께 포함한다
 - target에 이미 있는 tag name은 메모리 cache로 건너뛴다
-- integrity check는 재기동 시 source batch를 읽고 target의 `PRIMARY + BASETIME` 존재 여부를 row-by-row로 확인한다
-- `mqtt-api`, `mqtt-publish` target은 integrity를 지원하지 않는다
+- startup integrity는 user config가 아니라 내부 동작이다
+- startup integrity는 TAG 재기동 시 source batch를 읽고 target의 `PRIMARY + BASETIME` 존재 여부를 row-by-row로 확인한다
+- startup integrity는 `native`, `http` target에서만 수행한다
 
 ## runtime 배치 루프
 
@@ -151,6 +158,7 @@
   - config/server CRUD
   - service install/start/stop/uninstall
   - checkpoint 취합
+  - tag list/log list API
 - `src/replication/rules.js`
   - criteria 평가
   - transform 적용

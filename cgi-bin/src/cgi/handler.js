@@ -5,7 +5,7 @@ const path = require('path');
 const process = require('process');
 const service = require('service');
 const { MachbaseClient, ColumnType } = require('../db/client.js');
-const { createQueryClient } = require('../db/remote.js');
+const { createQueryClient, MqttPublishClient } = require('../db/remote.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME, FLAG_SUMMARIZED } = require('../db/types.js');
 const {
   APP_DIR,
@@ -27,6 +27,7 @@ const {
   prepareReplicatorConfig,
   validateServerProfile,
 } = require('./validation.js');
+const { MetaSyncStateStore } = require('../replication/meta-sync-state.js');
 
 const SERVICE_RETRY_DELAY_MS = 1000;
 const SERVICE_RETRY_MAX_ATTEMPTS = 3;
@@ -269,6 +270,270 @@ class Handler {
   }
 
   /**
+   * 저장 전 connection test용 server profile을 검증한다.
+   * name은 없어도 된다.
+   * @param {object} profile
+   * @returns {object}
+   */
+  static validateServerProfileForTest(profile) {
+    return validateServerProfile(profile, { requireName: false });
+  }
+
+  /**
+   * server type이 target 전용인지 반환한다.
+   * @param {string} type
+   * @returns {boolean}
+   */
+  static isTargetOnlyServerType(type) {
+    const normalized = String(type || 'native').trim().toLowerCase();
+    return normalized === 'mqtt-api' || normalized === 'mqtt-publish';
+  }
+
+  /**
+   * replication create용 기본 config 템플릿을 반환한다.
+   * @returns {object}
+   */
+  static buildDefaultReplicatorConfig() {
+    return {
+      id: '',
+      source: {
+        server: '',
+        table: '',
+        columns: null,
+        meta: null,
+        rep_target_cond: {
+          column: null,
+          op: 'ALL',
+          value: [],
+        },
+        transform: [],
+      },
+      target: {
+        server: '',
+        table: '',
+        topic: null,
+        columns: null,
+        meta: null,
+      },
+      startMode: 'full',
+      ridAfter: null,
+      queryLimit: 5000,
+      pollIntervalMs: 1000,
+      shutdownTimeoutMs: 30000,
+      onSaveFailure: 'continue',
+      retry: {
+        maxAttempts: 5,
+        baseDelayMs: 100,
+        maxDelayMs: 30000,
+      },
+      logging: {
+        level: 'info',
+        maxFiles: 10,
+      },
+    };
+  }
+
+  /**
+   * replication 기본 템플릿의 참고용 guide/examples를 반환한다.
+   * 저장 payload에는 포함되지 않는다.
+   * @returns {object}
+   */
+  static buildDefaultReplicatorGuide() {
+    return {
+      requiredOnCreate: [
+        'source.server',
+        'source.table',
+        'target.server',
+        'target.table',
+      ],
+      recommendedOnMqttPublish: [
+        'target.topic',
+      ],
+      examples: {
+        mqtt_publish_target: {
+          table: 'TAG_COPY',
+          topic: 'factory/line1/tag-copy',
+        },
+        rep_target_cond: [
+          { column: null, op: 'ALL', value: [] },
+          { column: 'NAME', op: 'IN', value: ['TAG-01', 'TAG-02'] },
+          { column: 'NAME', op: 'LIKE', value: ['TAG-%'] },
+        ],
+        transform: [
+          {
+            criteria: { column: null, op: 'ALL', value: [] },
+            expr: [
+              { column: 'NAME', type: 'prefix', value: 'SRC.' },
+            ],
+          },
+          {
+            criteria: { column: null, op: 'ALL', value: [] },
+            expr: [
+              { column: 'VALUE', type: 'calc', bias: 0, multiplier: 1, calcOrder: 'bm' },
+            ],
+          },
+          {
+            criteria: { column: null, op: 'ALL', value: [] },
+            expr: [
+              { column: 'VALUE', type: 'filter', min: 0, max: 100 },
+            ],
+          },
+        ],
+      },
+    };
+  }
+
+  /**
+   * server create용 기본 profile 템플릿을 반환한다.
+   * @param {string} type
+   * @returns {object}
+   */
+  static buildDefaultServerProfile(type) {
+    const normalizedType = String(type || '').trim().toLowerCase();
+    if (!normalizedType) {
+      throw new Error('type is required');
+    }
+    if (normalizedType === 'native') {
+      return {
+        name: '',
+        type: 'native',
+        host: '127.0.0.1',
+        port: 5656,
+        user: 'SYS',
+        password: '',
+        token: '',
+        protocol: null,
+        qos: null,
+        retain: null,
+      };
+    }
+    if (normalizedType === 'http') {
+      return {
+        name: '',
+        type: 'http',
+        host: '127.0.0.1',
+        port: 5654,
+        user: null,
+        password: '',
+        token: '',
+        protocol: 'http',
+        qos: null,
+        retain: null,
+      };
+    }
+    if (normalizedType === 'mqtt-api') {
+      return {
+        name: '',
+        type: 'mqtt-api',
+        host: '127.0.0.1',
+        port: 5653,
+        user: null,
+        password: '',
+        token: '',
+        protocol: null,
+        qos: 1,
+        retain: null,
+      };
+    }
+    if (normalizedType === 'mqtt-publish') {
+      return {
+        name: '',
+        type: 'mqtt-publish',
+        host: '127.0.0.1',
+        port: 5653,
+        user: null,
+        password: '',
+        token: '',
+        protocol: null,
+        qos: 1,
+        retain: false,
+      };
+    }
+    throw new Error(`type '${type}' is not supported`);
+  }
+
+  /**
+   * replication 기본 템플릿을 반환한다.
+   * @param {function(Error|null, object=): void} callback
+   */
+  static getDefaultReplicatorConfig(callback) {
+    try {
+      callback(null, {
+        config: Handler.buildDefaultReplicatorConfig(),
+        guide: Handler.buildDefaultReplicatorGuide(),
+      });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  /**
+   * server 기본 템플릿을 반환한다.
+   * @param {string} type
+   * @param {function(Error|null, object=): void} callback
+   */
+  static getDefaultServerProfile(type, callback) {
+    try {
+      const profile = Handler.buildDefaultServerProfile(type);
+      callback(null, {
+        profile,
+        targetOnly: Handler.isTargetOnlyServerType(profile.type),
+      });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  /**
+   * server profile로 실제 연결 테스트를 수행한다.
+   * query-capable target은 lightweight query, mqtt-publish는 connect만 수행한다.
+   * @param {object} profile
+   * @returns {Promise<{ type: string, targetOnly: boolean, probe: string }>}
+   */
+  static async probeServerConnection(profile) {
+    const type = String(profile?.type || 'native').trim().toLowerCase();
+    if (type === 'native') {
+      const client = new MachbaseClient(profile);
+      try {
+        client.connect();
+        const tables = client.selectVisibleTables();
+        if (!Array.isArray(tables)) {
+          throw new Error('connection test failed');
+        }
+        return { type, targetOnly: Handler.isTargetOnlyServerType(type), probe: 'query' };
+      } finally {
+        client.close();
+      }
+    }
+
+    if (type === 'http' || type === 'mqtt-api') {
+      const client = createQueryClient(profile);
+      try {
+        await client.connect();
+        const tables = await client.selectVisibleTables();
+        if (!Array.isArray(tables)) {
+          throw new Error('connection test failed');
+        }
+        return { type, targetOnly: Handler.isTargetOnlyServerType(type), probe: 'query' };
+      } finally {
+        try { await client.close(); } catch (_) {}
+      }
+    }
+
+    if (type === 'mqtt-publish') {
+      const client = new MqttPublishClient(profile);
+      try {
+        await client.connect();
+        return { type, targetOnly: true, probe: 'connect' };
+      } finally {
+        try { await client.close(); } catch (_) {}
+      }
+    }
+
+    throw new Error(`server.type '${type}' is not supported`);
+  }
+
+  /**
    * replication config를 runtime 연결정보까지 해석한다.
    * @param {object} config
    * @returns {object}
@@ -318,10 +583,9 @@ class Handler {
    */
   static readBody() {
     try {
-      // TODO : enable, neo-regress pass를 위해 disalbe 처리함.
-      //const len = parseInt(process.env.get('CONTENT_LENGTH') || '0', 10);
-      //if (!len) return {};
-      //const raw = process.stdin.read(len);
+      // 일부 CGI/neo-regress 환경에서는 CONTENT_LENGTH 기반 read(len)이 빈 body를 돌려준 적이 있어
+      // 현재는 stdin 전체를 읽는 쪽을 기본값으로 유지한다.
+      // 이 경로를 되돌릴 때는 실제 배포 환경과 regress 환경에서 모두 body parsing이 같은지 먼저 확인해야 한다.
       const raw = process.stdin.read();
       return raw ? JSON.parse(raw) : {};
     } catch (_) {
@@ -499,7 +763,9 @@ class Handler {
   static buildServiceInstallConfig(name) {
     return {
       name: Handler.serviceName(name),
-      enable: false,
+      // 현재 정책은 replicator를 설치하면 neo 시작 시 자동 기동되도록 기본 enable=true를 사용한다.
+      // 추후 자동 재시작/자동 기동 정책이 사용자 설정으로 분리되면 여기 기본값도 함께 재검토한다.
+      enable: true,
       working_dir: APP_DIR,
       executable: path.join(APP_DIR, 'replication.js'),
       args: [name],
@@ -772,6 +1038,15 @@ class Handler {
    */
   static async readCheckpoints(name, config) {
     const result = {};
+    const ensureEntry = (dataTable) => {
+      if (!dataTable || result[dataTable]) return;
+      result[dataTable] = {
+        lastSuccessRid: '',
+        totalRowsWritten: '0',
+        hasMore: false,
+        max_rid: '',
+      };
+    };
 
     // source 파티션 목록으로 result 초기화
     const source = config?.source;
@@ -792,7 +1067,7 @@ class Handler {
           const dataTable = value.trim();
           if (!dataTable || seen[dataTable]) return;
           seen[dataTable] = true;
-          result[dataTable] = { lastSuccessRid: '', totalRowsWritten: '0', hasMore: false };
+          ensureEntry(dataTable);
         };
         if (tableType === 'TAG') {
           for (const part of (await client.selectTagDataTables(normalizedTable))) {
@@ -800,6 +1075,11 @@ class Handler {
           }
         } else if (tableType === 'LOG') {
           push(normalizedTable);
+        }
+        for (const dataTable of Object.keys(result)) {
+          try {
+            result[dataTable].max_rid = String(await client.selectMaxRid(dataTable));
+          } catch (_) {}
         }
       } catch (_) {
         // checkpoint 조회는 best-effort로 동작한다.
@@ -844,15 +1124,35 @@ class Handler {
         } catch (_) {}
       }
       for (const dataTable in records) {
+        ensureEntry(dataTable);
         result[dataTable] = {
           lastSuccessRid: records[dataTable].lastSuccessRid,
           totalRowsWritten: records[dataTable].totalRowsWritten || '0',
           hasMore: records[dataTable].hasMore === true,
+          max_rid: result[dataTable].max_rid || '',
         };
       }
     }
 
     return result;
+  }
+
+  /**
+   * job-level TAG metadata sync 상태를 반환한다.
+   *
+   * 의도:
+   * - metadata sync는 data partition checkpoint와 독립된 logical-table 상태이므로 별도 응답으로 노출한다.
+   * - frontend는 이 값을 보고 "초기 TAG metadata 동기화중" 상태와 진행률을 표시할 수 있다.
+   *
+   * @param {string} name - replicator id
+   * @returns {object|null}
+   */
+  static readMetaSync(name) {
+    if (!name || typeof name !== 'string' || !name.trim()) return null;
+    const store = new MetaSyncStateStore(path.join(DATA_DIR, name.trim()));
+    const { exists, state } = store.load();
+    if (!exists || !state) return null;
+    return MetaSyncStateStore.toPublic(state);
   }
 
   // ── 비즈니스 로직 ─────────────────────────────────────────────────────────
@@ -995,6 +1295,50 @@ class Handler {
   }
 
   /**
+   * 저장된 server 또는 미저장 profile 기준으로 연결 테스트를 수행한다.
+   * body는 { name } 또는 { profile } 형식 중 하나여야 한다.
+   * @param {object} body
+   * @param {function(Error|null, object=): void} callback
+   */
+  static async testServerConnection(body, callback) {
+    const hasName = !!(body && typeof body.name === 'string' && body.name.trim());
+    const hasProfile = !!(body && body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile));
+    if (hasName === hasProfile) {
+      callback(new Error('exactly one of name or profile is required'));
+      return;
+    }
+
+    let profile;
+    let mode;
+    let name = null;
+    try {
+      if (hasName) {
+        name = String(body.name).trim();
+        profile = Handler.getServerConfig(name);
+        if (!profile) {
+          callback(new Error(`server '${name}' not found`));
+          return;
+        }
+        mode = 'saved';
+      } else {
+        profile = Handler.validateServerProfileForTest(body.profile);
+        mode = 'profile';
+      }
+
+      const result = await Handler.probeServerConnection(profile);
+      callback(null, {
+        mode,
+        name: mode === 'saved' ? name : undefined,
+        type: result.type,
+        targetOnly: result.targetOnly,
+        probe: result.probe,
+      });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  /**
    * replicator를 생성한다. config 저장 후 service를 설치한다.
    * @param {{ name: string, config: object }} body
    * @param {function(Error|null, { name: string }=): void} callback
@@ -1057,7 +1401,7 @@ class Handler {
   /**
    * replicator 설정과 checkpoint 정보를 반환한다. password는 제거된다.
    * @param {string} name
-   * @param {function(Error|null, { name: string, config: object, checkpoints: object }=): void} callback
+   * @param {function(Error|null, { name: string, config: object, checkpoints: object, metaSync: object|null }=): void} callback
    */
   static async getReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
@@ -1074,7 +1418,8 @@ class Handler {
     const targetTable = config.target?.table || sourceTable;
     const replicatorId = config.id || (sourceTable && targetTable ? `${sourceTable}_${targetTable}` : '');
     const checkpoints = await Handler.readCheckpoints(replicatorId, runtimeConfig);
-    callback(null, { name, config: safeConfig, checkpoints });
+    const metaSync = Handler.readMetaSync(replicatorId);
+    callback(null, { name, config: safeConfig, checkpoints, metaSync });
   }
 
   /**
@@ -1291,11 +1636,70 @@ class Handler {
   }
 
   /**
+   * 지정한 TAG 테이블의 이름 목록을 페이지 단위로 조회한다.
+   * @param {{ server?: string, host?: string, port?: number|string, user?: string, password?: string, type?: string, table: string, page: number|string, size: number|string }} body
+   * @param {function(Error|null, { total_tags: number, tags: Array<string> }=): void} callback
+   */
+  static async getTagList(body, callback) {
+    const { table } = body || {};
+    if (!table) { callback(new Error('table is required')); return; }
+
+    const page = Number(body?.page);
+    const size = Number(body?.size);
+    if (!Number.isSafeInteger(page) || page < 1) {
+      callback(new Error('page must be >= 1'));
+      return;
+    }
+    if (!Number.isSafeInteger(size) || size < 1) {
+      callback(new Error('size must be >= 1'));
+      return;
+    }
+
+    let endpoint;
+    try {
+      endpoint = resolveEndpointConnection(body || {}, (serverName) => Handler.getServerConfig(serverName), 'server');
+    } catch (err) {
+      callback(err);
+      return;
+    }
+
+    const type = String(endpoint.type || 'native').toLowerCase();
+    const client = type === 'native' ? new MachbaseClient(endpoint) : createQueryClient(endpoint);
+    try {
+      await client.connect();
+      const qualified = client.splitQualifiedTableName(table);
+      const qualifiedTable = qualified.owner ? `${qualified.owner}.${qualified.table}` : qualified.table;
+      const { type: tableType } = await client.selectTableTypeQualified(qualifiedTable);
+      if (tableType === 'UNSUPPORTED') {
+        callback(new Error(`table '${table}' not found`));
+        return;
+      }
+      if (tableType !== 'TAG') {
+        callback(new Error(`table '${table}' is not a TAG table`));
+        return;
+      }
+      const offset = (page - 1) * size;
+      const totalTags = await client.countTagNames(qualifiedTable);
+      const rows = await client.selectTagNamesPaged(qualifiedTable, offset, size);
+      callback(null, {
+        total_tags: Number(totalTags) || 0,
+        tags: (rows || []).map((row) => row.NAME != null ? row.NAME : row.name).filter((name) => name != null),
+      });
+    } catch (err) {
+      callback(err);
+    } finally {
+      try { await client.close(); } catch (_) {}
+    }
+  }
+
+  /**
    * 로그 파일 목록을 반환한다.
+   * @param {{ name?: string }|null} query
    * @param {function(Error|null, { files: Array }=): void} callback
    */
-  static getLogList(callback) {
+  static getLogList(query, callback) {
     const logDir = Handler.getLogDir();
+    const prefix = typeof query?.name === 'string' ? query.name.trim() : '';
     let names = [];
     try {
       names = fs.readdirSync(logDir);
@@ -1306,6 +1710,7 @@ class Handler {
 
     const files = [];
     for (const name of names) {
+      if (prefix && !name.startsWith(prefix)) continue;
       const filePath = path.join(logDir, name);
       let stat;
       try {
@@ -1314,11 +1719,22 @@ class Handler {
         continue;
       }
       if (!stat.isFile()) continue;
-      files.push({ name, size: stat.size });
+      const birthtimeMs = Number(stat.birthtimeMs);
+      const createdAtMs = Number.isFinite(birthtimeMs) && birthtimeMs > 0
+        ? birthtimeMs
+        : (Number.isFinite(Number(stat.ctimeMs)) && Number(stat.ctimeMs) > 0
+          ? Number(stat.ctimeMs)
+          : Number(stat.mtimeMs) || 0);
+      files.push({ name, size: stat.size, _createdAtMs: createdAtMs });
     }
 
-    files.sort((a, b) => a.name.localeCompare(b.name));
-    callback(null, { files });
+    files.sort((a, b) => {
+      if (b._createdAtMs !== a._createdAtMs) return b._createdAtMs - a._createdAtMs;
+      return a.name.localeCompare(b.name);
+    });
+    callback(null, {
+      files: files.map((file) => ({ name: file.name, size: file.size })),
+    });
   }
 
   /**

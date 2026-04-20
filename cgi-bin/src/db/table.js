@@ -110,6 +110,19 @@ function _coerceIntegerFamilyValue(value) {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : value;
 }
 
+/**
+ * transport별 write payload 직렬화 차이를 흡수한다.
+ *
+ * 의도:
+ * - DB가 직접 해석하는 native/http/mqtt-api 경로는 DATETIME을 UTC RFC3339Nano로 맞춰
+ *   target 쪽 time parsing 결과를 일관되게 유지한다.
+ * - mqtt-publish는 generic sink이므로 DB 전용 timeformat 약속이 없고, 기존 consumer 기대값에 맞춰
+ *   local timestamp 문자열을 보낸다.
+ * - http/mqtt-api는 JSON 숫자 직렬화 과정에서 정수 계열이 흔들리지 않도록 integer family를 한 번 더 정리한다.
+ *
+ * 주의:
+ * - 여기 포맷을 바꾸면 restart integrity나 외부 consumer가 기대하는 payload 모양이 함께 바뀐다.
+ */
 function _normalizeWriteValue(column, value, targetType) {
   if (value == null) return value;
   if (targetType === 'native' && column && column.columnType === ColumnType.DATETIME) {
@@ -142,10 +155,24 @@ function _createQueryClient(config) {
 
 function _createWriter(config) {
   const type = String(config?.type || 'native').trim().toLowerCase();
+  // query 경로와 writer 경로를 분리해 두어, write-only transport도 동일한 Table API로 다룰 수 있게 한다.
   if (type === 'http') return new HttpApiClient(config);
   if (type === 'mqtt-api') return new MqttApiClient(config);
   if (type === 'mqtt-publish') return new MqttPublishClient(config);
   return null;
+}
+
+/**
+ * mqtt-publish target topic을 결정한다.
+ *
+ * 의도:
+ * - 신규 설정은 config.topic을 우선 사용한다.
+ * - 기존 저장 job과의 호환을 위해 topic이 없으면 예전 규칙인 table.toLowerCase()를 유지한다.
+ */
+function _resolveMqttPublishTopic(config, qualifiedTable) {
+  const explicit = typeof config?.topic === 'string' ? config.topic.trim() : '';
+  if (explicit) return explicit;
+  return String(qualifiedTable || '').toLowerCase();
 }
 
 
@@ -217,7 +244,13 @@ class LogTable {
    */
   async getSchema() {
     const rows = await this.getColumns();
-    const columns = rows.map(r => new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data', r.LENGTH ?? 0));
+    const columns = [];
+    for (const r of rows) {
+      // LOG의 _ARRIVAL_TIME 같은 내부 컬럼은 transport payload에 실리면
+      // 실제 사용자 테이블 컬럼 수와 어긋나므로 replication schema에서 제외한다.
+      if (r.NAME.startsWith('_')) continue;
+      columns.push(new Column(r.NAME, ColumnType.fromCode(r.TYPE), r.ID, 'data', r.LENGTH ?? 0));
+    }
     return new TableSchema('LOG', this.logicalTable, columns);
   }
 
@@ -258,14 +291,20 @@ class LogTable {
     if (!this.schema) {
       return new Error(`schema is required before openStream for '${this.logicalTable}'`);
     }
-    const appendColumnNames = Array.isArray(this.appendColumns) && this.appendColumns.length > 0
+    const dataAppendColumnNames = Array.isArray(this.appendColumns) && this.appendColumns.length > 0
       ? this.appendColumns.slice()
       : this.schema.columns.map((column) => column.name);
+    const appendColumnNames = String(this.config?.type || 'native').toLowerCase() === 'native'
+      ? ['_ARRIVAL_TIME'].concat(dataAppendColumnNames)
+      : dataAppendColumnNames;
     this.stream = new MachbaseStream();
     return this.stream.open(
       this.client,
       this.qualifiedTable,
       appendColumnNames.map((name) => {
+        if (name === '_ARRIVAL_TIME') {
+          return { name, type: 'DATETIME' };
+        }
         const column = this.schema.columns.find((item) => item.name === name);
         return { name, type: column ? column.sqlType() : ColumnType.VARCHAR.ddlType || 'VARCHAR(400)' };
       })
@@ -362,16 +401,22 @@ class LogTable {
     const appendColumnNames = Array.isArray(this.appendColumns) && this.appendColumns.length > 0
       ? this.appendColumns.slice()
       : this.schema.columns.map((column) => column.name);
-    const matrix = rows.map(row =>
-      appendColumnNames.map((name) => {
+    const matrix = rows.map(row => {
+      const values = appendColumnNames.map((name) => {
         const col = this.schema.columns.find((item) => item.name === name) || { name, columnType: null };
         const val = _normalizeWriteValue(col, row[col.name], type);
         if (typeof val === 'number' && !isFinite(val)) {
           getLogger().warn('stream', { table: this.logicalTable, col: col.name, val: String(val), msg: 'non-finite value will be stored as null' });
         }
         return val;
-      })
-    );
+      });
+      // native LOG append는 사용자 컬럼 앞에 시스템 _ARRIVAL_TIME 입력 슬롯이 하나 더 필요하다.
+      // replication은 arrival time을 의미 있게 복제하지 않으므로 null을 넣어 target이 현재 시각을 채우게 둔다.
+      if (type === 'native') {
+        return [null].concat(values);
+      }
+      return values;
+    });
     if (type === 'native') {
       if (!this.stream) {
         const err = this.openStream();
@@ -397,7 +442,7 @@ class LogTable {
     }
     if (type === 'mqtt-publish') {
       try {
-        await this.writer.publish(String(this.qualifiedTable || '').toLowerCase(), {
+        await this.writer.publish(_resolveMqttPublishTopic(this.config, this.qualifiedTable), {
           columns: appendColumnNames,
           rows: matrix,
         });
@@ -683,7 +728,7 @@ class TagTable {
     }
     if (type === 'mqtt-publish') {
       try {
-        await this.writer.publish(String(this.qualifiedTable || '').toLowerCase(), {
+        await this.writer.publish(_resolveMqttPublishTopic(this.config, this.qualifiedTable), {
           columns: appendColumnNames,
           rows: matrix,
         });
@@ -894,7 +939,11 @@ class TagDataTable {
           data[keyColName] = entry.name;
           Object.assign(data, entry.meta);
         }
-        result.push({ rid, data });
+        result.push({
+          rid,
+          tagId: keyColName && Object.prototype.hasOwnProperty.call(row, keyColName) ? row[keyColName] : null,
+          data,
+        });
       }
 
       return { rows: result, err: null };

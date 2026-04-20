@@ -86,26 +86,26 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
     "file": { "enabled": true, "directory": "/work/logs" }
   },
   "source": {
-    "host": "192.168.1.10", "port": 5656, "user": "SYS", "password": "MANAGER",
+    "server": "source-a",
     "table": "TAG",
-    "columns": null,
-    "filter": null,
+    "columns": ["NAME", "TIME", "VALUE"],
+    "meta": [],
+    "rep_target_cond": { "op": "ALL", "value": [] },
     "transform": null
   },
   "target": {
-    "host": "192.168.1.20", "port": 5656, "user": "SYS", "password": "MANAGER",
+    "server": "target-a",
     "table": "TAG_COPY",
-    "autoCreate": true
+    "topic": null,
+    "columns": ["NAME", "TIME", "VALUE"],
+    "meta": []
   },
   "startMode": "now",
   "ridAfter": null,
-  "metaSync": false,
   "pollIntervalMs": 1000,
   "queryLimit": 5000,
-  "ridRangeSize": 50000,
   "shutdownTimeoutMs": 30000,
   "onSaveFailure": "continue",
-  "integrity": true,
   "retry": { "maxAttempts": 5, "baseDelayMs": 100, "maxDelayMs": 30000 }
 }
 ```
@@ -115,12 +115,20 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
 | 필드 | 기본값 | 설명 |
 |------|--------|------|
 | `id` | 자동 생성 | 미설정 시 `{source.table}_{target.table}` |
+| `source.server` | - | source server profile 이름 |
+| `target.server` | - | target server profile 이름 |
+| `target.topic` | `null` | `mqtt-publish` target publish topic. 미지정 시 legacy fallback으로 `target.table.toLowerCase()` 사용 |
 | `startMode` | `"full"` | `"full"` (RID 0부터) \| `"now"` (현재 이후) \| `"ridAfter"` |
-| `metaSync` | `false` | TAG META 동기화 활성화 여부. `false`=비활성화 |
-| `integrity` | `null` | TAG 재시작 시 정합성 검사. `false`=비활성화 |
-| `target.autoCreate` | `false` | 대상 테이블 없을 때 src 스키마로 자동 CREATE |
-| `source.columns` | `null` | 복제할 컬럼 목록. TAG 테이블은 NAME/TIME 필수 포함 |
+| `source.columns` | `[]` | 복제할 source data column 매핑 |
+| `target.columns` | `[]` | target data column 매핑 |
+| `queryLimit` | `5000` | 배치당 최대 레코드 수 |
+| `source.transform[].expr[].calcOrder` | `"bm"` | `"bm"`=`(value + bias) * multiplier`, `"mb"`=`value * multiplier + bias` |
 | `logging.file.directory` | `/work/logs` | 절대경로 사용 필수 |
+
+- `source.server`, `target.server` 에서 참조하는 server profile은 미리 생성되어 있어야 한다.
+- 대상 테이블 자동 생성 옵션은 없다. target 테이블은 사전에 준비되어 있어야 한다.
+- `mqtt-publish` target은 `target.topic` 지정이 권장되며, topic은 영문자/숫자/`.`, `_`, `-`, `/` 만 허용한다.
+- startup integrity는 user config가 아니라 내부 동작이며, TAG + native/http target 재기동 시 자동 수행된다.
 
 ---
 
@@ -170,7 +178,7 @@ machbase-neo 웹 서버를 통해 replicator 설정을 관리한다. CGI 파일�
 
 ### jsh 통합 테스트
 
-실 DB 연결이 필요한 jsh 통합 테스트. 테스트 DB: `192.168.1.183:5656`
+실 DB 연결이 필요한 jsh 통합 테스트. 기본 대상은 `127.0.0.1:5656` 이며, 필요 시 `RPL_TEST_*` 환경변수로 덮어쓸 수 있다.
 
 ```bash
 # 실행 위치: /home/machbase/repli
@@ -195,5 +203,12 @@ ntf testsuite/package/replication/replication.ts
 ```
 
 테스트 구성은 `~/neo-regress/testsuite/package/replication/README` 참고.
+
+### 수동 통합 테스트
+
+장시간/재시작/설정 변경까지 포함하는 운영형 수동 검증은 아래 문서를 따른다.
+
+- [cgi-bin/docs/MANUAL_INTEGRATION_TEST.md](cgi-bin/docs/MANUAL_INTEGRATION_TEST.md)
+- [cgi-bin/docs/NEO_REGRESS_PHASE1.md](cgi-bin/docs/NEO_REGRESS_PHASE1.md)
 
 ---

@@ -3,7 +3,7 @@
 /**
  * @fileoverview MachbaseClient 통합 테스트
  *
- * 실제 DB(192.168.1.183:5656)에 접속하여 클라이언트 API를 검증한다.
+ * 기본값은 로컬 DB(127.0.0.1:5656)이며 fixtures.js 환경변수 override를 지원한다.
  * 사용법: jsh cgi-bin/tests/client.test.js
  */
 

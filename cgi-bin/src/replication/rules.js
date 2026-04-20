@@ -43,7 +43,13 @@ function applyTransformRules(baseRow, transformRules) {
       }
       if (expr.type === 'calc') {
         if (typeof current === 'number') {
-          working[expr.column] = (current + (expr.bias || 0)) * (expr.multiplier == null ? 1 : expr.multiplier);
+          const bias = expr.bias || 0;
+          const multiplier = expr.multiplier == null ? 1 : expr.multiplier;
+          if (expr.calcOrder === 'mb') {
+            working[expr.column] = current * multiplier + bias;
+          } else {
+            working[expr.column] = (current + bias) * multiplier;
+          }
         }
         continue;
       }

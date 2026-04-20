@@ -20,7 +20,7 @@ const NUMERIC_TYPES = new Set([
 
 const VALID_START_MODES = { full: true, now: true, ridAfter: true };
 const VALID_LOG_LEVELS = { trace: true, debug: true, info: true, warn: true, error: true };
-const MQTT_TARGET_TYPES = { 'mqtt-api': true, 'mqtt-publish': true };
+const MQTT_TOPIC_ALLOWED_RE = /^[A-Za-z0-9._/-]+$/;
 
 const STRING_LIKE_TYPES = new Set([
   ColumnType.VARCHAR,
@@ -61,6 +61,72 @@ function _parseSafeInteger(value, label, options = {}) {
   return num;
 }
 
+function _utf8ByteLength(text, label) {
+  try {
+    return encodeURIComponent(text).replace(/%[0-9A-Fa-f]{2}/g, 'U').length;
+  } catch (_) {
+    throw new Error(`${label} must be a valid UTF-8 string`);
+  }
+}
+
+/**
+ * mqtt-publish target topic 정책과 MQTT 기본 제약을 함께 검증한다.
+ *
+ * 의도:
+ * - 프론트엔드와 dry-run/backend가 같은 규칙을 쉽게 공유할 수 있도록 정책을 명시적으로 고정한다.
+ * - broker마다 해석 차이가 생기기 쉬운 공백, wildcard, system topic 사용을 미리 차단한다.
+ *
+ * 주의:
+ * - `$` 금지, 공백 금지, 허용 문자 집합 제한은 MQTT spec의 최소 요건이 아니라 현재 제품 정책이다.
+ */
+function _validateMqttPublishTopic(topic, label) {
+  if (typeof topic !== 'string') {
+    throw new Error(`${label} must be a string`);
+  }
+  if (topic.length === 0) {
+    throw new Error(`${label} is required`);
+  }
+  if (topic.trim() !== topic) {
+    throw new Error(`${label} must not have leading or trailing spaces`);
+  }
+  if (topic.indexOf('\u0000') >= 0) {
+    throw new Error(`${label} must not contain null character`);
+  }
+  if (topic.indexOf('+') >= 0 || topic.indexOf('#') >= 0) {
+    throw new Error(`${label} must not contain MQTT wildcard characters`);
+  }
+  if (topic[0] === '$') {
+    throw new Error(`${label} must not start with '$'`);
+  }
+  if (/\s/.test(topic)) {
+    throw new Error(`${label} must not contain whitespace`);
+  }
+  if (topic.indexOf('//') >= 0) {
+    throw new Error(`${label} must not contain consecutive '/'`);
+  }
+  if (topic[0] === '/' || topic[topic.length - 1] === '/') {
+    throw new Error(`${label} must not start or end with '/'`);
+  }
+  if (!MQTT_TOPIC_ALLOWED_RE.test(topic)) {
+    throw new Error(`${label} allows only letters, digits, '.', '_', '-', '/'`);
+  }
+  if (_utf8ByteLength(topic, label) > 65535) {
+    throw new Error(`${label} must not exceed 65535 UTF-8 bytes`);
+  }
+  return topic;
+}
+
+function _resolveLegacyMqttPublishTopic(tableName) {
+  return String(tableName || '').toLowerCase();
+}
+
+/**
+ * 파일에 저장되는 runtime 옵션의 형식과 상호 제약을 먼저 정리한다.
+ *
+ * 의도:
+ * - DB 연결 전 단계에서 시작 모드와 재시도/로그 설정의 명백한 오류를 제거한다.
+ * - 내부 기본값과 persisted user 값의 경계를 여기서 고정해 downstream 로직을 단순화한다.
+ */
 function _validateRuntimeOptions(storedConfig) {
   const startMode = storedConfig.startMode == null || storedConfig.startMode === ''
     ? 'full'
@@ -132,6 +198,16 @@ function _validateRuntimeOptions(storedConfig) {
   }
 }
 
+/**
+ * source/target schema 조회에 필요한 query-capable client만 연다.
+ *
+ * 의도:
+ * - validation/discover 단계에서는 실제 query가 가능한 transport만 허용한다.
+ * - mqtt-api/mqtt-publish는 현재 source로 사용할 수 없는 정책이므로 초기에 차단한다.
+ *
+ * 주의:
+ * - 새 transport를 추가할 때는 "query는 되지만 source는 금지"인지 여부를 여기서 함께 결정해야 한다.
+ */
 async function _openQueryClient(endpoint, side) {
   const type = String(endpoint?.type || 'native').toLowerCase();
   if (type === 'mqtt-api' && side === 'source') {
@@ -158,6 +234,14 @@ function _serializeColumns(columns) {
   }));
 }
 
+/**
+ * query가 불가능한 target을 위해 source mapping 기준의 가상 target schema를 만든다.
+ *
+ * 의도:
+ * - mqtt-publish처럼 target에서 실제 스키마를 조회할 수 없는 경우에도
+ *   validation/runtime이 공통 schema 객체를 사용할 수 있게 한다.
+ * - 이 스키마는 "target 실제 컬럼 introspection"이 아니라 "보내게 될 payload 모양"을 나타낸다.
+ */
 function _buildDerivedTargetInfo(storedConfig, runtimeConfig, sourceInfo) {
   const sourceColumns = _normalizeMappingArray(storedConfig.source.columns, sourceInfo.dataColumns.map((column) => column.NAME));
   const targetColumns = _normalizeMappingArray(storedConfig.target.columns, sourceColumns.slice());
@@ -262,9 +346,10 @@ async function _describeTable(client, tableName) {
   };
 }
 
-function _validateServerProfile(profile) {
+function _validateServerProfile(profile, options = {}) {
+  const requireName = options.requireName !== false;
   const normalized = normalizeServerProfileForSave(profile);
-  if (!normalized.name) throw new Error('server.name is required');
+  if (requireName && !normalized.name) throw new Error('server.name is required');
   if (!normalized.host) throw new Error('server.host is required');
   if (!normalized.port) throw new Error('server.port is required');
   if (!normalized.type) normalized.type = 'native';
@@ -486,10 +571,16 @@ function _validateTransformRules(transform, sourceInfo) {
       if (type === 'calc') {
         const bias = item.bias !== undefined ? Number(item.bias) : 0;
         const multiplier = item.multiplier !== undefined ? Number(item.multiplier) : 1;
+        const calcOrder = item.calcOrder == null || item.calcOrder === ''
+          ? 'bm'
+          : String(item.calcOrder).trim().toLowerCase();
         if (!Number.isFinite(bias) || !Number.isFinite(multiplier)) {
           throw new Error(`source.transform[${i}].expr[${j}] calc requires numeric bias/multiplier`);
         }
-        normalizedExpr.push({ column, type, bias, multiplier });
+        if (calcOrder !== 'bm' && calcOrder !== 'mb') {
+          throw new Error(`source.transform[${i}].expr[${j}] calcOrder must be 'bm' or 'mb'`);
+        }
+        normalizedExpr.push({ column, type, bias, multiplier, calcOrder });
         continue;
       }
 
@@ -578,11 +669,28 @@ async function prepareReplicatorConfig(config, readServerProfile) {
   if (sourceType === 'mqtt-api' || sourceType === 'mqtt-publish') {
     throw new Error(`source.type '${sourceType}' is not supported`);
   }
-  if (MQTT_TARGET_TYPES[targetType] && storedConfig.integrity !== false) {
-    warnings.push(`target.type '${targetType}' forces integrity=false`);
-    storedConfig.integrity = false;
-    runtimeConfig.integrity = false;
+  if (storedConfig.source.topic != null) {
+    throw new Error('source.topic is not supported');
   }
+  if (storedConfig.target.topic != null && targetType !== 'mqtt-publish') {
+    throw new Error('target.topic is only supported for mqtt-publish target');
+  }
+
+  if (targetType === 'mqtt-publish') {
+    if (storedConfig.target.topic != null) {
+      const topic = _validateMqttPublishTopic(storedConfig.target.topic, 'target.topic');
+      storedConfig.target.topic = topic;
+      runtimeConfig.target.topic = topic;
+    } else {
+      const fallbackTopic = _resolveLegacyMqttPublishTopic(runtimeConfig.target.table);
+      _validateMqttPublishTopic(fallbackTopic, 'legacy mqtt-publish topic fallback');
+      runtimeConfig.target.topic = fallbackTopic;
+      warnings.push(`target.topic is not set for mqtt-publish; using legacy fallback '${fallbackTopic}'`);
+    }
+  } else {
+    delete runtimeConfig.target.topic;
+  }
+  delete runtimeConfig.source.topic;
 
   let sourceClient = null;
   let targetClient = null;
@@ -692,7 +800,7 @@ async function prepareReplicatorConfig(config, readServerProfile) {
         }))
       : null;
 
-    storedConfig._runtime = {
+    const runtimeHints = {
       source: {
         tableType: sourceInfo.tableType,
         logicalTable: sourceInfo.logicalTable,
@@ -704,6 +812,7 @@ async function prepareReplicatorConfig(config, readServerProfile) {
         metaColumns: _serializeColumns(targetInfo.metaColumns),
       },
     };
+    runtimeConfig._runtime = runtimeHints;
 
     return {
       storedConfig,

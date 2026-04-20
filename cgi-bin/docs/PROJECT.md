@@ -32,7 +32,7 @@
 
 | 구분 | 항목 |
 |------|------|
-| **목표** | at-least-once 복제, 정합성 최대화 (Tag 테이블), Graceful Shutdown, 대상 테이블 자동 생성 (`autoCreate`) |
+| **목표** | at-least-once 복제, 정합성 최대화 (Tag 테이블), Graceful Shutdown |
 | **비목표** | Exactly-once 보장, Update/Delete 복제, 대상 테이블 스키마 마이그레이션 |
 
 ### 1.3 핵심 제약
@@ -79,12 +79,14 @@ cgi-bin/
 │       └── stop.js               # CGI: POST ?name=xxx -- service 종료
 ├── conf.d/
 │   └── {name}.json               # replicator별 설정 파일 (ReplicatorConfig 형식)
-├── data/                         # 런타임 생성 -- replicator별 파티션 cp 파일
+├── data/                         # 런타임 생성 -- replicator별 파티션 cp + TAG metadata sync 상태 파일
 ├── run/                          # 런타임 생성 -- PID 파일
 ├── src/
 │   ├── replication/
-│   │   ├── replicator.js         # Replicator -- discover -> syncMeta -> Workers 루프
-│   │   └── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
+│   │   ├── replicator.js         # Replicator -- discover -> Workers 루프
+│   │   ├── worker.js             # Worker -- 상태 머신: RESOLVE_START -> STARTUP_INTEGRITY -> STEADY_REPLICATION
+│   │   ├── tag-meta-sync.js      # TAG metadata sync manager -- native/http target metadata 선동기화
+│   │   └── meta-sync-state.js    # job-level metadata sync state file helper
 │   ├── cgi/
 │   │   └── handler.js            # Handler 클래스 -- conf.d CRUD + service install/start/stop/uninstall + checkpoint 조회/정리
 │   ├── db/
@@ -114,8 +116,8 @@ machbase-neo HTTP 서버
   └─ replication.js <conf.d/{name}.json>
        └─ Replicator
            ├─ discover() -- 소스/대상 스키마 수집, 파티션 목록 조회
-           ├─ syncMeta() -- TAG META 동기화 (metaSync !== false 시에만 실행)
            └─ runWorkers()
+               ├─ TagMetaSyncManager -- TAG + native/http target metadata 선동기화 / catch-up
                └─ Worker x N  (Promise.all -- cooperative multitasking)
                    ├─ TagDataTable/LogTable -- 소스 DB 읽기 (machcli 동기)
                    ├─ TagTable/LogTable     -- 대상 DB 쓰기 (machcli 동기)
@@ -166,7 +168,7 @@ machcli DB 쿼리는 동기(blocking)이므로 진정한 병렬 실행이 아니
 ```
 replication.js <config> -> Replicator.start()
   while(!shutdown):
-    discover() -> syncMeta(TAG only, metaSync !== false) -> runWorkers()
+    discover() -> runWorkers()
       (에러 -> AbortController 전체 취소) -> 재시작
   -> process.exit(0)
 ```
@@ -200,17 +202,14 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 | `target.port` | number | yes | - | 대상 DB 포트 |
 | `target.user` | string | yes | - | 대상 DB 사용자명 |
 | `target.password` | string | yes | - | 대상 DB 비밀번호 |
-| `target.table` | string | yes | - | 대상 테이블명. `autoCreate: true`이면 빈 문자열 허용 (source.table 이름 사용). |
-| `target.autoCreate` | boolean | | false | 대상 테이블 미존재 시 src 스키마로 자동 생성 |
+| `target.table` | string | yes | - | 대상 테이블명 |
+| `target.topic` | string\|null | | null | `mqtt-publish` target publish topic. 미지정 시 legacy fallback으로 `target.table.toLowerCase()` 사용 |
 | `startMode` | string | | `"full"` | `"full"` \| `"now"` \| `"ridAfter"` |
 | `ridAfter` | number\|null | | null | `startMode: "ridAfter"` 시 기준 RID |
-| `metaSync` | boolean\|null | | false | TAG META 동기화 여부. `false`=비활성화 |
 | `pollIntervalMs` | number | | 1000 | 폴링 주기 (ms) |
 | `queryLimit` | number | | 5000 | 배치당 최대 레코드 수 |
-| `ridRangeSize` | number | | 50000 | RID 범위 힌트 크기 |
 | `shutdownTimeoutMs` | number | | 30000 | 종료 대기 타임아웃 (ms) |
 | `onSaveFailure` | string | | `"continue"` | `"continue"` \| `"abort"` |
-| `integrity` | boolean\|null | | null | `false`=비활성화, 그 외=활성화 |
 | `retry` | object\|null | | null | RetryConfig 참조 |
 
 ### 3.2 LoggingConfig
@@ -241,26 +240,22 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
     "file": { "enabled": true, "directory": "/work/logs" }
   },
   "source": {
-    "host": "192.168.1.183", "port": 5656, "user": "SYS", "password": "MANAGER",
+    "host": "127.0.0.1", "port": 5656, "user": "SYS", "password": "MANAGER",
     "table": "TAG",
     "columns": null,
     "filter": null,
     "transform": null
   },
   "target": {
-    "host": "192.168.1.183", "port": 5656, "user": "SYS", "password": "MANAGER",
-    "table": "TAG_COPY",
-    "autoCreate": true
+    "host": "127.0.0.1", "port": 5656, "user": "SYS", "password": "MANAGER",
+    "table": "TAG_COPY"
   },
   "startMode": "now",
   "ridAfter": null,
-  "metaSync": false,
   "pollIntervalMs": 1000,
   "queryLimit": 5000,
-  "ridRangeSize": 50000,
   "shutdownTimeoutMs": 30000,
   "onSaveFailure": "continue",
-  "integrity": true,
   "retry": { "maxAttempts": 5, "baseDelayMs": 100, "maxDelayMs": 30000 }
 }
 ```
@@ -273,7 +268,7 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 {
   "version": 1,
   "source": {
-    "server": "192.168.1.183",
+    "server": "127.0.0.1",
     "table": "TAG",
     "dataTable": "_TAG_DATA_0"
   },
@@ -286,6 +281,17 @@ RESOLVE_START -> (STARTUP_INTEGRITY, TAG+체크포인트 존재 시) -> STEADY_R
 ```
 
 - `lastSuccessRid`: BigInt를 string으로 직렬화
+
+### 3.6 TAG metadata sync 상태 파일
+
+**저장 경로**: `cgi-bin/data/{replicatorId}/meta-sync.json`
+
+- TAG + native/http target에서만 사용한다.
+- data partition checkpoint와 분리된 job-level 상태다.
+- 초기 metadata 선동기화, rep_target_cond 변경 diff, 실행 중 data-driven catch-up 진행률을 여기 기록한다.
+- 실행 중 catch-up 은 source data batch에서 관찰한 최대 tag id까지만 metadata를 전진시킨다.
+- 설정 변화가 없는 일반 재시작은 저장된 `lastMetaId`를 그대로 재사용하고, metadata-only tag를 맞추기 위한 별도 bootstrap은 수행하지 않는다.
+- `GET /api/rc.js?name=...` 의 `metaSync` 필드는 이 파일을 그대로 읽어 요약한 값이다.
 - `hasMore`: `rowsRead === queryLimit` 기준으로 다음 작업이 남아있을 가능성 표시
 - `source.dataTable` 불일치 시 손상으로 처리하고 무효화
 - atomic write (`.tmp` -> `renameSync`)
@@ -363,8 +369,7 @@ replicator.shutdown()  // shutdownFlag.value = true
 ```
 while(!shutdown):
   1. discover()   -- 소스/대상 타입/스키마/파티션 조회
-  2. syncMeta()   -- TAG 전용, metaSync !== false 시에만 실행
-  3. runWorkers() -- Worker x N 병렬 실행 (Promise.all)
+  2. runWorkers() -- Worker x N 병렬 실행 (Promise.all)
   -> 에러 시 5초 대기 후 재시작
 ```
 
@@ -372,11 +377,8 @@ while(!shutdown):
 
 - TAG 테이블: `TagTable.getDataTables()` -> 파티션별 `Worker` 생성
 - LOG 테이블: 단일 데이터 테이블 -> Worker 1개 생성
-- `autoCreate: true` + 대상 테이블 없음 -> 자동 CREATE 후 계속
+- 대상 테이블이 없으면 `discover()` 가 `null` 을 반환하고 재시도한다
 - source.columns에 NAME/TIME 누락 (TAG) -> null 반환, job skip
-
-**syncMeta()**: 소스의 TAG META 값을 대상에 동기화 (NAME rename, metadata 컬럼 값 일치)
-- `metaSync` 설정이 `false`(기본값)이면 실행하지 않음
 
 ### M5. Worker (`src/replication/worker.js`)
 
@@ -394,7 +396,7 @@ RESOLVE_START:
   - cp 없음 -> startMode 기준 (full=0n, now=srcMaxRid+1n, ridAfter=BigInt(ridAfter))
   - TAG: srcTable.cacheTagMetaAll()
 
-STARTUP_INTEGRITY (TAG + cp 존재 + integrity !== false):
+STARTUP_INTEGRITY (TAG + cp 존재 + target이 native/http):
   - startRid부터 배치 읽기
   - dstTable.findFirstMissRow() 로 대상 DB 존재 확인
   - firstMiss 발견 -> safeCpRid 저장 후 STEADY 진입
@@ -403,12 +405,12 @@ STARTUP_INTEGRITY (TAG + cp 존재 + integrity !== false):
 
 STEADY_REPLICATION:
   while(!shutdown):
-    srcTable.read(startRid, batchSize, ridRangeSize, ...)
-    -> { rows, rangeMaxRid, err }
-    rows 없음 + rangeMaxRid > 0n -> checkpoint(rangeMaxRid) -> continue (sleep 없음)
-    rows 없음 + rangeMaxRid == 0n -> sleepOrShutdown(pollIntervalMs)
-    rows 있음 -> _applyTransform() -> dstTable.append() -> checkpoint(rangeMaxRid)
-    startRid = rangeMaxRid + 1n
+    maxRid = srcTable.getMaxRid()
+    startRid > maxRid -> checkpoint(startRid - 1) -> sleepOrShutdown(pollIntervalMs)
+    srcTable.read(startRid, endRid, queryLimit, ...)
+    -> { rows, err }
+    rows 처리 -> dstTable.append() -> checkpoint(endRid)
+    startRid = endRid + 1n
 ```
 
 **체크포인트 경로**: `cgi-bin/data/{config.id}/{dataTable}.json`
@@ -491,7 +493,6 @@ retry.shouldRetry(err)                   // bool
 ```
 replication.js -> Replicator.start()
   discover(): TAG 타입 확인, 파티션 목록, 스키마 수집
-  syncMeta(): metaSync !== false 시에만 실행
   runWorkers():
     Worker (파티션별):
       RESOLVE_START: cp 없음 -> startRid = srcMaxRid + 1n
@@ -527,15 +528,14 @@ process.addShutdownHook:
 
 | 시나리오 | 동작 |
 |----------|------|
-| 대상 테이블 없음 + autoCreate=false | discover() null 반환 -> 5초 후 재시도 |
-| 대상 테이블 없음 + autoCreate=true | DDL 자동 실행 후 복제 시작 |
+| 대상 테이블 없음 | discover() null 반환 -> 5초 후 재시도 |
 | source.columns에 NAME/TIME 누락 (TAG) | discover() null 반환 -> 5초 후 재시도 |
 | 소스 컬럼이 대상에 없음 | discover() null 반환 -> 5초 후 재시도 |
 | read 실패 (DB 에러) | Worker 종료 -> AbortController -> replicator 루프 재시작 |
 | append 실패 | RetryHandler 백오프 후 재시도, 한도 초과 시 Worker 종료 |
 | checkpoint 저장 실패 (onSaveFailure=continue) | 오류 로그 후 계속 (메모리 기준 rid 유지) |
-| RID 범위 내 데이터 없음 (rangeMaxRid=0) | sleep(pollIntervalMs) 후 재시도 |
-| 필터 전량 차단 (rows=0, rangeMaxRid>0) | checkpoint(rangeMaxRid) 진행 후 sleep 없이 continue |
+| 현재 startRid가 maxRid 초과 | checkpoint(startRid - 1) 후 sleep(pollIntervalMs) |
+| 필터 전량 차단 (rows=0) | checkpoint(endRid) 진행 후 sleep 없이 continue |
 | checkpoint dataTable 불일치 | 손상 처리 -> cp=null, exists=false -> startMode 기준으로 시작 |
 
 ---
@@ -545,7 +545,6 @@ process.addShutdownHook:
 | 레이어 | 정책 |
 |--------|------|
 | discover 실패 | 오류 로그 + 5초 후 전체 재시작 |
-| syncMeta 실패 | 오류 로그 + 5초 후 전체 재시작 |
 | Worker read 실패 | Worker 즉시 종료 -> AbortController |
 | Worker append 실패 | RetryHandler 백오프, 한도 초과 시 종료 |
 | Worker 예상치 못한 종료 | 경고 로그 + AbortController -> 전체 재시작 |
@@ -558,8 +557,7 @@ process.addShutdownHook:
 | 항목 | TAG 테이블 | LOG 테이블 |
 |------|-----------|-----------|
 | 데이터 파티션 | `_TAG_DATA_0` ~ `_TAG_DATA_N` (N개 Worker) | 단일 테이블 (1개 Worker) |
-| 메타 동기화 | `syncMeta()` 실행 (metaSync !== false 시) | 없음 |
-| STARTUP_INTEGRITY | 실행 (cp 존재 + integrity != false) | 없음 |
+| STARTUP_INTEGRITY | native/http target + checkpoint 존재 시 자동 수행 | 없음 |
 | read() | RID_RANGE 힌트 + tag_id -> canonical name 변환 | RID_RANGE 힌트 |
 | append() | TagTable (논리 테이블에 append) | LogTable |
 | NAME/TIME 필수 여부 | source.columns 지정 시 필수 | 해당 없음 |
@@ -577,7 +575,7 @@ process.addShutdownHook:
 | B-01 | Worker별 독립 machcli 연결 | 단일 연결에서 동시 query + append 시 충돌 오류 |
 | B-02 | VOLATILE TABLE + JOIN으로 miss row 탐색 | TAG 테이블 JOIN 드라이빙 불가, PK 없음 |
 | B-03 | TIME 값은 `?` 파라미터 바인딩으로 전달 | BigInt 리터럴 SQL 삽입 시 정밀도 손실 |
-| B-04 | 필터 전량 차단 시 sleep 없이 checkpoint 진행 | ridRangeSize 단위 빈 배치마다 sleep 발생 시 catch-up 지연 방지 |
+| B-04 | 필터 전량 차단 시 sleep 없이 checkpoint 진행 | 빈 배치마다 sleep이 발생하면 catch-up 지연이 커지므로 checkpoint만 전진 |
 | B-05 | `c.sqlType()` 사용 | Column 클래스에 dataType() 미존재. sqlType()이 동일 역할 수행 |
 | B-06 | CheckpointStore 생성자에 dataTable 포함 | load/save 인자 누락 방지, 파일 내 source.dataTable 검증 가능 |
 | C-01 | 로그 메시지 ASCII만 사용 | jsh fs.write 유니코드 특수문자 출력 문제 |

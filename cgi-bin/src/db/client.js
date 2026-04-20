@@ -10,6 +10,12 @@
 const { Client } = require('machcli');
 const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 
+function _isStructureModifiedErrorMessage(message) {
+  const text = String(message || '');
+  return text.indexOf('MACHCLI-ERR-2361') >= 0
+    || text.toLowerCase().indexOf('structure was modified') >= 0;
+}
+
 
 /**
  * Machbase Neo DB 연결 및 쿼리 클라이언트
@@ -49,18 +55,45 @@ class MachbaseClient {
    * @returns {Array<object>}
    */
   query(sql, values) {
-    try {
-      const rows = values && values.length > 0
-        ? this._conn.query(sql, ...values)
-        : this._conn.query(sql);
+    const runQuery = () => {
+      let rows = null;
+      try {
+        rows = values && values.length > 0
+          ? this._conn.query(sql, ...values)
+          : this._conn.query(sql);
 
-      const result = [];
-      for (const row of rows) {
-        result.push(row);
+        const result = [];
+        for (const row of rows) {
+          result.push(row);
+        }
+        return result;
+      } finally {
+        // machcli result cursor는 소비 후 명시적으로 닫아야 native query handle 누수를 막을 수 있다.
+        // 이 wrapper는 worker의 maxRid polling/read/meta lookup 공통 경로이므로 누수가 쌓이면
+        // 장시간 복제 중 간헐적인 query 실패로 이어질 수 있다.
+        try { rows && rows.close && rows.close(); } catch (_) {}
       }
-      return result;
+    };
+
+    try {
+      return runQuery();
     } catch (err) {
-      throw new Error(err.message);
+      if (_isStructureModifiedErrorMessage(err.message)) {
+        // TAG 신규 등록처럼 source 내부 구조가 바뀌는 순간 기존 native connection이 stale 상태가 될 수 있다.
+        // query는 읽기 전용이므로 연결을 새로 열고 한 번 더 시도한다.
+        try { this.close(); } catch (_) {}
+        this.connect();
+        try {
+          return runQuery();
+        } catch (retryErr) {
+          const wrapped = new Error(retryErr.message);
+          wrapped.retryable = _isStructureModifiedErrorMessage(retryErr.message);
+          throw wrapped;
+        }
+      }
+      const wrapped = new Error(err.message);
+      wrapped.retryable = _isStructureModifiedErrorMessage(err.message);
+      throw wrapped;
     }
   }
 
@@ -122,6 +155,17 @@ class MachbaseClient {
       owner: text.slice(0, dot).trim().toUpperCase(),
       table: text.slice(dot + 1).trim().toUpperCase(),
     };
+  }
+
+  /**
+   * owner.table 형태를 포함하여 TAG META 테이블명을 반환한다.
+   * @param {string} logicalTable
+   * @returns {string}
+   */
+  qualifiedTagMetaTable(logicalTable) {
+    const qualified = this.splitQualifiedTableName(logicalTable);
+    const metaTable = `_${qualified.table}_META`;
+    return qualified.owner ? `${qualified.owner}.${metaTable}` : metaTable;
   }
 
   /**
@@ -275,8 +319,7 @@ class MachbaseClient {
    * @returns {Array<{ _ID: bigint, name: string }>}
    */
   selectTagNames(logicalTable) {
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    return this.query(`SELECT _ID, name FROM _${table}_META`);
+    return this.query(`SELECT _ID, name FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
   }
 
   /**
@@ -286,8 +329,7 @@ class MachbaseClient {
    * @returns {{ _ID: bigint, name: string }|null}
    */
   selectTagName(logicalTable, name) {
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    const rows = this.query(`SELECT _ID, name FROM _${table}_META WHERE NAME = ?`, [name]);
+    const rows = this.query(`SELECT _ID, name FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE NAME = ?`, [name]);
     return rows?.[0] ?? null;
   }
 
@@ -299,8 +341,7 @@ class MachbaseClient {
    */
   selectTagMeta(logicalTable, metaColNames = []) {
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    const table = this.splitQualifiedTableName(logicalTable).table;
-    return this.query(`SELECT _ID, name${extraCols} FROM _${table}_META`);
+    return this.query(`SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
   }
 
   /**
@@ -338,12 +379,35 @@ class MachbaseClient {
    */
   selectTagMetaById(logicalTable, tagId, metaColNames = []) {
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    const table = this.splitQualifiedTableName(logicalTable).table;
     const rows = this.query(
-      `SELECT _ID, name${extraCols} FROM _${table}_META WHERE _ID = ?`,
+      `SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE _ID = ?`,
       [tagId]
     );
     return rows?.[0] ?? null;
+  }
+
+  /**
+   * TAG META row 수를 반환한다.
+   * @param {string} logicalTable
+   * @returns {number}
+   */
+  countTagNames(logicalTable) {
+    const rows = this.query(`SELECT COUNT(*) as total_tags FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    const raw = rows?.[0]?.total_tags;
+    return raw == null ? 0 : Number(raw);
+  }
+
+  /**
+   * TAG 이름 목록을 페이지 단위로 조회한다.
+   * @param {string} logicalTable
+   * @param {number} offset
+   * @param {number} limit
+   * @returns {Array<{ NAME: string }>}
+   */
+  selectTagNamesPaged(logicalTable, offset, limit) {
+    return this.query(
+      `SELECT NAME FROM ${this.qualifiedTagMetaTable(logicalTable)} ORDER BY NAME LIMIT ${offset}, ${limit}`
+    );
   }
 
   /**

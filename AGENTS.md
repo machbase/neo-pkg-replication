@@ -16,6 +16,8 @@
 - Prefer JSH-compatible APIs and output patterns already used in the workspace, such as `console.println()`.
 - Avoid Node.js-only features unless the JSH documentation confirms compatibility.
 - Prefer to use `console.print()` and `console.println()` over `console.log()`, `console.error()`.
+- When adding comments, prefer intent, expected outcome, policy constraints, and operational cautions over restating mechanics.
+- For compatibility layers, transport-specific branches, restart/recovery logic, or other policy-heavy code, leave short comments that explain why the branch exists and what must not be broken when it is changed.
 
 ## Build And Validation
 
