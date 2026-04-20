@@ -55,5 +55,8 @@ export default function useServers() {
     }
   }, [fetchServers, notify])
 
-  return { servers, loading, addServer, editServer, removeServer, refreshServers: fetchServers }
+  // notify는 호출부에서 처리 (리스트=toast, 폼=인라인 메시지)
+  const testServer = useCallback((payload) => serversApi.testServer(payload), [])
+
+  return { servers, loading, addServer, editServer, removeServer, testServer, refreshServers: fetchServers }
 }

@@ -5,10 +5,12 @@ import Icon from '../common/Icon'
 import useServers from '../../hooks/useServers'
 
 export default function ServerSettingsModal({ onClose }) {
-  const { servers, loading, addServer, editServer, removeServer } = useServers()
+  const { servers, loading, addServer, editServer, removeServer, testServer } = useServers()
   const [showForm, setShowForm] = useState(false)
   const [editingServer, setEditingServer] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [testingName, setTestingName] = useState(null)
+  const [testResults, setTestResults] = useState({}) // { [name]: { ok, message } }
 
   useEffect(() => {
     const handleKey = (e) => { if (e.key === 'Escape' && !showForm && !confirmDelete) onClose() }
@@ -39,6 +41,19 @@ export default function ServerSettingsModal({ onClose }) {
     }
   }
 
+  const handleTest = async (name) => {
+    setTestingName(name)
+    setTestResults((prev) => { const next = { ...prev }; delete next[name]; return next })
+    try {
+      await testServer({ name })
+      setTestResults((prev) => ({ ...prev, [name]: { ok: true, message: 'Connected' } }))
+    } catch (e) {
+      setTestResults((prev) => ({ ...prev, [name]: { ok: false, message: e.reason || e.message || 'Failed' } }))
+    } finally {
+      setTestingName(null)
+    }
+  }
+
   return (
     <>
       <div className="modal-overlay" onMouseDown={onClose}>
@@ -64,17 +79,57 @@ export default function ServerSettingsModal({ onClose }) {
               </div>
             ) : (
               <div className="server-card-list">
-                {servers.map(srv => (
+                {servers.map(srv => {
+                  const result = testResults[srv.name]
+                  return (
                   <div key={srv.name} className="server-card">
                     <div className="server-card-info">
                       <div className="server-card-name-row">
+                        <Icon name="dns" className="text-on-surface-tertiary" />
                         <span className="server-card-name">{srv.name}</span>
+                        {srv.targetOnly && (
+                          <span
+                            className="text-xs ml-2"
+                            style={{
+                              color: 'var(--color-error)',
+                              border: '1px solid var(--color-error)',
+                              padding: '1px 6px',
+                              borderRadius: 4,
+                            }}
+                          >
+                            target only
+                          </span>
+                        )}
+                        {result && (
+                          <span
+                            className="text-xs ml-2 inline-flex items-center"
+                            style={{
+                              gap: 6,
+                              color: `var(--color-${result.ok ? 'success' : 'error'})`,
+                            }}
+                          >
+                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
+                            {result.message}
+                          </span>
+                        )}
                       </div>
                       <div className="server-card-detail">
-                        {srv.host}:{srv.port} &middot; {srv.user}
+                        {srv.type || 'native'} · {srv.host}:{srv.port}
+                        {srv.user ? ` · ${srv.user}` : ''}
                       </div>
                     </div>
                     <div className="server-card-actions">
+                      <button
+                        onClick={() => handleTest(srv.name)}
+                        disabled={testingName === srv.name}
+                        className="server-card-action tooltip"
+                        data-tooltip="Test connection"
+                      >
+                        <Icon
+                          name={testingName === srv.name ? 'progress_activity' : 'cable'}
+                          className={testingName === srv.name ? 'animate-spin' : ''}
+                        />
+                      </button>
                       <button
                         onClick={() => { setEditingServer(srv); setShowForm(true) }}
                         className="server-card-action tooltip"
@@ -91,7 +146,8 @@ export default function ServerSettingsModal({ onClose }) {
                       </button>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>

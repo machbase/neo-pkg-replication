@@ -3,6 +3,7 @@ import * as jobsApi from "../api/jobs";
 import { useApp } from "../context/AppContext";
 
 const AUTO_REFRESH = true;
+const SYNC_CHANNEL = "app:neo-replication:jobs-sync";
 
 export default function useJobs() {
     const [jobs, setJobs] = useState([]);
@@ -11,6 +12,7 @@ export default function useJobs() {
     const intervalRef = useRef(null);
     const lastErrorRef = useRef(null);
     const initialSelectedRef = useRef(false);
+    const syncChannelRef = useRef(null);
 
     const fetchJobs = useCallback(async () => {
         try {
@@ -32,10 +34,28 @@ export default function useJobs() {
         }
     }, [notify, setSelectedJobId]);
 
+    const broadcastRefresh = useCallback(() => {
+        syncChannelRef.current?.postMessage({ type: "refreshJobs" });
+    }, []);
+
+    useEffect(() => {
+        const ch = new BroadcastChannel(SYNC_CHANNEL);
+        syncChannelRef.current = ch;
+        ch.onmessage = (e) => {
+            if (e.data?.type === "refreshJobs") {
+                fetchJobs();
+            }
+        };
+        return () => {
+            ch.close();
+            syncChannelRef.current = null;
+        };
+    }, [fetchJobs]);
+
     useEffect(() => {
         fetchJobs();
         if (AUTO_REFRESH) {
-            intervalRef.current = setInterval(fetchJobs, 10000);
+            intervalRef.current = setInterval(fetchJobs, 5000);
             return () => clearInterval(intervalRef.current);
         }
     }, [fetchJobs]);
@@ -51,11 +71,12 @@ export default function useJobs() {
                     notify(`Job '${job.id}' started`, "success");
                 }
                 await fetchJobs();
+                broadcastRefresh();
             } catch (e) {
                 notify(e.reason || e.message, "error");
             }
         },
-        [fetchJobs, notify]
+        [fetchJobs, notify, broadcastRefresh]
     );
 
     const installJob = useCallback(
@@ -64,11 +85,12 @@ export default function useJobs() {
                 await jobsApi.installJob(job.id);
                 notify(`Job '${job.id}' installed`, "success");
                 await fetchJobs();
+                broadcastRefresh();
             } catch (e) {
                 notify(e.reason || e.message, "error");
             }
         },
-        [fetchJobs, notify]
+        [fetchJobs, notify, broadcastRefresh]
     );
 
     const removeJob = useCallback(
@@ -77,12 +99,18 @@ export default function useJobs() {
                 await jobsApi.deleteJob(id);
                 notify(`Job '${id}' deleted`, "success");
                 await fetchJobs();
+                broadcastRefresh();
             } catch (e) {
                 notify(e.reason || e.message, "error");
             }
         },
-        [fetchJobs, notify]
+        [fetchJobs, notify, broadcastRefresh]
     );
 
-    return { jobs, loading, toggleJob, installJob, removeJob, refreshJobs: fetchJobs };
+    const refreshJobs = useCallback(async () => {
+        await fetchJobs();
+        broadcastRefresh();
+    }, [fetchJobs, broadcastRefresh]);
+
+    return { jobs, loading, toggleJob, installJob, removeJob, refreshJobs };
 }

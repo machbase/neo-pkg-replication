@@ -5,6 +5,7 @@ import * as jobsApi from "../api/jobs";
 import useServers from "../hooks/useServers";
 import Icon from "../components/common/Icon";
 import { koToEn } from "../utils/korean";
+import { validateMqttTopic } from "../utils/mqttTopic";
 import DatabaseSection from "../components/jobs/DatabaseSection";
 import ColumnMapping, { TargetCondition } from "../components/jobs/ColumnMapping";
 import ExecutionSection from "../components/jobs/ExecutionSection";
@@ -12,31 +13,30 @@ import AdvancedSection from "../components/jobs/AdvancedSection";
 import LogSection from "../components/jobs/LogSection";
 import PipelineBuilder from "../components/jobs/PipelineBuilder";
 
-const DEFAULTS = {
-    id: "",
-    source: {
-        server: "",
-        table: "",
-        columns: [],
-        meta: [],
-        rep_target_cond: { column: "", op: "ALL", value: [] },
-        transform: [],
-    },
-    target: {
-        server: "",
-        table: "",
-        columns: [],
-        meta: [],
-    },
-    startMode: "full",
-    ridAfter: "",
-    queryLimit: 5000,
-    pollIntervalMs: 1000,
-    onSaveFailure: "continue",
-    integrity: true,
-    retry: { maxAttempts: 5, baseDelayMs: 100, maxDelayMs: 30000 },
-    logging: { level: "info", maxFiles: 10 },
-};
+// backend의 null 배열을 UI가 기대하는 빈 배열로 정규화
+function normalizeDefaults(cfg) {
+    if (!cfg) return cfg;
+    const source = cfg.source || {};
+    const target = cfg.target || {};
+    return {
+        ...cfg,
+        id: cfg.id ?? "",
+        ridAfter: cfg.ridAfter ?? "",
+        integrity: cfg.integrity !== false,
+        source: {
+            ...source,
+            columns: Array.isArray(source.columns) ? source.columns : [],
+            meta: Array.isArray(source.meta) ? source.meta : [],
+            rep_target_cond: source.rep_target_cond || { column: "", op: "ALL", value: [] },
+            transform: Array.isArray(source.transform) ? source.transform : [],
+        },
+        target: {
+            ...target,
+            columns: Array.isArray(target.columns) ? target.columns : [],
+            meta: Array.isArray(target.meta) ? target.meta : [],
+        },
+    };
+}
 
 export default function JobFormPage({ onRefresh }) {
     const { id } = useParams();
@@ -45,31 +45,54 @@ export default function JobFormPage({ onRefresh }) {
     const isEdit = Boolean(id);
     const { servers, addServer, refreshServers } = useServers();
 
-    const [form, setForm] = useState(DEFAULTS);
+    const [defaults, setDefaults] = useState(null);
+    const [guide, setGuide] = useState(null);
+    const [form, setForm] = useState(null);
     const [saving, setSaving] = useState(false);
     const [conflictJob, setConflictJob] = useState(null);
     const [dryRunWarnings, setDryRunWarnings] = useState(null);
     const [pendingConfig, setPendingConfig] = useState(null);
 
-    const applyData = (data) => {
+    const applyData = (data, base) => {
+        const d = base || defaults;
+        if (!d) return;
         setForm({
-            ...DEFAULTS,
+            ...d,
             ...data,
             id: data.name || data.id || id,
-            source: { ...DEFAULTS.source, ...data.source },
-            target: { ...DEFAULTS.target, ...data.target },
-            retry: data.retry || DEFAULTS.retry,
-            logging: { ...DEFAULTS.logging, ...(data.logging || {}) },
+            source: { ...d.source, ...data.source },
+            target: { ...d.target, ...data.target },
+            retry: data.retry || d.retry,
+            logging: { ...d.logging, ...(data.logging || {}) },
         });
     };
 
+    // 최초 마운트 시 기본 템플릿 로드 + edit 모드면 기존 데이터 병합
     useEffect(() => {
-        if (isEdit) {
-            fetchJobDetail(id).then((data) => {
-                if (data) applyData(data);
-                else navigate("/");
+        let cancelled = false;
+        jobsApi
+            .getRcDefault()
+            .then((res) => {
+                if (cancelled) return;
+                const d = normalizeDefaults(res?.config);
+                setDefaults(d);
+                setGuide(res?.guide || null);
+                if (isEdit) {
+                    fetchJobDetail(id).then((data) => {
+                        if (cancelled) return;
+                        if (data) applyData(data, d);
+                        else navigate("/");
+                    });
+                } else {
+                    setForm(d);
+                }
+            })
+            .catch((e) => {
+                if (!cancelled) notify(e.reason || e.message, "error");
             });
-        }
+        return () => {
+            cancelled = true;
+        };
     }, [id, isEdit]);
 
     const goBack = () => {
@@ -114,21 +137,32 @@ export default function JobFormPage({ onRefresh }) {
 
     const buildConfig = () => {
         const name = form.id || null;
+        // source/target mapping 길이를 max 기준으로 맞추고 trailing null 로 padding
+        // — backend validator 가 양쪽 length 일치 + trailing null 만 허용
+        const alignPair = (a, b) => {
+            const src = Array.isArray(a) ? a : [];
+            const tgt = Array.isArray(b) ? b : [];
+            const len = Math.max(src.length, tgt.length);
+            const pad = (arr) => Array.from({ length: len }, (_, i) => arr[i] ?? null);
+            return [pad(src), pad(tgt)];
+        };
+        const [srcColumns, tgtColumns] = alignPair(form.source.columns, form.target.columns);
+        const [srcMeta, tgtMeta] = alignPair(form.source.meta, form.target.meta);
         const config = {
             id: name,
             source: {
                 server: form.source.server,
                 table: form.source.table,
-                columns: Array.isArray(form.source.columns) ? form.source.columns : [],
-                meta: Array.isArray(form.source.meta) ? form.source.meta : [],
+                columns: srcColumns,
+                meta: srcMeta,
                 rep_target_cond: form.source.rep_target_cond || { column: "", op: "ALL", value: [] },
                 transform: Array.isArray(form.source.transform) ? form.source.transform : [],
             },
             target: {
                 server: form.target.server,
                 table: form.target.table,
-                columns: Array.isArray(form.target.columns) ? form.target.columns : [],
-                meta: Array.isArray(form.target.meta) ? form.target.meta : [],
+                columns: tgtColumns,
+                meta: tgtMeta,
             },
             startMode: form.startMode,
             queryLimit: Number(form.queryLimit),
@@ -168,6 +202,14 @@ export default function JobFormPage({ onRefresh }) {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        const targetServerMeta = servers.find((s) => s.name === form?.target?.server);
+        if (targetServerMeta?.type === "mqtt-publish") {
+            const { valid, error } = validateMqttTopic(form?.target?.table ?? "");
+            if (!valid) {
+                notify(error, "error");
+                return;
+            }
+        }
         setSaving(true);
         try {
             const built = buildConfig();
@@ -221,7 +263,7 @@ export default function JobFormPage({ onRefresh }) {
                         <button type="button" onClick={goBack} className="btn btn-content btn-ghost">
                             Cancel
                         </button>
-                        <button type="submit" form="job-form" disabled={saving} className="btn btn-content btn-primary">
+                        <button type="submit" form="job-form" disabled={saving || !form} className="btn btn-content btn-primary">
                             {saving ? "Saving..." : isEdit ? "Update Job" : "Create Job"}
                         </button>
                     </div>
@@ -230,59 +272,88 @@ export default function JobFormPage({ onRefresh }) {
 
             <div className="page-body">
                 <div className="page-body-inner">
-                    <form id="job-form" onSubmit={handleSubmit} onKeyDown={(e) => { if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") e.preventDefault(); }} className="space-y-16">
-                        {/* Job name */}
-                        <div className="form-card">
-                            <div className="form-card-header">Job</div>
-                            <div>
-                                <label className="form-label">name</label>
-                                <input
-                                    type="text"
-                                    disabled={isEdit}
-                                    value={form.id}
-                                    onChange={(e) => {
-                                        const v = koToEn(e.target.value).replace(/[^a-zA-Z0-9_-]/g, "");
-                                        update("id", v);
-                                    }}
-                                    pattern="^[a-zA-Z0-9_-]*$"
-                                    className="w-full disabled:opacity-50"
-                                    placeholder="Auto-generated from table names if empty"
+                    {!form ? (
+                        <p className="text-on-surface-tertiary text-base py-8">Loading...</p>
+                    ) : (
+                        <form
+                            id="job-form"
+                            onSubmit={handleSubmit}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") e.preventDefault();
+                            }}
+                            className="space-y-16"
+                        >
+                            {/* Job name */}
+                            <div className="form-card">
+                                <div className="form-card-header">Job</div>
+                                <div>
+                                    <label className="form-label">name</label>
+                                    <input
+                                        type="text"
+                                        disabled={isEdit}
+                                        value={form.id}
+                                        onChange={(e) => {
+                                            const v = koToEn(e.target.value).replace(/[^a-zA-Z0-9_-]/g, "");
+                                            update("id", v);
+                                        }}
+                                        pattern="^[a-zA-Z0-9_-]*$"
+                                        className="w-full disabled:opacity-50"
+                                        placeholder="Auto-generated from table names if empty"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Source / Target Database — side by side */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-16">
+                                <DatabaseSection
+                                    title="Source Database"
+                                    prefix="source"
+                                    form={form}
+                                    update={update}
+                                    servers={servers}
+                                    onAddServer={addServer}
+                                    onRefreshServers={refreshServers}
+                                    isEdit={isEdit}
+                                />
+                                <DatabaseSection
+                                    title="Target Database"
+                                    prefix="target"
+                                    form={form}
+                                    update={update}
+                                    servers={servers}
+                                    onAddServer={addServer}
+                                    onRefreshServers={refreshServers}
+                                    isEdit={isEdit}
                                 />
                             </div>
-                        </div>
 
-                        {/* Source / Target Database — side by side */}
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-16">
-                            <DatabaseSection title="Source Database" prefix="source" form={form} update={update} servers={servers} onAddServer={addServer} onRefreshServers={refreshServers} />
-                            <DatabaseSection title="Target Database" prefix="target" form={form} update={update} servers={servers} onAddServer={addServer} onRefreshServers={refreshServers} />
-                        </div>
+                            {/* Column Mapping */}
+                            <ColumnMapping form={form} update={update} servers={servers} />
 
-                        {/* Column Mapping */}
-                        <ColumnMapping form={form} update={update} />
-
-                        {/* Replication Target Condition */}
-                        <div className="form-card">
-                            <div className="form-card-header">
-                                <span className="flex items-center gap-8">
-                                    <Icon name="filter_alt" className="text-primary" />
-                                    Replication Target Condition
-                                </span>
+                            {/* Replication Target Condition */}
+                            <div className="form-card">
+                                <div className="form-card-header">
+                                    <span className="flex items-center gap-8">
+                                        <Icon name="filter_alt" className="text-primary" />
+                                        Replication Target Condition
+                                    </span>
+                                </div>
+                                <TargetCondition form={form} update={update} />
                             </div>
-                            <TargetCondition form={form} update={update} />
-                        </div>
 
-                        {/* Data Pipeline Builder */}
-                        <PipelineBuilder form={form} update={update} />
+                            {/* Data Pipeline Builder */}
+                            <PipelineBuilder form={form} update={update} />
 
-                        {/* Execution / Advanced */}
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-16">
-                            <ExecutionSection form={form} update={update} />
-                            <AdvancedSection form={form} update={update} />
-                        </div>
+                            {/* Execution / Advanced */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-16">
+                                <ExecutionSection form={form} update={update} />
+                                <AdvancedSection form={form} update={update} />
+                            </div>
 
-                        {/* Logging */}
-                        <LogSection form={form} update={update} />
-                    </form>
+                            {/* Logging */}
+                            <LogSection form={form} update={update} />
+                        </form>
+                    )}
                 </div>
             </div>
 
@@ -318,14 +389,27 @@ export default function JobFormPage({ onRefresh }) {
             )}
 
             {dryRunWarnings && (
-                <div className="modal-overlay" onMouseDown={() => { setDryRunWarnings(null); setPendingConfig(null); }}>
+                <div
+                    className="modal-overlay"
+                    onMouseDown={() => {
+                        setDryRunWarnings(null);
+                        setPendingConfig(null);
+                    }}
+                >
                     <div className="modal modal-md" onMouseDown={(e) => e.stopPropagation()}>
                         <div className="modal-header">
                             <div className="modal-header-title">
                                 <Icon name="warning" className="text-warning" />
                                 Validation Warnings
                             </div>
-                            <button onClick={() => { setDryRunWarnings(null); setPendingConfig(null); }} className="p-4 hover:bg-surface-hover rounded-base tooltip" data-tooltip="Close">
+                            <button
+                                onClick={() => {
+                                    setDryRunWarnings(null);
+                                    setPendingConfig(null);
+                                }}
+                                className="p-4 hover:bg-surface-hover rounded-base tooltip"
+                                data-tooltip="Close"
+                            >
                                 <Icon name="close" />
                             </button>
                         </div>
@@ -341,7 +425,13 @@ export default function JobFormPage({ onRefresh }) {
                             </ul>
                         </div>
                         <div className="modal-footer">
-                            <button onClick={() => { setDryRunWarnings(null); setPendingConfig(null); }} className="btn btn-content btn-ghost">
+                            <button
+                                onClick={() => {
+                                    setDryRunWarnings(null);
+                                    setPendingConfig(null);
+                                }}
+                                className="btn btn-content btn-ghost"
+                            >
                                 Cancel
                             </button>
                             <button onClick={confirmWarningsAndSave} disabled={saving} className="btn btn-content btn-primary">

@@ -39,6 +39,10 @@ export const installJob = (name) => request("POST", `${RC}/install?name=${encode
 // 응답: { source, target, normalized, warnings[] }
 export const dryRunJob = (config) => request("POST", `${RC}/dryrun`, { config });
 
+// replication create 기본 템플릿
+// 응답: { config: {...}, guide: { requiredOnCreate, examples } }
+export const getRcDefault = () => request("GET", `${RC}/default`);
+
 // 테이블 컬럼 조회 - server 참조 방식
 // body: { server: "name", table: "HOME" }
 export const fetchTableColumns = ({ server, table }) => request("POST", "/table/columns", { server, table });
