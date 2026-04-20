@@ -4,6 +4,7 @@ import { useApp } from "../context/AppContext";
 import StatusBadge from "../components/common/StatusBadge";
 import ConfirmDialog from "../components/common/ConfirmDialog";
 import Icon from "../components/common/Icon";
+import useServers from "../hooks/useServers";
 // import LiveLogs from "../components/jobs/LiveLogs";
 import LogFilesModal from "../components/jobs/LogFilesModal";
 
@@ -21,6 +22,7 @@ function Field({ label, value }) {
 export default function DashboardPage({ jobs, onDelete }) {
     const navigate = useNavigate();
     const { selectedJobId, setSelectedJobId, jobDetail, detailLoading, fetchJobDetail } = useApp();
+    const { servers, loading: serversLoading } = useServers();
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [execOpen, setExecOpen] = useState(false);
     const [advOpen, setAdvOpen] = useState(false);
@@ -35,6 +37,31 @@ export default function DashboardPage({ jobs, onDelete }) {
         if (!cp) return 0;
         return Object.values(cp).reduce((sum, v) => sum + Number(v.totalRowsWritten || 0), 0);
     }, []);
+
+    const computePartitionGaps = useCallback((cp) => {
+        if (!cp) return { total: 0n, perPartition: [] };
+        const toBig = (v) => {
+            if (v == null || v === "") return null;
+            try { return BigInt(String(v)); } catch { return null; }
+        };
+        let total = 0n;
+        const perPartition = [];
+        for (const [name, v] of Object.entries(cp)) {
+            const max = toBig(v?.max_rid);
+            const last = toBig(v?.lastSuccessRid);
+            if (max == null) continue;
+            const gap = last == null ? max : max - last;
+            const safe = gap < 0n ? 0n : gap;
+            total += safe;
+            perPartition.push({ name, gap: safe });
+        }
+        return { total, perPartition };
+    }, []);
+
+    const formatBig = (n) => {
+        const s = n.toString();
+        return s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    };
 
     useEffect(() => {
         prevTotalRowsRef.current = null;
@@ -98,6 +125,11 @@ export default function DashboardPage({ jobs, onDelete }) {
     const retry = jobDetail.retry || {};
     const logging = jobDetail.logging || {};
 
+    // target server가 삭제되어 서버 목록에 없을 수 있음 — 그런 경우 isMqttPublish=false로 정상 렌더에 폴백
+    const targetServerMeta = servers.find((s) => s.name === tgt.server);
+    const isMqttPublish = targetServerMeta?.type === "mqtt-publish";
+    const targetServerMissing = !serversLoading && !!tgt.server && !targetServerMeta;
+
     const checkpoints = jobDetail.checkpoints && Object.keys(jobDetail.checkpoints).length > 0 ? jobDetail.checkpoints : {};
     const cpEntries = Object.entries(checkpoints);
 
@@ -107,7 +139,7 @@ export default function DashboardPage({ jobs, onDelete }) {
     const schemaRows = Array.from({ length: schemaRowCount }, (_, i) => ({
         src: srcColumns[i] || null,
         tgt: tgtColumns[i] || null,
-    }));
+    })).filter((row) => row.src || row.tgt);
 
     const srcMeta = Array.isArray(src.meta) ? src.meta : [];
     const tgtMeta = Array.isArray(tgt.meta) ? tgt.meta : [];
@@ -115,7 +147,7 @@ export default function DashboardPage({ jobs, onDelete }) {
     const metaRows = Array.from({ length: metaRowCount }, (_, i) => ({
         src: srcMeta[i] || null,
         tgt: tgtMeta[i] || null,
-    }));
+    })).filter((row) => row.src || row.tgt);
 
     const repCond = src.rep_target_cond || null;
     const hasRepCond = !!(repCond && repCond.column);
@@ -136,11 +168,11 @@ export default function DashboardPage({ jobs, onDelete }) {
         if (e.type === "prefix") return <span style={{ color: "#4da6ff" }}>prefix '{e.value}'</span>;
         if (e.type === "suffix") return <span style={{ color: "#4da6ff" }}>suffix '{e.value}'</span>;
         if (e.type === "calc") {
-            return (
-                <span style={{ color: "#4da6ff" }}>
-                    (val{e.bias != null && e.bias !== "" ? ` + ${e.bias}` : ""}){e.multiplier != null && e.multiplier !== "" ? ` * ${e.multiplier}` : ""}
-                </span>
-            );
+            const order = e.calcOrder === "mb" ? "mb" : "bm";
+            const bPart = e.bias != null && e.bias !== "" ? ` + ${e.bias}` : "";
+            const mPart = e.multiplier != null && e.multiplier !== "" ? ` * ${e.multiplier}` : "";
+            const formula = order === "bm" ? `(val${bPart})${mPart}` : `(val${mPart})${bPart}`;
+            return <span style={{ color: "#4da6ff" }}>{formula}</span>;
         }
         if (e.type === "filter") {
             const parts = [];
@@ -185,6 +217,9 @@ export default function DashboardPage({ jobs, onDelete }) {
                             const isFlowing = hasAnyMore && listJob.status !== "stopped";
                             const stateLabel = listJob.status === "running" ? (isFlowing ? "REPLICATING" : "IDLE STATE") : "STOPPED";
                             const stateDotClass = listJob.status === "running" ? (isFlowing ? "repl-dot--active" : "repl-dot--idle") : "repl-dot--stopped";
+                            const { total: totalGap, perPartition } = computePartitionGaps(checkpoints);
+                            const hasGapInfo = perPartition.length > 0;
+                            const isBehind = totalGap > 0n;
                             return (
                                 <div className="repl-info-grid">
                                     <div className="repl-info-endpoint">
@@ -197,6 +232,22 @@ export default function DashboardPage({ jobs, onDelete }) {
                                         <div className="repl-info-status">
                                             <span className={`repl-dot ${stateDotClass}`} />
                                             <span className="repl-info-status-text">{stateLabel}</span>
+                                            {hasGapInfo && (
+                                                <>
+                                                    <span className="repl-info-status-sep">·</span>
+                                                    <span className={`repl-info-lag ${isBehind ? "repl-info-lag--behind" : ""}`}>
+                                                        GAP <span className="repl-info-lag-value">{formatBig(totalGap)}</span>
+                                                        <span className="repl-info-lag-popover" role="tooltip">
+                                                            {perPartition.map((p) => (
+                                                                <span key={p.name} className="repl-info-lag-row">
+                                                                    <span className="repl-info-lag-row-name">{p.name}</span>
+                                                                    <span className="repl-info-lag-row-gap">{formatBig(p.gap)}</span>
+                                                                </span>
+                                                            ))}
+                                                        </span>
+                                                    </span>
+                                                </>
+                                            )}
                                         </div>
                                         <span className="repl-info-rows">{totalRows.toLocaleString("en-US")}</span>
                                         <span className="repl-info-rows-label">ROWS PROCESSED</span>
@@ -206,9 +257,27 @@ export default function DashboardPage({ jobs, onDelete }) {
                                     </div>
 
                                     <div className="repl-info-endpoint">
-                                        <span className="repl-info-label">TARGET</span>
+                                        <span className="repl-info-label">
+                                            TARGET
+                                            {isMqttPublish && (
+                                                <span className="tooltip ml-4" data-tooltip="MQTT Publish" style={{ color: "#4da6ff", verticalAlign: "middle" }}>
+                                                    <Icon name="podcasts" className="icon-sm" />
+                                                </span>
+                                            )}
+                                        </span>
                                         <span className="repl-info-table">{tgt.table || "—"}</span>
-                                        <span className="repl-info-db">{tgt.server || "—"}</span>
+                                        <span className="repl-info-db">
+                                            {tgt.server || "—"}
+                                            {targetServerMissing && (
+                                                <span
+                                                    className="tooltip ml-4"
+                                                    data-tooltip="Target server no longer exists"
+                                                    style={{ color: "var(--color-warning)", verticalAlign: "middle" }}
+                                                >
+                                                    <Icon name="warning" className="icon-sm" />
+                                                </span>
+                                            )}
+                                        </span>
                                     </div>
                                 </div>
                             );
@@ -228,16 +297,55 @@ export default function DashboardPage({ jobs, onDelete }) {
                                         <thead>
                                             <tr>
                                                 <th>SOURCE ({(src.table || "—").toUpperCase()})</th>
-                                                <th style={{ width: "60px", textAlign: "center" }}>LOGIC</th>
-                                                <th>TARGET ({(tgt.table || "—").toUpperCase()})</th>
+                                                {isMqttPublish ? (
+                                                    <th style={{ width: "60px", textAlign: "center" }}>MQTT</th>
+                                                ) : (
+                                                    <>
+                                                        <th style={{ width: "60px", textAlign: "center" }}>LOGIC</th>
+                                                        <th>TARGET ({(tgt.table || "—").toUpperCase()})</th>
+                                                    </>
+                                                )}
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {schemaRows.map((row, i) => (
+                                            {(isMqttPublish ? schemaRows.filter((r) => r.src) : schemaRows).map((row, i) => (
                                                 <tr key={i}>
-                                                    <td className={row.src ? "" : "schema-cell--empty"}>{row.src ? <span className="font-mono">{row.src}</span> : <span className="text-on-surface-disabled">-</span>}</td>
-                                                    <td style={{ textAlign: "center" }}><span className="text-on-surface-disabled">→</span></td>
-                                                    <td className={row.tgt ? "" : "schema-cell--empty"}>{row.tgt ? <span className="font-mono">{row.tgt}</span> : <span className="text-on-surface-disabled">-</span>}</td>
+                                                    <td className={!row.src || (!isMqttPublish && !row.tgt) ? "schema-cell--empty" : ""}>
+                                                        {row.src ? (
+                                                            <span className={`font-mono${!isMqttPublish && !row.tgt ? " schema-strike" : ""}`}>{row.src}</span>
+                                                        ) : (
+                                                            <span className="text-on-surface-disabled">-</span>
+                                                        )}
+                                                    </td>
+                                                    {isMqttPublish ? (
+                                                        <td style={{ textAlign: "center" }}>
+                                                            <span
+                                                                className={`col-map-outbound-icon${row.src ? " col-map-outbound-icon--active" : ""}`}
+                                                                title="Published to MQTT"
+                                                            >
+                                                                <Icon name="podcasts" />
+                                                            </span>
+                                                        </td>
+                                                    ) : (
+                                                        <>
+                                                            <td style={{ textAlign: "center" }}>
+                                                                {!row.src || !row.tgt ? (
+                                                                    <Icon name="sync_disabled" style={{ fontSize: "16px", color: "var(--color-on-surface-disabled)" }} />
+                                                                ) : (
+                                                                    <span className="text-on-surface-disabled">→</span>
+                                                                )}
+                                                            </td>
+                                                            <td className={!row.src || !row.tgt ? "schema-cell--empty" : ""}>
+                                                                {row.tgt ? (
+                                                                    <span className={`font-mono${!row.src ? " schema-strike" : ""}`}>{row.tgt}</span>
+                                                                ) : (
+                                                                    <span className="font-mono" style={{ fontStyle: "italic", color: "#555" }}>
+                                                                        NULL
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                        </>
+                                                    )}
                                                 </tr>
                                             ))}
                                         </tbody>
@@ -252,16 +360,55 @@ export default function DashboardPage({ jobs, onDelete }) {
                                             <thead>
                                                 <tr>
                                                     <th>SOURCE ({(src.table || "—").toUpperCase()})</th>
-                                                    <th style={{ width: "60px", textAlign: "center" }}>LOGIC</th>
-                                                    <th>TARGET ({(tgt.table || "—").toUpperCase()})</th>
+                                                    {isMqttPublish ? (
+                                                        <th style={{ width: "60px", textAlign: "center" }}>MQTT</th>
+                                                    ) : (
+                                                        <>
+                                                            <th style={{ width: "60px", textAlign: "center" }}>LOGIC</th>
+                                                            <th>TARGET ({(tgt.table || "—").toUpperCase()})</th>
+                                                        </>
+                                                    )}
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {metaRows.map((row, i) => (
+                                                {(isMqttPublish ? metaRows.filter((r) => r.src) : metaRows).map((row, i) => (
                                                     <tr key={i}>
-                                                        <td className={row.src ? "" : "schema-cell--empty"}>{row.src ? <span className="font-mono">{row.src}</span> : <span className="text-on-surface-disabled">-</span>}</td>
-                                                        <td style={{ textAlign: "center" }}><span className="text-on-surface-disabled">→</span></td>
-                                                        <td className={row.tgt ? "" : "schema-cell--empty"}>{row.tgt ? <span className="font-mono">{row.tgt}</span> : <span className="text-on-surface-disabled">-</span>}</td>
+                                                        <td className={!row.src || (!isMqttPublish && !row.tgt) ? "schema-cell--empty" : ""}>
+                                                            {row.src ? (
+                                                                <span className={`font-mono${!isMqttPublish && !row.tgt ? " schema-strike" : ""}`}>{row.src}</span>
+                                                            ) : (
+                                                                <span className="text-on-surface-disabled">-</span>
+                                                            )}
+                                                        </td>
+                                                        {isMqttPublish ? (
+                                                            <td style={{ textAlign: "center" }}>
+                                                                <span
+                                                                    className={`col-map-outbound-icon${row.src ? " col-map-outbound-icon--active" : ""}`}
+                                                                    title="Published to MQTT"
+                                                                >
+                                                                    <Icon name="podcasts" />
+                                                                </span>
+                                                            </td>
+                                                        ) : (
+                                                            <>
+                                                                <td style={{ textAlign: "center" }}>
+                                                                    {!row.src || !row.tgt ? (
+                                                                        <Icon name="sync_disabled" style={{ fontSize: "16px", color: "var(--color-on-surface-disabled)" }} />
+                                                                    ) : (
+                                                                        <span className="text-on-surface-disabled">→</span>
+                                                                    )}
+                                                                </td>
+                                                                <td className={!row.src || !row.tgt ? "schema-cell--empty" : ""}>
+                                                                    {row.tgt ? (
+                                                                        <span className={`font-mono${!row.src ? " schema-strike" : ""}`}>{row.tgt}</span>
+                                                                    ) : (
+                                                                        <span className="font-mono" style={{ fontStyle: "italic", color: "#555" }}>
+                                                                            NULL
+                                                                        </span>
+                                                                    )}
+                                                                </td>
+                                                            </>
+                                                        )}
                                                     </tr>
                                                 ))}
                                             </tbody>
@@ -284,9 +431,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                                     <span className="text-on-surface font-semibold">{repCond.column}</span>
                                     <span className="text-on-surface-tertiary"> {repCond.op || "ALL"} </span>
                                     {repCond.op === "IN" ? (
-                                        <span style={{ color: "#4da6ff" }}>
-                                            {"[" + (repCond.value || []).map((v) => "'" + v + "'").join(", ") + "]"}
-                                        </span>
+                                        <span style={{ color: "#4da6ff" }}>{"[" + (repCond.value || []).map((v) => "'" + v + "'").join(", ") + "]"}</span>
                                     ) : repCond.op === "LIKE" ? (
                                         <span style={{ color: "#4da6ff" }}>{"'" + (repCond.value?.[0] || "") + "'"}</span>
                                     ) : (
@@ -317,7 +462,11 @@ export default function DashboardPage({ jobs, onDelete }) {
                                             <div className="pipeline-body">
                                                 {group.expr.map((e, ei) => (
                                                     <div key={ei} className="pipeline-rule font-mono text-sm">
-                                                        <Icon name={e.type === "filter" ? "filter_alt" : e.type === "calc" ? "calculate" : "arrow_right"} className="text-on-surface-tertiary" style={{ fontSize: "16px" }} />
+                                                        <Icon
+                                                            name={e.type === "filter" ? "filter_alt" : e.type === "calc" ? "calculate" : "arrow_right"}
+                                                            className="text-on-surface-tertiary"
+                                                            style={{ fontSize: "16px" }}
+                                                        />
                                                         <span className="text-on-surface font-medium">{e.column}</span>
                                                         <span className="text-on-surface-tertiary">{e.type}</span>
                                                         {renderExpr(e)}
@@ -332,7 +481,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                     )}
 
                     {/* Execution | Advanced — collapsible */}
-                    <div className="flex flex-col lg:flex-row items-start gap-16">
+                    <div className="flex flex-col lg:flex-row items-stretch gap-16">
                         <div className="flex-1 lg:min-w-0">
                             <section className="form-card collapse-card">
                                 <button className="collapse-card-header" onClick={() => setExecOpen(!execOpen)}>
@@ -396,10 +545,13 @@ export default function DashboardPage({ jobs, onDelete }) {
                                     <Icon name="terminal" className="text-primary" />
                                     Logging Controls
                                 </div>
-                                <div className="flex items-center gap-32">
-                                    <div className="flex items-center gap-12">
+                                <div className="flex flex-wrap items-center gap-32">
+                                    <div className="flex flex-wrap items-center gap-12">
                                         <span className="form-label !mb-0">Log Level</span>
-                                        <span className={`log-level-item level-${level.toLowerCase()} is-selected`} style={{ cursor: "default", pointerEvents: "none", borderRight: "none", borderRadius: "var(--radius-base)" }}>
+                                        <span
+                                            className={`log-level-item level-${level.toLowerCase()} is-selected`}
+                                            style={{ cursor: "default", pointerEvents: "none", borderRight: "none", borderRadius: "var(--radius-base)" }}
+                                        >
                                             {level}
                                         </span>
                                         <span className="log-level-caption" style={{ fontSize: "var(--font-size-sm)", marginTop: 0 }}>
@@ -408,7 +560,8 @@ export default function DashboardPage({ jobs, onDelete }) {
                                                     Records{" "}
                                                     {included.map((lv, i) => (
                                                         <span key={lv} className={`log-level-tag level-${lv.toLowerCase()}`}>
-                                                            {lv}{i < included.length - 1 ? ", " : ""}
+                                                            {lv}
+                                                            {i < included.length - 1 ? ", " : ""}
                                                         </span>
                                                     ))}{" "}
                                                     messages
@@ -421,12 +574,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                                     <div className="flex items-center gap-12">
                                         <span className="form-label !mb-0">File Limit</span>
                                         <span className="text-sm text-on-surface font-mono font-semibold">{logging.maxFiles ?? "—"}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => setLogFilesOpen(true)}
-                                            className="btn btn-sm btn-primary tooltip"
-                                            data-tooltip="View log files"
-                                        >
+                                        <button type="button" onClick={() => setLogFilesOpen(true)} className="btn btn-sm btn-primary tooltip" data-tooltip="View log files">
                                             <Icon name="folder_open" className="icon-sm" />
                                             <span>Log Files</span>
                                         </button>
@@ -438,7 +586,7 @@ export default function DashboardPage({ jobs, onDelete }) {
 
                     {/* <LiveLogs jobId={listJob.id} /> */}
 
-                    {logFilesOpen && <LogFilesModal onClose={() => setLogFilesOpen(false)} />}
+                    {logFilesOpen && <LogFilesModal name={listJob.id} onClose={() => setLogFilesOpen(false)} />}
 
                     {confirmDelete && (
                         <ConfirmDialog

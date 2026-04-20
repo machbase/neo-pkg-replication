@@ -1,86 +1,79 @@
-import Icon from '../common/Icon'
+import Icon from "../common/Icon";
 
-const LOG_LEVELS = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR']
+const LOG_LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
 
 export default function LogSection({ form, update, readOnly = false }) {
-  const currentLevel = (form.logging?.level || 'INFO').toUpperCase()
-  const currentIdx = LOG_LEVELS.indexOf(currentLevel)
-  const included = currentIdx >= 0 ? LOG_LEVELS.slice(currentIdx) : []
+    const currentLevel = (form.logging?.level || "INFO").toUpperCase();
+    const currentIdx = LOG_LEVELS.indexOf(currentLevel);
+    const included = currentIdx >= 0 ? LOG_LEVELS.slice(currentIdx) : [];
 
-  const handleClick = (lv) => {
-    if (readOnly || !update) return
-    update('logging.level', lv.toLowerCase())
-  }
+    const handleClick = (lv) => {
+        if (readOnly || !update) return;
+        update("logging.level", lv.toLowerCase());
+    };
 
-  return (
-    <div className="form-card log-compact">
-      <div className="form-card-header !mb-0">
-        <Icon name="terminal" className="text-primary" />
-        Logging Controls
-      </div>
-      <div className="flex items-center gap-24">
-        {/* LEFT: Log Level */}
-        <div className="flex items-center gap-12">
-          <div className="flex flex-col items-end">
-            <label className="form-label !mb-0">Log Level</label>
-            <span className="log-level-caption">
-              {included.length > 0 ? (
-                <>
-                  Records{' '}
-                  {included.map((lv, i) => (
-                    <span key={lv} className={`log-level-tag level-${lv.toLowerCase()}`}>
-                      {lv}
-                      {i < included.length - 1 ? ', ' : ''}
-                    </span>
-                  ))}{' '}
-                  messages
-                </>
-              ) : (
-                'Select a threshold level'
-              )}
-            </span>
-          </div>
-          <div className="log-level-group" role="radiogroup" aria-label="Log Level">
-            {LOG_LEVELS.map((lv, i) => {
-              const state =
-                currentIdx < 0
-                  ? 'excluded'
-                  : i < currentIdx
-                    ? 'excluded'
-                    : i === currentIdx
-                      ? 'selected'
-                      : 'included'
-              return (
-                <button
-                  key={lv}
-                  type="button"
-                  role="radio"
-                  aria-checked={i === currentIdx}
-                  onClick={() => handleClick(lv)}
-                  className={`log-level-item level-${lv.toLowerCase()} is-${state}${readOnly ? ' is-readonly' : ''}`}
-                >
-                  {lv}
-                </button>
-              )
-            })}
-          </div>
+    return (
+        <div className="form-card log-compact">
+            <div className="form-card-header !mb-0">
+                <Icon name="terminal" className="text-primary" />
+                Logging Controls
+            </div>
+            <div className="flex flex-wrap items-center gap-24">
+                {/* LEFT: Log Level */}
+                <div className="flex flex-wrap items-center gap-12">
+                    <div className="flex flex-col items-end">
+                        <label className="form-label !mb-0">Log Level</label>
+                        <span className="log-level-caption">
+                            {included.length > 0 ? (
+                                <>
+                                    Records{" "}
+                                    {included.map((lv, i) => (
+                                        <span key={lv} className={`log-level-tag level-${lv.toLowerCase()}`}>
+                                            {lv}
+                                            {i < included.length - 1 ? ", " : ""}
+                                        </span>
+                                    ))}{" "}
+                                    messages
+                                </>
+                            ) : (
+                                "Select a threshold level"
+                            )}
+                        </span>
+                    </div>
+                    <div className="log-level-group" role="radiogroup" aria-label="Log Level">
+                        {LOG_LEVELS.map((lv, i) => {
+                            const state = currentIdx < 0 ? "excluded" : i < currentIdx ? "excluded" : i === currentIdx ? "selected" : "included";
+                            return (
+                                <button
+                                    key={lv}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={i === currentIdx}
+                                    onClick={() => handleClick(lv)}
+                                    className={`log-level-item level-${lv.toLowerCase()} is-${state}${readOnly ? " is-readonly" : ""}`}
+                                >
+                                    {lv}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                {/* RIGHT: File Limit */}
+                <div className="flex items-center gap-12">
+                    <label className="form-label !mb-0">File Limit</label>
+                    <input
+                        type="number"
+                        min="1"
+                        value={form.logging?.maxFiles ?? 10}
+                        onChange={(e) => update && update("logging.maxFiles", e.target.value)}
+                        className="w-[100px]"
+                        placeholder="10"
+                        disabled={readOnly}
+                        readOnly={readOnly}
+                    />
+                </div>
+            </div>
         </div>
-
-        {/* RIGHT: File Limit */}
-        <div className="flex items-center gap-12">
-          <label className="form-label !mb-0">File Limit</label>
-          <input
-            type="number"
-            min="1"
-            value={form.logging?.maxFiles ?? 10}
-            onChange={(e) => update && update('logging.maxFiles', e.target.value)}
-            className="w-[100px]"
-            placeholder="10"
-            disabled={readOnly}
-            readOnly={readOnly}
-          />
-        </div>
-      </div>
-    </div>
-  )
+    );
 }

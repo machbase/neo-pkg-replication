@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import Icon from "../common/Icon";
 import * as jobsApi from "../../api/jobs";
 import { useApp } from "../../context/AppContext";
+import TagPickerModal from "./TagPickerModal";
 
 const displayType = (t) => {
     if (!t) return null;
@@ -61,6 +62,7 @@ export function TargetCondition({ form, update }) {
     const [inputValue, setInputValue] = useState("");
     const [likeValue, setLikeValue] = useState(operator === "LIKE" && values.length ? values[0] : "");
     const [sourceCols, setSourceCols] = useState([]);
+    const [pickerOpen, setPickerOpen] = useState(false);
 
     const sourceServer = form.source?.server;
     const sourceTable = form.source?.table;
@@ -95,6 +97,23 @@ export function TargetCondition({ form, update }) {
     const isLocked = !!primaryCol;
 
     const setCond = (next) => update("source.rep_target_cond", next);
+
+    // 소스 테이블 변경 시 cond를 default(op=ALL, value=[])로 초기화
+    // edit flow 초기 빈값 → 실데이터 전환은 변경으로 보지 않음 (PipelineBuilder와 동일 패턴)
+    const prevSourceTableRef = useRef(null);
+    useEffect(() => {
+        if (!sourceServer || !sourceTable) return;
+        const key = `${sourceServer}/${sourceTable}`;
+        if (prevSourceTableRef.current === null) {
+            prevSourceTableRef.current = key;
+            return;
+        }
+        if (prevSourceTableRef.current === key) return;
+        prevSourceTableRef.current = key;
+        setCond({ column: "", op: "ALL", value: [] });
+        setInputValue("");
+        setLikeValue("");
+    }, [sourceServer, sourceTable]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // 현재 선택값이 columnOptions에 없으면 0번째로 리셋 (테이블 변경 등)
     useEffect(() => {
@@ -172,25 +191,48 @@ export function TargetCondition({ form, update }) {
             {operator === "ALL" ? (
                 <input className="target-cond-like-input" type="text" placeholder="All values matched" disabled />
             ) : operator === "IN" ? (
-                <div className="target-cond-tags" onClick={(e) => e.currentTarget.querySelector("input")?.focus()}>
-                    {values.map((tag) => (
-                        <span key={tag} className="target-cond-badge">
-                            <span>'{tag}'</span>
-                            <button type="button" className="target-cond-badge-x" onClick={() => removeTag(tag)}>
-                                ×
-                            </button>
-                        </span>
-                    ))}
-                    <input
-                        className="target-cond-tag-input"
-                        type="text"
-                        placeholder={values.length ? "" : "Add values..."}
-                        value={inputValue}
-                        onChange={(e) => setInputValue(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        onBlur={addTag}
-                    />
-                </div>
+                <>
+                    <div className="target-cond-tags" onClick={(e) => e.currentTarget.querySelector("input")?.focus()}>
+                        {values.map((tag) => (
+                            <span key={tag} className="target-cond-badge">
+                                <span>'{tag}'</span>
+                                <button type="button" className="target-cond-badge-x" onClick={() => removeTag(tag)}>
+                                    ×
+                                </button>
+                            </span>
+                        ))}
+                        <input
+                            className="target-cond-tag-input"
+                            type="text"
+                            placeholder={values.length ? "" : "Add values..."}
+                            value={inputValue}
+                            onChange={(e) => setInputValue(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            onBlur={addTag}
+                        />
+                    </div>
+                    <button
+                        type="button"
+                        className="btn btn-icon btn-primary tooltip"
+                        data-tooltip="Browse tags"
+                        onClick={() => setPickerOpen(true)}
+                        disabled={!sourceServer || !sourceTable}
+                    >
+                        <Icon name="sell" />
+                    </button>
+                    {pickerOpen && (
+                        <TagPickerModal
+                            server={sourceServer}
+                            table={sourceTable}
+                            existingValues={values}
+                            onClose={() => setPickerOpen(false)}
+                            onConfirm={(picked) => {
+                                setCond({ column, op: operator, value: picked });
+                                setPickerOpen(false);
+                            }}
+                        />
+                    )}
+                </>
             ) : (
                 <input
                     className="target-cond-like-input"
@@ -211,11 +253,11 @@ export function TargetCondition({ form, update }) {
  *   mapping: string|null[] — 각 row의 "어떤 source 이름을 쓸지" (null = disabled)
  *   onMappingChange: (next) => void
  */
-function MappingTable({ sourceItems, targetItems, mapping, onMappingChange }) {
+function MappingTable({ sourceItems, targetItems, mapping, onMappingChange, mqttPublish = false }) {
     const [dragIdx, setDragIdx] = useState(null);
     const [dropIdx, setDropIdx] = useState(null);
 
-    const rowCount = Math.max(sourceItems.length, targetItems.length);
+    const rowCount = mqttPublish ? sourceItems.length : Math.max(sourceItems.length, targetItems.length);
 
     // mapping(저장된 source 배열) + schema → 내부 (order, enabled) 재구성
     //   1) mapping[i]이 실제 컬럼명이면 그 schema 인덱스를 사용하고 해당 인덱스를 "사용됨"으로 마킹
@@ -324,13 +366,13 @@ function MappingTable({ sourceItems, targetItems, mapping, onMappingChange }) {
         iconEl.textContent = "drag_indicator";
         ghost.appendChild(iconEl);
 
-        const checkEl = document.createElement("input");
-        checkEl.type = "checkbox";
-        checkEl.className = "form-checkbox";
-        checkEl.checked = row?.enabled !== false;
-        checkEl.disabled = true;
-        checkEl.style.pointerEvents = "none";
-        ghost.appendChild(checkEl);
+        const switchEl = document.createElement("span");
+        switchEl.className = `switch switch-sm${row?.enabled !== false ? " active" : ""}`;
+        switchEl.style.pointerEvents = "none";
+        const thumbEl = document.createElement("span");
+        thumbEl.className = "switch-thumb";
+        switchEl.appendChild(thumbEl);
+        ghost.appendChild(switchEl);
 
         const nameEl = document.createElement("span");
         if (row?.source) {
@@ -394,94 +436,127 @@ function MappingTable({ sourceItems, targetItems, mapping, onMappingChange }) {
                     <col style={{ width: "32px" }} />
                     <col style={{ width: "36px" }} />
                     <col />
-                    <col style={{ width: "40px" }} />
-                    <col />
+                    {!mqttPublish && <col style={{ width: "40px" }} />}
+                    {!mqttPublish && <col />}
+                    {mqttPublish && <col style={{ width: "56px" }} />}
                 </colgroup>
                 <thead>
                     <tr>
                         <th></th>
                         <th></th>
                         <th>SOURCE COLUMN</th>
-                        <th></th>
-                        <th>TARGET COLUMN</th>
+                        {!mqttPublish && <th></th>}
+                        {!mqttPublish && <th>TARGET COLUMN</th>}
+                        {mqttPublish && <th className="text-center">MQTT</th>}
                     </tr>
                 </thead>
                 <tbody>
-                    {rows.map((row) => (
-                        <tr
-                            key={row.id}
-                            className={`col-map-row${row.enabled === false ? " col-map-row--disabled" : ""}${dragIdx === row.id ? " col-map-row--dragging" : ""}${
-                                dropIdx === row.id ? " col-map-row--drop-target" : ""
-                            }`}
-                            onDragOver={(e) => handleDragOver(e, row.id)}
-                            onDragLeave={(e) => handleDragLeave(e, row.id)}
-                            onDrop={(e) => handleDrop(e, row.id)}
-                        >
-                            <td className="col-map-drag" draggable onDragStart={(e) => handleDragStart(e, row.id)} onDragEnd={handleDragEnd} title="Drag to reorder">
-                                <Icon
-                                    name="drag_indicator"
-                                    style={{
-                                        fontSize: "18px",
-                                        color: "var(--color-on-surface-tertiary)",
-                                        verticalAlign: "middle",
-                                    }}
-                                />
-                            </td>
-                            <td className="col-map-check">
-                                <input type="checkbox" checked={row.enabled !== false} onChange={() => toggleRow(row.id)} className="form-checkbox" />
-                            </td>
-                            <td
-                                className={`col-map-source ${row.source ? "" : "schema-cell--empty"}`}
-                                draggable
-                                onDragStart={(e) => handleDragStart(e, row.id)}
-                                onDragEnd={handleDragEnd}
+                    {rows.map((row) => {
+                        const sourceEmpty = mqttPublish
+                            ? !row.source || !row.enabled
+                            : !row.source || !row.target || !row.enabled;
+                        const sourceStrike = mqttPublish ? !row.enabled : !row.enabled || !row.target;
+                        return (
+                            <tr
+                                key={row.id}
+                                className={`col-map-row${row.enabled === false ? " col-map-row--disabled" : ""}${dragIdx === row.id ? " col-map-row--dragging" : ""}${
+                                    dropIdx === row.id ? " col-map-row--drop-target" : ""
+                                }`}
+                                onDragOver={(e) => handleDragOver(e, row.id)}
+                                onDragLeave={(e) => handleDragLeave(e, row.id)}
+                                onDrop={(e) => handleDrop(e, row.id)}
                             >
-                                {row.source ? (
-                                    <span className="col-map-field font-mono">
-                                        <span className="col-map-name-row">
-                                            <span>{row.source}</span>
-                                            <ColumnFlags col={row.sourceCol} />
-                                        </span>
-                                        {row.sourceType && <span className="col-map-type">{displayType(row.sourceType)}</span>}
-                                    </span>
-                                ) : (
-                                    <span className="col-map-field col-map-field--empty font-mono">NULL</span>
-                                )}
-                            </td>
-                            <td className="text-center">
-                                {row.enabled && row.typeStatus === "error" ? (
-                                    <span
-                                        title={`Type mismatch: ${displayType(row.sourceType) || "—"} → ${displayType(row.targetType) || "—"}`}
-                                        style={{ color: "var(--color-error)", display: "inline-flex" }}
+                                <td className="col-map-drag" draggable onDragStart={(e) => handleDragStart(e, row.id)} onDragEnd={handleDragEnd} title="Drag to reorder">
+                                    <Icon
+                                        name="drag_indicator"
+                                        style={{
+                                            fontSize: "18px",
+                                            color: "var(--color-on-surface-tertiary)",
+                                            verticalAlign: "middle",
+                                        }}
+                                    />
+                                </td>
+                                <td className="col-map-check">
+                                    <button
+                                        type="button"
+                                        onClick={() => toggleRow(row.id)}
+                                        className={`switch switch-sm${row.enabled !== false ? " active" : ""}`}
+                                        aria-label={row.enabled !== false ? "Disable row" : "Enable row"}
                                     >
-                                        <Icon name="error" />
-                                    </span>
-                                ) : row.enabled && row.typeStatus === "warning" ? (
-                                    <span
-                                        title={`Size mismatch: ${displayType(row.sourceType) || "—"} → ${displayType(row.targetType) || "—"}`}
-                                        style={{ color: "var(--color-warning)", display: "inline-flex" }}
-                                    >
-                                        <Icon name="warning" />
-                                    </span>
-                                ) : (
-                                    <span className="text-on-surface-disabled">→</span>
-                                )}
-                            </td>
-                            <td className={row.target ? "" : "schema-cell--empty"}>
-                                {row.target ? (
-                                    <span className="col-map-field col-map-field--target font-mono">
-                                        <span className="col-map-name-row">
-                                            <span>{row.target}</span>
-                                            <ColumnFlags col={row.targetCol} />
+                                        <div className="switch-thumb" />
+                                    </button>
+                                </td>
+                                <td
+                                    className={`col-map-source ${sourceEmpty ? "schema-cell--empty" : ""}`}
+                                    draggable
+                                    onDragStart={(e) => handleDragStart(e, row.id)}
+                                    onDragEnd={handleDragEnd}
+                                >
+                                    {row.source ? (
+                                        <span className={`col-map-field font-mono${sourceStrike ? " schema-strike" : ""}`}>
+                                            <span className="col-map-name-row">
+                                                <span>{row.source}</span>
+                                                <ColumnFlags col={row.sourceCol} />
+                                            </span>
+                                            {row.sourceType && <span className="col-map-type">{displayType(row.sourceType)}</span>}
                                         </span>
-                                        {row.targetType && <span className="col-map-type">{displayType(row.targetType)}</span>}
-                                    </span>
-                                ) : (
-                                    <span className="col-map-field col-map-field--empty font-mono">NULL</span>
+                                    ) : (
+                                        <span className="col-map-field col-map-field--empty font-mono">NULL</span>
+                                    )}
+                                </td>
+                                {!mqttPublish && (
+                                    <td className="text-center">
+                                        {!row.enabled || !row.source || !row.target ? (
+                                            <span style={{ display: "inline-flex" }} title={!row.enabled ? "Disabled" : "Unmapped"}>
+                                                <Icon name="sync_disabled" style={{ fontSize: "16px", color: "var(--color-on-surface-disabled)" }} />
+                                            </span>
+                                        ) : row.typeStatus === "error" ? (
+                                            <span
+                                                title={`Type mismatch: ${displayType(row.sourceType) || "—"} → ${displayType(row.targetType) || "—"}`}
+                                                style={{ color: "var(--color-error)", display: "inline-flex" }}
+                                            >
+                                                <Icon name="error" />
+                                            </span>
+                                        ) : row.typeStatus === "warning" ? (
+                                            <span
+                                                title={`Size mismatch: ${displayType(row.sourceType) || "—"} → ${displayType(row.targetType) || "—"}`}
+                                                style={{ color: "var(--color-warning)", display: "inline-flex" }}
+                                            >
+                                                <Icon name="warning" />
+                                            </span>
+                                        ) : (
+                                            <span className="text-on-surface-disabled">→</span>
+                                        )}
+                                    </td>
                                 )}
-                            </td>
-                        </tr>
-                    ))}
+                                {!mqttPublish && (
+                                    <td className={!row.target || !row.source || !row.enabled ? "schema-cell--empty" : ""}>
+                                        {row.target ? (
+                                            <span className={`col-map-field col-map-field--target font-mono${!row.source || !row.enabled ? " schema-strike" : ""}`}>
+                                                <span className="col-map-name-row">
+                                                    <span>{row.target}</span>
+                                                    <ColumnFlags col={row.targetCol} />
+                                                </span>
+                                                {row.targetType && <span className="col-map-type">{displayType(row.targetType)}</span>}
+                                            </span>
+                                        ) : (
+                                            <span className="col-map-field col-map-field--empty font-mono">NULL</span>
+                                        )}
+                                    </td>
+                                )}
+                                {mqttPublish && (
+                                    <td className="col-map-outbound">
+                                        <span
+                                            className={`col-map-outbound-icon${row.enabled && row.source ? " col-map-outbound-icon--active" : ""}`}
+                                            title={row.enabled && row.source ? "Published to MQTT" : "Excluded"}
+                                        >
+                                            <Icon name="podcasts" />
+                                        </span>
+                                    </td>
+                                )}
+                            </tr>
+                        );
+                    })}
                 </tbody>
             </table>
         </div>
@@ -493,7 +568,7 @@ function MappingTable({ sourceItems, targetItems, mapping, onMappingChange }) {
  *   form.source.columns / target.columns — string|null array (data columns)
  *   form.source.meta    / target.meta    — string|null array (meta columns for TAG tables)
  */
-export default function ColumnMapping({ form, update }) {
+export default function ColumnMapping({ form, update, servers = [] }) {
     const { notify } = useApp();
     const [sourceCols, setSourceCols] = useState([]);
     const [sourceMeta, setSourceMeta] = useState([]);
@@ -505,6 +580,8 @@ export default function ColumnMapping({ form, update }) {
     const sourceTable = form.source?.table;
     const targetServer = form.target?.server;
     const targetTable = form.target?.table;
+    const targetServerMeta = servers.find((s) => s.name === targetServer);
+    const isMqttPublish = targetServerMeta?.type === "mqtt-publish";
 
     useEffect(() => {
         if (!sourceServer || !sourceTable) {
@@ -533,7 +610,7 @@ export default function ColumnMapping({ form, update }) {
     }, [sourceServer, sourceTable, notify]);
 
     useEffect(() => {
-        if (!targetServer || !targetTable) {
+        if (!targetServer || !targetTable || isMqttPublish) {
             setTargetCols([]);
             setTargetMeta([]);
             return;
@@ -552,7 +629,7 @@ export default function ColumnMapping({ form, update }) {
         return () => {
             cancelled = true;
         };
-    }, [targetServer, targetTable, notify]);
+    }, [targetServer, targetTable, isMqttPublish, notify]);
 
     // source/target 테이블 변경 감지용 ref — sync effect에서 force reset에 사용
     const prevTablesColsRef = useRef(null);
@@ -562,23 +639,40 @@ export default function ColumnMapping({ form, update }) {
     //   rowCount = max(source, target). target이 짧으면 뒤쪽을 null로 채워 source와 길이를 맞춤
     //   checkbox 상태와 무관하게 schema 기준으로 유지됨 (padding만 null)
     //   targetCols가 아직 로딩 전이면 기존 saved 값을 건드리지 않음 (schema 도착 전 race로 날려먹는 것 방지)
+    //   mqtt-publish: target schema 조회를 하지 않으므로 source 이름을 그대로 미러링
     useEffect(() => {
+        if (isMqttPublish) {
+            if (sourceCols.length === 0) return;
+            const names = sourceCols.map((c) => c.name);
+            const current = form.target.columns || [];
+            if (current.length === names.length && current.every((n, i) => n === names[i])) return;
+            update("target.columns", names);
+            return;
+        }
         if (targetCols.length === 0) return;
         const rowCount = Math.max(sourceCols.length, targetCols.length);
         const names = Array.from({ length: rowCount }, (_, i) => targetCols[i]?.name ?? null);
         const current = form.target.columns || [];
         if (current.length === names.length && current.every((n, i) => n === names[i])) return;
         update("target.columns", names);
-    }, [targetCols, sourceCols]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [targetCols, sourceCols, isMqttPublish]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
+        if (isMqttPublish) {
+            if (sourceMeta.length === 0) return;
+            const names = sourceMeta.map((c) => c.name);
+            const current = form.target.meta || [];
+            if (current.length === names.length && current.every((n, i) => n === names[i])) return;
+            update("target.meta", names);
+            return;
+        }
         if (targetMeta.length === 0) return;
         const rowCount = Math.max(sourceMeta.length, targetMeta.length);
         const names = Array.from({ length: rowCount }, (_, i) => targetMeta[i]?.name ?? null);
         const current = form.target.meta || [];
         if (current.length === names.length && current.every((n, i) => n === names[i])) return;
         update("target.meta", names);
-    }, [targetMeta, sourceMeta]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [targetMeta, sourceMeta, isMqttPublish]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // source.columns / source.meta는 rowCount만큼 길이 맞춰 보관
     //   null         = disabled (체크박스 해제)
@@ -588,52 +682,55 @@ export default function ColumnMapping({ form, update }) {
     // 오판하고 saved mapping을 전부 날려버리는 race 방지
     useEffect(() => {
         if (sourceCols.length === 0) return;
-        const currentKey = `${sourceServer}/${sourceTable}|${targetServer}/${targetTable}`;
+        const currentKey = `${sourceServer}/${sourceTable}|${targetServer}/${targetTable}|${isMqttPublish ? "mq" : "std"}`;
         const tableChanged = prevTablesColsRef.current !== null && prevTablesColsRef.current !== currentKey;
         prevTablesColsRef.current = currentKey;
 
-        const rowCount = Math.max(sourceCols.length, targetCols.length);
+        const rowCount = isMqttPublish ? sourceCols.length : Math.max(sourceCols.length, targetCols.length);
         const current = form.source.columns || [];
         const sourceNames = new Set(sourceCols.map((c) => c.name));
         const hasInvalid = current.some((v) => v && !sourceNames.has(v));
         const forceReset = tableChanged || hasInvalid;
         const next = Array.from({ length: rowCount }, (_, i) => {
-            if (forceReset) return sourceCols[i]?.name ?? null;
+            const hasSlot = isMqttPublish ? !!sourceCols[i] : !!targetCols[i];
+            if (forceReset) return hasSlot ? sourceCols[i]?.name ?? null : null;
             const cur = current[i];
             if (cur === null) return null;
             if (cur !== undefined) return cur;
-            return sourceCols[i]?.name ?? null;
+            return hasSlot ? sourceCols[i]?.name ?? null : null;
         });
         const same = current.length === next.length && current.every((v, i) => v === next[i]);
         if (!same) update("source.columns", next);
-    }, [sourceCols, targetCols]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [sourceCols, targetCols, isMqttPublish]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         if (sourceMeta.length === 0) return;
-        const currentKey = `${sourceServer}/${sourceTable}|${targetServer}/${targetTable}`;
+        const currentKey = `${sourceServer}/${sourceTable}|${targetServer}/${targetTable}|${isMqttPublish ? "mq" : "std"}`;
         const tableChanged = prevTablesMetaRef.current !== null && prevTablesMetaRef.current !== currentKey;
         prevTablesMetaRef.current = currentKey;
 
-        const rowCount = Math.max(sourceMeta.length, targetMeta.length);
+        const rowCount = isMqttPublish ? sourceMeta.length : Math.max(sourceMeta.length, targetMeta.length);
         const current = form.source.meta || [];
         const sourceNames = new Set(sourceMeta.map((c) => c.name));
         const hasInvalid = current.some((v) => v && !sourceNames.has(v));
         const forceReset = tableChanged || hasInvalid;
         const next = Array.from({ length: rowCount }, (_, i) => {
-            if (forceReset) return sourceMeta[i]?.name ?? null;
+            const hasSlot = isMqttPublish ? !!sourceMeta[i] : !!targetMeta[i];
+            if (forceReset) return hasSlot ? sourceMeta[i]?.name ?? null : null;
             const cur = current[i];
             if (cur === null) return null;
             if (cur !== undefined) return cur;
-            return sourceMeta[i]?.name ?? null;
+            return hasSlot ? sourceMeta[i]?.name ?? null : null;
         });
         const same = current.length === next.length && current.every((v, i) => v === next[i]);
         if (!same) update("source.meta", next);
-    }, [sourceMeta, targetMeta]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [sourceMeta, targetMeta, isMqttPublish]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // 소스/타겟 중 하나라도 선택되어 있고, columns/meta가 있으면 테이블 렌더
+    // mqtt-publish는 target schema가 없어 source만으로 판단
     const hasAnySide = (sourceServer && sourceTable) || (targetServer && targetTable);
-    const hasColumns = sourceCols.length > 0 || targetCols.length > 0;
-    const hasMeta = sourceMeta.length > 0 || targetMeta.length > 0;
+    const hasColumns = isMqttPublish ? sourceCols.length > 0 : sourceCols.length > 0 || targetCols.length > 0;
+    const hasMeta = isMqttPublish ? sourceMeta.length > 0 : sourceMeta.length > 0 || targetMeta.length > 0;
 
     return (
         <div className="form-card">
@@ -654,11 +751,12 @@ export default function ColumnMapping({ form, update }) {
                 <>
                     {hasColumns && (
                         <MappingTable
-                            key={`cols|${sourceServer}/${sourceTable}|${targetServer}/${targetTable}|${sourceCols.length}|${targetCols.length}`}
+                            key={`cols|${sourceServer}/${sourceTable}|${targetServer}/${targetTable}|${isMqttPublish ? "mq" : "std"}|${sourceCols.length}|${targetCols.length}`}
                             sourceItems={sourceCols}
                             targetItems={targetCols}
                             mapping={form.source.columns}
                             onMappingChange={(next) => update("source.columns", next)}
+                            mqttPublish={isMqttPublish}
                         />
                     )}
 
@@ -666,11 +764,12 @@ export default function ColumnMapping({ form, update }) {
                         <div className={hasColumns ? "mt-20" : ""}>
                             <div className="text-sm text-on-surface-secondary font-semibold uppercase tracking-wide mb-8">Meta Columns</div>
                             <MappingTable
-                                key={`meta|${sourceServer}/${sourceTable}|${targetServer}/${targetTable}|${sourceMeta.length}|${targetMeta.length}`}
+                                key={`meta|${sourceServer}/${sourceTable}|${targetServer}/${targetTable}|${isMqttPublish ? "mq" : "std"}|${sourceMeta.length}|${targetMeta.length}`}
                                 sourceItems={sourceMeta}
                                 targetItems={targetMeta}
                                 mapping={form.source.meta}
                                 onMappingChange={(next) => update("source.meta", next)}
+                                mqttPublish={isMqttPublish}
                             />
                         </div>
                     )}

@@ -29,7 +29,7 @@ function formatBytes(n) {
     return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-export default function LogFilesModal({ onClose }) {
+export default function LogFilesModal({ onClose, name }) {
     const [files, setFiles] = useState([]);
     const [listLoading, setListLoading] = useState(true);
     const [listError, setListError] = useState(null);
@@ -57,7 +57,7 @@ export default function LogFilesModal({ onClose }) {
         setListLoading(true);
         setListError(null);
         try {
-            const f = await listLogFiles();
+            const f = await listLogFiles(name);
             setFiles(f);
         } catch (err) {
             setListError(err.message || "Failed to load log files");
@@ -68,7 +68,7 @@ export default function LogFilesModal({ onClose }) {
 
     useEffect(() => {
         loadList();
-    }, []);
+    }, [name]);
 
     const loadFile = async (file) => {
         setContentLoading(true);

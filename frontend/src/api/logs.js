@@ -1,7 +1,8 @@
 import { request } from "./client";
 
-export const listLogFiles = async () => {
-    const data = await request("GET", "/log/list");
+export const listLogFiles = async (name) => {
+    const qs = name ? `?${new URLSearchParams({ name }).toString()}` : "";
+    const data = await request("GET", `/log/list${qs}`);
     return data?.files ?? [];
 };
 

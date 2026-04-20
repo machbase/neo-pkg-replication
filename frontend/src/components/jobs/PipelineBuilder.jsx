@@ -1,12 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 import Icon from "../common/Icon";
 import * as jobsApi from "../../api/jobs";
+import TagPickerModal from "./TagPickerModal";
 
 const STRING_TYPES = new Set(["VARCHAR", "TEXT", "NAME", "CHAR"]);
 const NUMERIC_TYPES = new Set(["SHORT", "INTEGER", "LONG", "FLOAT", "DOUBLE", "USHORT", "UINTEGER", "ULONG", "BIGINT", "NUMERIC"]);
 
 const getCategory = (type) => {
-    const base = String(type || "").toUpperCase().match(/^[A-Z_]+/)?.[0] || "";
+    const base =
+        String(type || "")
+            .toUpperCase()
+            .match(/^[A-Z_]+/)?.[0] || "";
     if (STRING_TYPES.has(base)) return "string";
     if (NUMERIC_TYPES.has(base)) return "numeric";
     return null;
@@ -17,12 +21,96 @@ const MODE_BY_CATEGORY = {
     numeric: ["calc", "filter"],
 };
 
+const CALC_STEP_DEF = {
+    b: { op: "+", field: "bias", placeholder: "0" },
+    m: { op: "×", field: "multiplier", placeholder: "1" },
+};
+
+function CalcSteps({ expr, onChange }) {
+    const raw = expr.calcOrder === "mb" ? "mb" : "bm";
+    const steps = raw.split("");
+    const [dragIdx, setDragIdx] = useState(null);
+    const [dropIdx, setDropIdx] = useState(null);
+
+    const handleDragStart = (e, idx) => {
+        setDragIdx(idx);
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", String(idx));
+    };
+    const handleDragEnd = () => {
+        setDragIdx(null);
+        setDropIdx(null);
+    };
+    const handleDragOver = (e, idx) => {
+        if (dragIdx === null || idx === dragIdx) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        if (dropIdx !== idx) setDropIdx(idx);
+    };
+    const handleDragLeave = (e, idx) => {
+        if (e.currentTarget.contains(e.relatedTarget)) return;
+        if (dropIdx === idx) setDropIdx(null);
+    };
+    const handleDrop = (e, idx) => {
+        e.preventDefault();
+        setDragIdx(null);
+        setDropIdx(null);
+        const from = Number(e.dataTransfer.getData("text/plain"));
+        if (!Number.isFinite(from) || from === idx) return;
+        const next = [...steps];
+        [next[from], next[idx]] = [next[idx], next[from]];
+        onChange("calcOrder", next.join(""));
+    };
+
+    return (
+        <div className="pb-calc-inline">
+            <span className="pb-calc-seg-paren">(</span>
+            <span className="pb-calc-seg-val">value</span>
+            {steps.map((key, idx) => {
+                const step = CALC_STEP_DEF[key];
+                const seg = (
+                    <div
+                        key={key}
+                        className={`pb-calc-seg${dragIdx === idx ? " pb-calc-seg--dragging" : ""}${dropIdx === idx ? " pb-calc-seg--drop-target" : ""}`}
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, idx)}
+                        onDragEnd={handleDragEnd}
+                        onDragOver={(e) => handleDragOver(e, idx)}
+                        onDragLeave={(e) => handleDragLeave(e, idx)}
+                        onDrop={(e) => handleDrop(e, idx)}
+                    >
+                        <Icon name="drag_indicator" className="pb-calc-seg-grip" />
+                        <span className="pb-calc-seg-op">{step.op}</span>
+                        <input
+                            type="number"
+                            className="pb-calc-seg-input"
+                            placeholder={step.placeholder}
+                            value={expr[step.field]}
+                            onChange={(e) => onChange(step.field, e.target.value)}
+                        />
+                    </div>
+                );
+                if (idx === 0)
+                    return (
+                        <>
+                            {seg}
+                            <span key="paren-close" className="pb-calc-seg-paren">
+                                )
+                            </span>
+                        </>
+                    );
+                return seg;
+            })}
+        </div>
+    );
+}
+
 /**
- * source.transform: [{ criteria: {column, op, value[]}, expr: [{column, type, value/bias/multiplier/min/max}] }]
+ * source.transform: [{ criteria: {column, op, value[]}, expr: [{column, type, value/bias/multiplier/calcOrder/min/max}] }]
  *
  * expr.type:
  *   prefix | suffix — string
- *   calc   — numeric: { column, type: 'calc', bias, multiplier }
+ *   calc   — numeric: { column, type: 'calc', bias, multiplier, calcOrder: 'bm' | 'mb' }
  *   filter — numeric: { column, type: 'filter', min, max }
  */
 export default function PipelineBuilder({ form, update }) {
@@ -38,13 +126,18 @@ export default function PipelineBuilder({ form, update }) {
             return;
         }
         let cancelled = false;
-        jobsApi.fetchTableColumns({ server: sourceServer, table: sourceTable })
+        jobsApi
+            .fetchTableColumns({ server: sourceServer, table: sourceTable })
             .then((data) => {
                 if (cancelled) return;
                 setColumnsMeta(data?.columns ?? []);
             })
-            .catch(() => { if (!cancelled) setColumnsMeta([]); });
-        return () => { cancelled = true; };
+            .catch(() => {
+                if (!cancelled) setColumnsMeta([]);
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [sourceServer, sourceTable]);
 
     // 소스 테이블 변경 감지: Data Pipeline 전체 비우기
@@ -68,6 +161,14 @@ export default function PipelineBuilder({ form, update }) {
 
     // criteria 컬럼은 Replication Target Condition의 값을 그대로 따라간다
     const condColumn = form.source?.rep_target_cond?.column || "";
+    const repCond = form.source?.rep_target_cond;
+    const repCondOp = repCond?.op || "ALL";
+    const repCondValues = Array.isArray(repCond?.value) ? repCond.value : [];
+    // TargetCondition이 LIKE면 매칭 후보를 알 수 없어 picker 비활성화
+    const pickerEnabled = repCondOp !== "LIKE";
+    // ALL이면 전체 fetch (candidates undefined), IN이면 cond.value 부분집합
+    const pickerCandidates = repCondOp === "IN" ? repCondValues : undefined;
+    const [pickerOpenIdx, setPickerOpenIdx] = useState(null);
 
     // rep_target_cond.column 이 바뀌면 모든 block의 criteria.column을 동기화
     useEffect(() => {
@@ -85,13 +186,14 @@ export default function PipelineBuilder({ form, update }) {
 
     const setBlocks = (next) => update("source.transform", next);
 
-    const addBlock = () => setBlocks([
-        ...blocks,
-        {
-            criteria: { column: condColumn, op: "ALL", value: [] },
-            expr: [],
-        },
-    ]);
+    const addBlock = () =>
+        setBlocks([
+            ...blocks,
+            {
+                criteria: { column: condColumn, op: "ALL", value: [] },
+                expr: [],
+            },
+        ]);
 
     const removeBlock = (idx) => setBlocks(blocks.filter((_, i) => i !== idx));
 
@@ -100,8 +202,7 @@ export default function PipelineBuilder({ form, update }) {
     };
 
     // --- Criteria helpers ---
-    const updateCriteria = (idx, field, value) =>
-        updateBlock(idx, (b) => ({ ...b, criteria: { ...b.criteria, [field]: value } }));
+    const updateCriteria = (idx, field, value) => updateBlock(idx, (b) => ({ ...b, criteria: { ...b.criteria, [field]: value } }));
 
     const addCriteriaTag = (idx, raw) => {
         const newVals = raw.split(/[\s,]+/).filter(Boolean);
@@ -112,15 +213,13 @@ export default function PipelineBuilder({ form, update }) {
         });
     };
 
-    const removeCriteriaTag = (idx, tag) =>
-        updateBlock(idx, (b) => ({ ...b, criteria: { ...b.criteria, value: (b.criteria.value || []).filter((v) => v !== tag) } }));
+    const removeCriteriaTag = (idx, tag) => updateBlock(idx, (b) => ({ ...b, criteria: { ...b.criteria, value: (b.criteria.value || []).filter((v) => v !== tag) } }));
 
     // --- Expression helpers ---
     const addExpression = (idx) =>
-        updateBlock(idx, (b) => ({ ...b, expr: [...(b.expr || []), { column: "", type: "", value: "", bias: "", multiplier: "", min: "", max: "" }] }));
+        updateBlock(idx, (b) => ({ ...b, expr: [...(b.expr || []), { column: "", type: "", value: "", bias: "", multiplier: "", calcOrder: "bm", min: "", max: "" }] }));
 
-    const removeExpression = (idx, exprIdx) =>
-        updateBlock(idx, (b) => ({ ...b, expr: (b.expr || []).filter((_, i) => i !== exprIdx) }));
+    const removeExpression = (idx, exprIdx) => updateBlock(idx, (b) => ({ ...b, expr: (b.expr || []).filter((_, i) => i !== exprIdx) }));
 
     const updateExpression = (idx, exprIdx, field, value) =>
         updateBlock(idx, (b) => ({
@@ -133,10 +232,20 @@ export default function PipelineBuilder({ form, update }) {
                     const cat = col ? getCategory(col.type) : null;
                     const modes = cat ? MODE_BY_CATEGORY[cat] : [];
                     next.type = modes.length ? modes[0] : "";
-                    next.value = ""; next.bias = ""; next.multiplier = ""; next.min = ""; next.max = "";
+                    next.value = "";
+                    next.bias = "";
+                    next.multiplier = "";
+                    next.calcOrder = "bm";
+                    next.min = "";
+                    next.max = "";
                 }
                 if (field === "type") {
-                    next.value = ""; next.bias = ""; next.multiplier = ""; next.min = ""; next.max = "";
+                    next.value = "";
+                    next.bias = "";
+                    next.multiplier = "";
+                    next.calcOrder = "bm";
+                    next.min = "";
+                    next.max = "";
                 }
                 return next;
             }),
@@ -161,16 +270,8 @@ export default function PipelineBuilder({ form, update }) {
                 </button>
             </div>
 
-            {columnsMeta.length === 0 && (
-                <div className="text-xs text-on-surface-tertiary mb-8">
-                    TAG name 기준 조건은 prefix/suffix 적용 전 원본 name 기준으로 매칭됩니다.
-                </div>
-            )}
-
             <div className="pb-blocks">
-                {blocks.length === 0 && (
-                    <div className="text-sm text-on-surface-tertiary py-8">No transform rules. Click "Add Criteria Block" to add one.</div>
-                )}
+                {blocks.length === 0 && <div className="text-sm text-on-surface-tertiary py-8">No transform rules. Click "Add Criteria Block" to add one.</div>}
                 {blocks.map((block, idx) => {
                     const criteria = block.criteria || { column: condColumn, op: "ALL", value: [] };
                     const op = criteria.op || "ALL";
@@ -187,21 +288,14 @@ export default function PipelineBuilder({ form, update }) {
                             <div className="pb-block-body">
                                 {/* Criteria row */}
                                 <div className="pb-expr">
-                                    <select
-                                        className="pb-select"
-                                        value={condColumn}
-                                        disabled
-                                        title="Follows Replication Target Condition column"
-                                    >
-                                        {condColumn
-                                            ? <option value={condColumn}>{condColumn}</option>
-                                            : <option value="">—</option>}
+                                    <select className="pb-select" value={condColumn} disabled title="Follows Replication Target Condition column">
+                                        {condColumn ? <option value={condColumn}>{condColumn}</option> : <option value="">—</option>}
                                     </select>
 
                                     <select
                                         className="pb-select pb-select--op"
                                         value={op}
-                                        onChange={(e) => { updateCriteria(idx, "op", e.target.value); updateCriteria(idx, "value", []); }}
+                                        onChange={(e) => updateBlock(idx, (b) => ({ ...b, criteria: { ...b.criteria, op: e.target.value, value: [] } }))}
                                     >
                                         <option value="ALL">ALL</option>
                                         <option value="IN">IN</option>
@@ -211,35 +305,50 @@ export default function PipelineBuilder({ form, update }) {
                                     {op === "ALL" ? (
                                         <input className="pb-text-input" type="text" placeholder="All values matched" disabled />
                                     ) : op === "IN" ? (
-                                        <div className="pb-tags" onClick={(e) => e.currentTarget.querySelector("input")?.focus()}>
-                                            {values.map((tag) => (
-                                                <span key={tag} className="pb-tag">
-                                                    <span>{tag}</span>
-                                                    <button type="button" className="pb-tag-x" onClick={() => removeCriteriaTag(idx, tag)}>×</button>
-                                                </span>
-                                            ))}
-                                            <input
-                                                className="pb-tag-input"
-                                                type="text"
-                                                placeholder={values.length ? "" : "Add values..."}
-                                                value={inputValue}
-                                                onChange={(e) => setInputValues((prev) => ({ ...prev, [idx]: e.target.value }))}
-                                                onKeyDown={(e) => {
-                                                    if (e.key === "Enter" || e.key === "," || e.key === " ") {
-                                                        e.preventDefault();
+                                        <>
+                                            <div className="pb-tags" onClick={(e) => e.currentTarget.querySelector("input")?.focus()}>
+                                                {values.map((tag) => (
+                                                    <span key={tag} className="pb-tag">
+                                                        <span>{tag}</span>
+                                                        <button type="button" className="pb-tag-x" onClick={() => removeCriteriaTag(idx, tag)}>
+                                                            ×
+                                                        </button>
+                                                    </span>
+                                                ))}
+                                                <input
+                                                    className="pb-tag-input"
+                                                    type="text"
+                                                    placeholder={values.length ? "" : "Add values..."}
+                                                    value={inputValue}
+                                                    onChange={(e) => setInputValues((prev) => ({ ...prev, [idx]: e.target.value }))}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === "Enter" || e.key === "," || e.key === " ") {
+                                                            e.preventDefault();
+                                                            addCriteriaTag(idx, inputValue);
+                                                            setInputValues((prev) => ({ ...prev, [idx]: "" }));
+                                                        }
+                                                        if (e.key === "Backspace" && !inputValue && values.length) {
+                                                            removeCriteriaTag(idx, values[values.length - 1]);
+                                                        }
+                                                    }}
+                                                    onBlur={() => {
                                                         addCriteriaTag(idx, inputValue);
                                                         setInputValues((prev) => ({ ...prev, [idx]: "" }));
-                                                    }
-                                                    if (e.key === "Backspace" && !inputValue && values.length) {
-                                                        removeCriteriaTag(idx, values[values.length - 1]);
-                                                    }
-                                                }}
-                                                onBlur={() => {
-                                                    addCriteriaTag(idx, inputValue);
-                                                    setInputValues((prev) => ({ ...prev, [idx]: "" }));
-                                                }}
-                                            />
-                                        </div>
+                                                    }}
+                                                />
+                                            </div>
+                                            {pickerEnabled && (
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-icon btn-primary tooltip"
+                                                    data-tooltip="Browse tags"
+                                                    onClick={() => setPickerOpenIdx(idx)}
+                                                    disabled={!sourceServer || !sourceTable}
+                                                >
+                                                    <Icon name="sell" />
+                                                </button>
+                                            )}
+                                        </>
                                     ) : (
                                         <input
                                             className="pb-text-input"
@@ -267,10 +376,16 @@ export default function PipelineBuilder({ form, update }) {
                                                 value={expr.column || ""}
                                                 onChange={(e) => updateExpression(idx, exprIdx, "column", e.target.value)}
                                             >
-                                                <option value="" disabled>Select column...</option>
-                                                {columnsMeta.filter((c) => getCategory(c.type)).map((c) => (
-                                                    <option key={c.name} value={c.name}>{c.name}</option>
-                                                ))}
+                                                <option value="" disabled>
+                                                    Select column...
+                                                </option>
+                                                {columnsMeta
+                                                    .filter((c) => getCategory(c.type))
+                                                    .map((c) => (
+                                                        <option key={c.name} value={c.name}>
+                                                            {c.name}
+                                                        </option>
+                                                    ))}
                                             </select>
 
                                             <select
@@ -281,7 +396,9 @@ export default function PipelineBuilder({ form, update }) {
                                             >
                                                 {!modes.length && <option value="">--</option>}
                                                 {modes.map((m) => (
-                                                    <option key={m} value={m}>{m}</option>
+                                                    <option key={m} value={m}>
+                                                        {m}
+                                                    </option>
                                                 ))}
                                             </select>
 
@@ -289,41 +406,48 @@ export default function PipelineBuilder({ form, update }) {
                                                 <div className="pb-dual-input">
                                                     <div className="pb-input-addon">
                                                         <span className="pb-addon-label">Min ≥</span>
-                                                        <input type="number" placeholder="min" value={expr.min} onChange={(e) => updateExpression(idx, exprIdx, "min", e.target.value)} />
+                                                        <input
+                                                            type="number"
+                                                            placeholder="min"
+                                                            value={expr.min}
+                                                            onChange={(e) => updateExpression(idx, exprIdx, "min", e.target.value)}
+                                                        />
                                                     </div>
                                                     <div className="pb-input-addon">
                                                         <span className="pb-addon-label">Max ≤</span>
-                                                        <input type="number" placeholder="max" value={expr.max} onChange={(e) => updateExpression(idx, exprIdx, "max", e.target.value)} />
+                                                        <input
+                                                            type="number"
+                                                            placeholder="max"
+                                                            value={expr.max}
+                                                            onChange={(e) => updateExpression(idx, exprIdx, "max", e.target.value)}
+                                                        />
                                                     </div>
                                                 </div>
                                             )}
-                                            {expr.type === "calc" && (
-                                                <div className="pb-dual-input">
-                                                    <div className="pb-input-addon">
-                                                        <span className="pb-addon-label">Bias</span>
-                                                        <input type="number" placeholder="bias" value={expr.bias} onChange={(e) => updateExpression(idx, exprIdx, "bias", e.target.value)} />
-                                                    </div>
-                                                    <div className="pb-input-addon">
-                                                        <span className="pb-addon-label">Multiplier</span>
-                                                        <input type="number" placeholder="multiplier" value={expr.multiplier} onChange={(e) => updateExpression(idx, exprIdx, "multiplier", e.target.value)} />
-                                                    </div>
-                                                </div>
-                                            )}
+                                            {expr.type === "calc" && <CalcSteps expr={expr} onChange={(field, value) => updateExpression(idx, exprIdx, field, value)} />}
                                             {expr.type === "prefix" && (
                                                 <div className="pb-input-addon" style={{ flex: 1 }}>
                                                     <span className="pb-addon-label">Prefix</span>
-                                                    <input type="text" placeholder="prefix..." value={expr.value} onChange={(e) => updateExpression(idx, exprIdx, "value", e.target.value)} />
+                                                    <input
+                                                        type="text"
+                                                        placeholder="prefix..."
+                                                        value={expr.value}
+                                                        onChange={(e) => updateExpression(idx, exprIdx, "value", e.target.value)}
+                                                    />
                                                 </div>
                                             )}
                                             {expr.type === "suffix" && (
                                                 <div className="pb-input-addon" style={{ flex: 1 }}>
                                                     <span className="pb-addon-label">Suffix</span>
-                                                    <input type="text" placeholder="suffix..." value={expr.value} onChange={(e) => updateExpression(idx, exprIdx, "value", e.target.value)} />
+                                                    <input
+                                                        type="text"
+                                                        placeholder="suffix..."
+                                                        value={expr.value}
+                                                        onChange={(e) => updateExpression(idx, exprIdx, "value", e.target.value)}
+                                                    />
                                                 </div>
                                             )}
-                                            {!expr.type && (
-                                                <input className="pb-text-input" type="text" placeholder="Select column first..." disabled />
-                                            )}
+                                            {!expr.type && <input className="pb-text-input" type="text" placeholder="Select column first..." disabled />}
 
                                             <button type="button" className="pb-remove" onClick={() => removeExpression(idx, exprIdx)}>
                                                 <span>×</span>
@@ -340,6 +464,23 @@ export default function PipelineBuilder({ form, update }) {
                     );
                 })}
             </div>
+
+            {pickerOpenIdx !== null && (
+                <TagPickerModal
+                    server={sourceServer}
+                    table={sourceTable}
+                    candidates={pickerCandidates}
+                    existingValues={blocks[pickerOpenIdx]?.criteria?.value || []}
+                    onClose={() => setPickerOpenIdx(null)}
+                    onConfirm={(picked) => {
+                        updateBlock(pickerOpenIdx, (b) => ({
+                            ...b,
+                            criteria: { ...b.criteria, value: picked },
+                        }));
+                        setPickerOpenIdx(null);
+                    }}
+                />
+            )}
         </div>
     );
 }
