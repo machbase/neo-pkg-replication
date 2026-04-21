@@ -225,6 +225,59 @@ function _buildSelectList(schema, selectedColumns, config) {
   }).join(', ');
 }
 
+function _buildQueryFilter(options, context) {
+  return buildQueryFilterSql(options?.repTargetCond, options?.transform, context);
+}
+
+/**
+ * 빈 RID 구간을 빠르게 건너뛰기 위한 next RID 탐색 SQL을 만든다.
+ *
+ * 의도:
+ * - steady/integrity read가 빈 결과를 돌려준 경우에만 호출되어, DELETE 후 큰 RID gap을
+ *   queryLimit 단위로 소모하느라 오래 멈춘 것처럼 보이는 현상을 줄인다.
+ * - rep_target_cond / transform filter와 같은 조건을 그대로 재사용해 "실제로 다음에 복제할 row"의
+ *   RID를 찾는다.
+ *
+ * 주의:
+ * - 정상 read path의 비용을 늘리지 않기 위해 별도 query는 empty batch일 때만 사용해야 한다.
+ */
+function _buildNextRidSql(tableName, startRid, endRid, filterSql) {
+  const hintEndRid = endRid + 1n;
+  const clauses = [
+    `_RID >= ${startRid.toString()}`,
+    `_RID <= ${endRid.toString()}`,
+  ];
+  if (filterSql.sql !== '1=1') {
+    clauses.push(`(${filterSql.sql})`);
+  }
+  return `SELECT /*+ RID_RANGE(${tableName}, ${startRid}, ${hintEndRid}) */ _RID FROM ${tableName} WHERE ${clauses.join(' AND ')} ORDER BY _RID LIMIT 1`;
+}
+
+async function _findNextRid(client, tableName, traceCtx, startRid, endRid, filterSql) {
+  if (endRid < startRid) {
+    return { rid: null, err: null };
+  }
+  const sql = _buildNextRidSql(tableName, startRid, endRid, filterSql);
+  getLogger().trace('table_next_rid_query', {
+    ...traceCtx,
+    startRid: String(startRid),
+    endRid: String(endRid),
+    sql,
+    params: _stringifyParams(filterSql.params),
+  });
+  try {
+    const sqlRows = (await client.query(sql, filterSql.params)) || [];
+    for (const row of sqlRows) {
+      if (row._RID == null) continue;
+      return { rid: BigInt(row._RID), err: null };
+    }
+    return { rid: null, err: null };
+  } catch (err) {
+    getLogger().error('table', { table: tableName, msg: err.message });
+    return { rid: null, err };
+  }
+}
+
 /**
  * LOG 테이블 복제 클래스
  *
@@ -360,19 +413,18 @@ class LogTable {
     return this.client.selectMaxRid(this.qualifiedTable);
   }
 
-
   /**
    * RID 기반 배치 읽기
    * @param {bigint} startRid
    * @param {bigint} endRid
    * @param {number} [limit=1000]
    * @param {{ selectColumns?: string[], repTargetCond?: object|null, transform?: Array|null }} [options]
-   * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
+   * @returns {{ rows: Array<{ rid: bigint, data: object }>, sqlRowCount: number, err: Error|null }}
    */
   async read(startRid, endRid, limit = 1000, options) {
     const colNames = _buildSelectColumns(this.schema, options?.selectColumns);
     const colList = ['_RID', _buildSelectList(this.schema, colNames, this.config)].join(', ');
-    const filterSql = buildQueryFilterSql(options?.repTargetCond, options?.transform, {
+    const filterSql = _buildQueryFilter(options, {
       tableType: 'LOG',
       logicalTable: this.logicalTable,
       primaryColumnName: null,
@@ -403,11 +455,31 @@ class LogTable {
         }
         result.push({ rid, data });
       }
-      return { rows: result, err: null };
+      return { rows: result, sqlRowCount: sqlRows.length, err: null };
     } catch (err) {
       getLogger().error('table', { table: this.logicalTable, msg: err.message });
-      return { rows: [], err };
+      return { rows: [], sqlRowCount: 0, err };
     }
+  }
+
+  /**
+   * startRid..endRid 범위에서 조건을 만족하는 첫 번째 RID를 찾는다.
+   * empty batch에서만 호출해 restart 시 큰 RID gap을 빠르게 넘기는 용도다.
+   *
+   * @param {bigint} startRid
+   * @param {bigint} endRid
+   * @param {{ selectColumns?: string[], repTargetCond?: object|null, transform?: Array|null }} [options]
+   * @returns {{ rid: bigint|null, err: Error|null }}
+   */
+  async findNextRid(startRid, endRid, options) {
+    const filterSql = _buildQueryFilter(options, {
+      tableType: 'LOG',
+      logicalTable: this.logicalTable,
+      primaryColumnName: null,
+    });
+    return _findNextRid(this.client, this.qualifiedTable, {
+      table: this.logicalTable,
+    }, startRid, endRid, filterSql);
   }
 
   /**
@@ -911,7 +983,7 @@ class TagDataTable {
    * @param {bigint} endRid
    * @param {number} [limit=1000]
    * @param {{ selectColumns?: string[], repTargetCond?: object|null, transform?: Array|null }} [options]
-   * @returns {{ rows: Array<{ rid: bigint, data: object }>, err: Error|null }}
+   * @returns {{ rows: Array<{ rid: bigint, data: object }>, sqlRowCount: number, err: Error|null }}
    */
   async read(startRid, endRid, limit = 1000, options) {
     const cols = this.schema.columns.filter(c => !(c.flag & FLAG_METADATA));
@@ -919,7 +991,7 @@ class TagDataTable {
     const colList = ['_RID', _buildSelectList(this.schema, colNames, this.config)].join(', ');
     const keyCol = cols.find(c => c.flag & FLAG_PRIMARY);
     const keyColName = keyCol ? keyCol.name : null;
-    const filterSql = buildQueryFilterSql(options?.repTargetCond, options?.transform, {
+    const filterSql = _buildQueryFilter(options, {
       tableType: 'TAG',
       logicalTable: this.logicalTable,
       primaryColumnName: keyColName,
@@ -971,11 +1043,35 @@ class TagDataTable {
         });
       }
 
-      return { rows: result, err: null };
+      return { rows: result, sqlRowCount: sqlRows.length, err: null };
     } catch (err) {
       getLogger().error('table', { table: this.dataTable, msg: err.message });
-      return { rows: [], err };
+      return { rows: [], sqlRowCount: 0, err };
     }
+  }
+
+  /**
+   * startRid..endRid 범위에서 조건을 만족하는 첫 번째 RID를 찾는다.
+   * TAG restart integrity/steady read가 빈 결과를 돌려준 경우에만 호출한다.
+   *
+   * @param {bigint} startRid
+   * @param {bigint} endRid
+   * @param {{ selectColumns?: string[], repTargetCond?: object|null, transform?: Array|null }} [options]
+   * @returns {{ rid: bigint|null, err: Error|null }}
+   */
+  async findNextRid(startRid, endRid, options) {
+    const cols = this.schema.columns.filter(c => !(c.flag & FLAG_METADATA));
+    const keyCol = cols.find(c => c.flag & FLAG_PRIMARY);
+    const keyColName = keyCol ? keyCol.name : null;
+    const filterSql = _buildQueryFilter(options, {
+      tableType: 'TAG',
+      logicalTable: this.logicalTable,
+      primaryColumnName: keyColName,
+    });
+    return _findNextRid(this.client, this.dataTable, {
+      table: this.logicalTable,
+      dataTable: this.dataTable,
+    }, startRid, endRid, filterSql);
   }
 }
 
