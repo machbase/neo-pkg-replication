@@ -4,6 +4,17 @@ import * as jobsApi from "../../api/jobs";
 import { useApp } from "../../context/AppContext";
 import TagPickerModal from "./TagPickerModal";
 
+const STRING_TYPES = new Set(["VARCHAR", "TEXT", "NAME", "CHAR"]);
+const NUMERIC_TYPES = new Set(["SHORT", "INTEGER", "LONG", "FLOAT", "DOUBLE", "USHORT", "UINTEGER", "ULONG", "BIGINT", "NUMBER"]);
+const DATETIME_TYPES = new Set(["DATETIME"]);
+
+const getCategory = (base) => {
+    if (STRING_TYPES.has(base)) return "string";
+    if (NUMERIC_TYPES.has(base)) return "numeric";
+    if (DATETIME_TYPES.has(base)) return "datetime";
+    return null;
+};
+
 const displayType = (t) => {
     if (!t) return null;
     const upper = String(t).toUpperCase();
@@ -26,14 +37,20 @@ const parseType = (t) => {
     return { base: normalizeBase(m[1]), size: m[2] ? Number(m[2]) : null };
 };
 
+// 같은 category(numeric↔numeric) 내 base 차이는 warning — 변환 손실 가능하지만 replication은 허용
 const compareTypes = (src, tgt) => {
-    if (!src || !tgt) return "none";
+    if (!src || !tgt) return { status: "none" };
     const a = parseType(src);
     const b = parseType(tgt);
-    if (!a || !b) return "none";
-    if (a.base !== b.base) return "error";
-    if (a.size != null && b.size != null && a.size !== b.size) return "warning";
-    return "ok";
+    if (!a || !b) return { status: "none" };
+    if (a.base === b.base) {
+        if (a.size != null && b.size != null && a.size !== b.size) return { status: "warning", reason: "size" };
+        return { status: "ok" };
+    }
+    const ca = getCategory(a.base);
+    const cb = getCategory(b.base);
+    if (ca && ca === cb) return { status: "warning", reason: "category" };
+    return { status: "error" };
 };
 
 function ColumnFlags({ col }) {
@@ -510,16 +527,16 @@ function MappingTable({ sourceItems, targetItems, mapping, onMappingChange, mqtt
                                             <span style={{ display: "inline-flex" }} title={!row.enabled ? "Disabled" : "Unmapped"}>
                                                 <Icon name="sync_disabled" style={{ fontSize: "16px", color: "var(--color-on-surface-disabled)" }} />
                                             </span>
-                                        ) : row.typeStatus === "error" ? (
+                                        ) : row.typeStatus.status === "error" ? (
                                             <span
                                                 title={`Type mismatch: ${displayType(row.sourceType) || "—"} → ${displayType(row.targetType) || "—"}`}
                                                 style={{ color: "var(--color-error)", display: "inline-flex" }}
                                             >
                                                 <Icon name="error" />
                                             </span>
-                                        ) : row.typeStatus === "warning" ? (
+                                        ) : row.typeStatus.status === "warning" ? (
                                             <span
-                                                title={`Size mismatch: ${displayType(row.sourceType) || "—"} → ${displayType(row.targetType) || "—"}`}
+                                                title={`${row.typeStatus.reason === "size" ? "Size mismatch" : "Type conversion"}: ${displayType(row.sourceType) || "—"} → ${displayType(row.targetType) || "—"}`}
                                                 style={{ color: "var(--color-warning)", display: "inline-flex" }}
                                             >
                                                 <Icon name="warning" />
