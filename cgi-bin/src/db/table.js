@@ -3,7 +3,15 @@
 const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 const { MachbaseClient } = require('./client.js');
 const { MachbaseStream } = require('./stream.js');
-const { HttpApiClient, MqttApiClient, MqttPublishClient, createQueryClient, formatEpochNsToRfc3339NanoLocal, formatEpochNsToRfc3339NanoUtc } = require('./remote.js');
+const {
+  HttpApiClient,
+  MqttApiClient,
+  MqttPublishClient,
+  createQueryClient,
+  formatEpochNsToRfc3339NanoLocal,
+  formatEpochNsToRfc3339NanoUtc,
+  parseNativeQueryDateTime,
+} = require('./remote.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 const { buildQueryFilterSql } = require('../replication/rules.js');
 
@@ -108,6 +116,16 @@ function _coerceIntegerFamilyValue(value) {
   }
   const parsed = Number(text);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : value;
+}
+
+function _normalizeReadValue(column, value, sourceType) {
+  if (value == null || !column || column.columnType !== ColumnType.DATETIME) {
+    return value;
+  }
+  if (String(sourceType || 'native').toLowerCase() === 'native') {
+    return parseNativeQueryDateTime(value);
+  }
+  return value;
 }
 
 /**
@@ -379,7 +397,10 @@ class LogTable {
         }
         const rid = BigInt(row._RID);
         const data = {};
-        for (const col of colNames) data[col] = row[col];
+        for (const col of colNames) {
+          const schemaCol = this.schema.columns.find((item) => item.name === col) || null;
+          data[col] = _normalizeReadValue(schemaCol, row[col], this.config?.type);
+        }
         result.push({ rid, data });
       }
       return { rows: result, err: null };
@@ -671,7 +692,8 @@ class TagTable {
       return (rows || []).map(row => {
         const data = {};
         for (const col of colNames) {
-          data[col] = row[col];
+          const schemaCol = this.schema.columns.find((item) => item.name === col) || null;
+          data[col] = _normalizeReadValue(schemaCol, row[col], this.config?.type);
         }
         return data;
       });
@@ -925,7 +947,10 @@ class TagDataTable {
         const rid = BigInt(row._RID);
 
         const data = {};
-        for (const col of colNames) data[col] = row[col];
+        for (const col of colNames) {
+          const schemaCol = this.schema.columns.find((item) => item.name === col) || null;
+          data[col] = _normalizeReadValue(schemaCol, row[col], this.config?.type);
+        }
 
         if (this.aliasCache && keyColName && Object.prototype.hasOwnProperty.call(data, keyColName)) {
           const tagId = data[keyColName];
