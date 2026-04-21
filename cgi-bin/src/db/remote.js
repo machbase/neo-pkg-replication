@@ -89,13 +89,99 @@ function _parseHttpQueryRows(result) {
       const type = String(types[i] || '').toLowerCase();
       const value = row[i];
       if (type === 'datetime' && value != null) {
-        out[columns[i]] = parseEpochNsLike(value);
+        out[columns[i]] = parseHttpQueryDateTime(value);
       } else {
         out[columns[i]] = value;
       }
     }
     return out;
   });
+}
+
+function _reinterpretUtcWallClockNsAsLocal(value) {
+  let nsValue = value;
+  if (typeof nsValue === 'number') {
+    if (!Number.isFinite(nsValue)) return null;
+    nsValue = BigInt(Math.trunc(nsValue)) * NS_PER_MS;
+  } else if (typeof nsValue === 'string') {
+    const text = nsValue.trim();
+    if (!/^-?\d+$/.test(text)) return null;
+    nsValue = BigInt(text);
+  } else if (typeof nsValue !== 'bigint') {
+    return null;
+  }
+
+  let seconds = nsValue / NS_PER_SEC;
+  let nanos = nsValue % NS_PER_SEC;
+  if (nanos < 0) {
+    nanos += NS_PER_SEC;
+    seconds -= 1n;
+  }
+  const utcDate = new Date(Number(seconds * 1000n));
+  const localMs = new Date(
+    utcDate.getUTCFullYear(),
+    utcDate.getUTCMonth(),
+    utcDate.getUTCDate(),
+    utcDate.getUTCHours(),
+    utcDate.getUTCMinutes(),
+    utcDate.getUTCSeconds(),
+    0
+  ).getTime();
+  if (!Number.isFinite(localMs)) return null;
+  return BigInt(localMs) * NS_PER_MS + nanos;
+}
+
+/**
+ * Machbase HTTP query DATETIME(`timeformat=RFC3339Nano`)는 timezone이 유지되지 않는 wall-clock 값을
+ * `...Z` 형태로 돌려준다. 이 값을 절대 UTC로 해석하면 http source -> native/http target 복제에서
+ * 현지 offset만큼 시간이 밀리므로, query result 쪽에서는 로컬 wall-clock으로 다시 해석한다.
+ */
+function _parseLocalWallClockRfc3339Nano(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const ms = new Date(year, month - 1, day, hour, minute, second, 0).getTime();
+  if (!Number.isFinite(ms)) return null;
+  const fraction = ((match[7] || '') + '000000000').slice(0, 9);
+  return BigInt(ms) * NS_PER_MS + BigInt(fraction);
+}
+
+function parseHttpQueryDateTime(value) {
+  if (value == null) return value;
+  if (typeof value === 'string') {
+    const localWallClock = _parseLocalWallClockRfc3339Nano(value);
+    if (localWallClock != null) {
+      return localWallClock;
+    }
+  }
+  return parseEpochNsLike(value);
+}
+
+/**
+ * native query DATETIME은 machcli / TO_CHAR 조합에 따라 epoch-ns 숫자 문자열로 반환되는데,
+ * 이 값 역시 Machbase wall-clock을 UTC epoch처럼 인코딩한 형태다.
+ * replication 내부 기준은 "DB에 저장된 wall-clock을 transport가 바뀌어도 그대로 유지"이므로
+ * native source read에서는 local wall-clock epoch로 한 번 더 보정한다.
+ */
+function parseNativeQueryDateTime(value) {
+  if (value == null) return value;
+  const localNs = _reinterpretUtcWallClockNsAsLocal(value);
+  if (localNs != null) {
+    return localNs;
+  }
+  if (typeof value === 'string') {
+    const localWallClock = _parseLocalWallClockRfc3339Nano(value);
+    if (localWallClock != null) {
+      return localWallClock;
+    }
+  }
+  return parseEpochNsLike(value);
 }
 
 function parseEpochNsLike(value) {
@@ -825,5 +911,7 @@ module.exports = {
   formatEpochNsToRfc3339NanoLocal,
   formatEpochNsToRfc3339NanoUtc,
   parseEpochNsLike,
+  parseHttpQueryDateTime,
+  parseNativeQueryDateTime,
   substituteSql,
 };
