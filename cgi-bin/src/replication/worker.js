@@ -92,6 +92,30 @@ async function _readRows(srcTable, startRid, endRid, batchSize, options, retry, 
   return result.ok ? result.value : null;
 }
 
+async function _findNextRid(srcTable, startRid, endRid, options, retry, shutdownFlag, logCtx, phase) {
+  const result = await _withRetry({
+    fn: async () => {
+      const nextRidResult = await srcTable.findNextRid(startRid, endRid, options);
+      if (nextRidResult.err) {
+        return {
+          done: false,
+          retryable: retry.shouldRetry(nextRidResult.err),
+          msg: `non-retryable nextRid lookup error: ${nextRidResult.err.message}`,
+          detail: nextRidResult.err.message,
+        };
+      }
+      return { done: true, value: nextRidResult };
+    },
+    retry,
+    shutdownFlag,
+    logCtx,
+    exhaustedMsg: 'nextRid lookup retry exhausted, stopping worker',
+    retryMsg: 'nextRid lookup retry',
+    phase,
+  });
+  return result.ok ? result.value : null;
+}
+
 function _uniqueNames(values) {
   const seen = {};
   const result = [];
@@ -298,6 +322,66 @@ class Worker {
     return { appendRows, resolved, maxSourceTagId };
   }
 
+  async _skipEmptyRidRange({ srcTable, startRid, endRid, maxRid, totalRowsWritten, checkpointStore, retry, shutdownFlag, logCtx, phase, batchSize, options }) {
+    const nextSearchStart = endRid + 1n;
+    if (nextSearchStart > maxRid) {
+      this._saveCheckpoint(checkpointStore, maxRid, totalRowsWritten, {
+        rowsRead: 0,
+        rowsWritten: 0,
+        droppedNoMeta: 0,
+        skippedExists: 0,
+      }, false, batchSize);
+      return { nextStartRid: maxRid + 1n };
+    }
+
+    const nextRidResult = await _findNextRid(
+      srcTable,
+      nextSearchStart,
+      maxRid,
+      options,
+      retry,
+      shutdownFlag,
+      logCtx,
+      `${phase}_NEXT_RID`
+    );
+    if (nextRidResult == null) return null;
+
+    if (nextRidResult.rid == null) {
+      this._saveCheckpoint(checkpointStore, maxRid, totalRowsWritten, {
+        rowsRead: 0,
+        rowsWritten: 0,
+        droppedNoMeta: 0,
+        skippedExists: 0,
+      }, false, batchSize);
+      getLogger().debug('worker', {
+        ...logCtx,
+        phase,
+        fromRid: String(startRid),
+        toRid: String(maxRid),
+        msg: 'no matching rows found up to current source max rid, checkpoint fast-forwarded across empty range',
+      });
+      return { nextStartRid: maxRid + 1n };
+    }
+
+    const nextRid = nextRidResult.rid;
+    const skippedToRid = nextRid > 0n ? nextRid - 1n : -1n;
+    this._saveCheckpoint(checkpointStore, skippedToRid, totalRowsWritten, {
+      rowsRead: 0,
+      rowsWritten: 0,
+      droppedNoMeta: 0,
+      skippedExists: 0,
+    }, true, batchSize);
+    getLogger().debug('worker', {
+      ...logCtx,
+      phase,
+      fromRid: String(startRid),
+      skippedToRid: String(skippedToRid),
+      nextRid: String(nextRid),
+      msg: 'empty rid range skipped to next matching row',
+    });
+    return { nextStartRid: nextRid };
+  }
+
   _saveCheckpoint(checkpointStore, rid, totalRowsWritten, stats, hasMore, queryLimit) {
     checkpointStore.save({
       lastSuccessRid: rid,
@@ -352,6 +436,7 @@ class Worker {
 
     const { cp, exists: cpExists } = checkpointStore.load();
     let startRid;
+    let sourceRidRegressionLogged = false;
     let totalRowsWritten = cpExists && cp && cp.totalRowsWritten != null ? BigInt(String(cp.totalRowsWritten)) : 0n;
     if (cpExists && cp) {
       startRid = cp.lastSuccessRid + 1n;
@@ -393,6 +478,11 @@ class Worker {
     try {
       if (doIntegrity) {
         const originalStartRid = startRid;
+        const readOptions = {
+          selectColumns: plan.readColumns,
+          repTargetCond: plan.repTargetCond,
+          transform: plan.transform,
+        };
         const result = await this._runStartupIntegrity({
           startRid,
           totalRowsWritten,
@@ -403,6 +493,7 @@ class Worker {
           logCtx,
           checkpointStore,
           plan,
+          readOptions,
         });
         if (result === null) return;
         startRid = result.startRid;
@@ -420,6 +511,20 @@ class Worker {
       while (!shutdownFlag.value) {
         const maxRid = await this._getMaxRid(srcTable, retry, shutdownFlag, logCtx, 'STEADY_MAXRID');
         if (maxRid == null) return;
+        // DELETE 후 재적재는 새 _RID가 기존 checkpoint를 계속 넘어가므로 여기서 막히지 않는다.
+        // 반대로 source table이 DROP/recreate 되면 새 _RID가 0부터 다시 시작해 checkpoint보다 작아진다.
+        // 이 경우 현재 구현은 복구를 시도하지 않고 idle 상태로 남으므로, 운영자가 원인을 바로 알 수 있게
+        // checkpoint와 현재 source max rid의 역전을 경고 로그로 남겨 둔다.
+        if (cpExists && cp && !sourceRidRegressionLogged && maxRid >= 0n && startRid > maxRid) {
+          sourceRidRegressionLogged = true;
+          getLogger().warn('worker', {
+            ...logCtx,
+            checkpointRid: String(cp.lastSuccessRid),
+            startRid: String(startRid),
+            currentMaxRid: String(maxRid),
+            msg: 'source max rid is behind checkpoint; source table may have been dropped and recreated, replication will stay idle until checkpoint is reset or source rid catches up',
+          });
+        }
 
         if (startRid > maxRid) {
           const idleCpRid = startRid > 0n ? (startRid - 1n) : -1n;
@@ -437,12 +542,35 @@ class Worker {
         let endRid = startRid + BigInt(batchSize) - 1n;
         if (endRid > maxRid) endRid = maxRid;
 
-        const readResult = await _readRows(srcTable, startRid, endRid, batchSize, {
+        const readOptions = {
           selectColumns: plan.readColumns,
           repTargetCond: plan.repTargetCond,
           transform: plan.transform,
-        }, retry, shutdownFlag, logCtx, 'STEADY_READ');
+        };
+        const readResult = await _readRows(srcTable, startRid, endRid, batchSize, readOptions, retry, shutdownFlag, logCtx, 'STEADY_READ');
         if (readResult == null) return;
+        // fast-forward는 source SQL 결과가 진짜 0건인 empty RID gap에서만 허용한다.
+        // TAG meta lookup miss처럼 post-processing 이후 rows가 비는 경우까지 jump하면
+        // transient 문제를 만나도 checkpoint를 과하게 앞당길 수 있다.
+        if ((readResult.sqlRowCount || 0) === 0) {
+          const skipped = await this._skipEmptyRidRange({
+            srcTable,
+            startRid,
+            endRid,
+            maxRid,
+            totalRowsWritten,
+            checkpointStore,
+            retry,
+            shutdownFlag,
+            logCtx,
+            phase: 'STEADY',
+            batchSize,
+            options: readOptions,
+          });
+          if (skipped == null) return;
+          startRid = skipped.nextStartRid;
+          continue;
+        }
 
         const processed = this._processRows(readResult.rows, plan, logCtx);
         if (shutdownFlag.value) return;
@@ -483,7 +611,7 @@ class Worker {
     }
   }
 
-  async _runStartupIntegrity({ startRid, totalRowsWritten, srcTable, dstTable, retry, shutdownFlag, logCtx, checkpointStore, plan }) {
+  async _runStartupIntegrity({ startRid, totalRowsWritten, srcTable, dstTable, retry, shutdownFlag, logCtx, checkpointStore, plan, readOptions }) {
     getLogger().debug('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
 
     let integrityRid = startRid;
@@ -500,12 +628,28 @@ class Worker {
       let endRid = integrityRid + BigInt(integrityBatchSize) - 1n;
       if (endRid > maxRid) endRid = maxRid;
 
-      const readResult = await _readRows(srcTable, integrityRid, endRid, integrityBatchSize, {
-        selectColumns: plan.readColumns,
-        repTargetCond: plan.repTargetCond,
-        transform: plan.transform,
-      }, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY_READ');
+      const readResult = await _readRows(srcTable, integrityRid, endRid, integrityBatchSize, readOptions, retry, shutdownFlag, logCtx, 'STARTUP_INTEGRITY_READ');
       if (readResult == null) return null;
+      // startup integrity도 동일하게 "원본 SQL 0건"인 경우에만 jump한다.
+      if ((readResult.sqlRowCount || 0) === 0) {
+        const skipped = await this._skipEmptyRidRange({
+          srcTable,
+          startRid: integrityRid,
+          endRid,
+          maxRid,
+          totalRowsWritten,
+          checkpointStore,
+          retry,
+          shutdownFlag,
+          logCtx,
+          phase: 'STARTUP_INTEGRITY',
+          batchSize: integrityBatchSize,
+          options: readOptions,
+        });
+        if (skipped == null) return null;
+        integrityRid = skipped.nextStartRid;
+        continue;
+      }
 
       const processed = this._processRows(readResult.rows, plan, logCtx);
       if (processed.resolved.length === 0) {
