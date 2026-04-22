@@ -352,6 +352,10 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 ### `GET /api/rc?name=...`
 
+- `checkpointStatus` 는 logical table 기준의 현재 상태 보조 정보다.
+- `source_row_count`, `target_row_count` 는 `COUNT(*)` 성공 시 문자열로 내려가며, 조회할 수 없으면 빈 문자열(`""`)이다.
+- `mqtt-publish` target 은 query가 불가능하므로 `target_row_count` 는 항상 빈 문자열이고 target dropped 경고도 생성하지 않는다.
+- source 또는 target 테이블이 제거된 것으로 판정되면 `checkpointStatus.warnings` 에 `{ code, side, table, message }` 형식의 경고가 추가된다.
 - `metaSync` 는 TAG + native/http target 조합에서만 의미가 있다.
 - 초기 TAG metadata 전체 동기화 또는 data-driven catch-up 이 진행 중이면 `status`, `progress`, `message` 로 상태를 확인할 수 있다.
 - 실행 중 catch-up 은 source data batch에서 실제로 관찰한 최대 tag id 범위까지만 metadata를 전진시킨다.
@@ -366,6 +370,11 @@ curl -sS -X POST -H 'Content-Type: application/json' \
   "data": {
     "name": "repli-a",
     "config": {},
+    "checkpointStatus": {
+      "source_row_count": "2799972",
+      "target_row_count": "2799972",
+      "warnings": []
+    },
     "checkpoints": {
       "_HOME_DATA_0": {
         "lastSuccessRid": "2799971",

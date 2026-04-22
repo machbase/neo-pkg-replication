@@ -314,6 +314,18 @@ class MachbaseClient {
   }
 
   /**
+   * 논리 테이블 전체 행 수를 조회한다.
+   * checkpoint API는 파티션별 합산 대신 사용자가 보는 logical table 기준 count를 보여주기 위해 이 값을 사용한다.
+   * @param {string} tableName
+   * @returns {bigint}
+   */
+  selectCountRows(tableName) {
+    const rows = this.query(`SELECT COUNT(*) as row_count FROM ${tableName}`);
+    const raw = rows?.[0]?.row_count;
+    return raw == null ? 0n : BigInt(raw);
+  }
+
+  /**
    * TAG META 테이블 전체 조회
    * @param {string} logicalTable - 논리 테이블명
    * @returns {Array<{ _ID: bigint, name: string }>}
