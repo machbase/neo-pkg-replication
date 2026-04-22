@@ -2,7 +2,10 @@
   "name": "neo-pkg-replication",
   "version": "0.0.8",
   "bin": {},
-  "scripts": {},
+  "scripts": {
+    "start": "./scripts/repli-service-start.js",
+    "stop": "./scripts/repli-service-stop.js",
+    "uninstall": "./scripts/repli-service-uninstall.js"
+  },
   "dependencies": {}
 }
-
