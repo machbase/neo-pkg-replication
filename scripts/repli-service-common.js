@@ -87,7 +87,6 @@ function _resolveAppRoot() {
 
 const ROOT_DIR = _resolveAppRoot();
 const CGI_DIR = path.join(ROOT_DIR, 'cgi-bin');
-const CONF_DIR = path.join(CGI_DIR, 'conf.d');
 const DATA_DIR = path.join(CGI_DIR, 'data');
 const STOP_STATE_FILE = path.join(DATA_DIR, STOP_STATE_FILE_NAME);
 const PACKAGE_JSON = readJson(path.join(ROOT_DIR, 'package.json'));
@@ -254,29 +253,6 @@ function readServiceDefinitionEntries() {
   return result;
 }
 
-function readConfigFallbackEntries() {
-  const result = [];
-  let names = [];
-  try {
-    names = fs.readdirSync(CONF_DIR);
-  } catch (_) {
-    return result;
-  }
-  for (let i = 0; i < names.length; i++) {
-    const fileName = names[i];
-    if (!/\.json$/i.test(fileName)) continue;
-    result.push({
-      source: 'replicator.config',
-      name: `${SERVICE_NAME_PREFIX}${fileName.replace(/\.json$/i, '')}`,
-      executable: '',
-      workingDir: '',
-      status: '',
-      args: [],
-    });
-  }
-  return result;
-}
-
 function resolveExecutablePath(executable, workingDir) {
   const execText = _text(executable);
   if (!execText) return '';
@@ -296,20 +272,6 @@ function isReplicationExecutable(executable, workingDir) {
   if (resolved === EXPECTED_EXECUTABLE) return true;
   return resolved.endsWith(EXPECTED_EXECUTABLE_SUFFIX)
     || resolved.endsWith(EXPECTED_DEPLOYED_EXECUTABLE_SUFFIX);
-}
-
-function getLogicalServiceKey(entry) {
-  if (!entry || typeof entry !== 'object') return '';
-  const args = Array.isArray(entry.args) ? entry.args : [];
-  const arg0 = _text(args.length > 0 ? args[0] : '');
-  if (arg0) {
-    return arg0.replace(/\.json$/i, '');
-  }
-  const name = _text(entry.name);
-  if (name.startsWith(SERVICE_NAME_PREFIX)) {
-    return name.slice(SERVICE_NAME_PREFIX.length);
-  }
-  return name;
 }
 
 function mergeEntries(entries) {
@@ -361,11 +323,6 @@ async function discoverReplicationServices() {
     collected.push(definitionEntries[i]);
   }
 
-  const configEntries = readConfigFallbackEntries();
-  for (let i = 0; i < configEntries.length; i++) {
-    collected.push(configEntries[i]);
-  }
-
   const merged = mergeEntries(collected);
   const names = Object.keys(merged).sort();
   const services = [];
@@ -382,32 +339,7 @@ async function discoverReplicationServices() {
     services.push(entry);
   }
 
-  const logicalHasNonConfig = {};
-  for (let i = 0; i < services.length; i++) {
-    const entry = services[i];
-    const logicalKey = getLogicalServiceKey(entry);
-    if (!logicalKey) continue;
-    const hasNonConfigSource = Array.isArray(entry.sources)
-      && entry.sources.some((source) => source !== 'replicator.config');
-    if (hasNonConfigSource) {
-      logicalHasNonConfig[logicalKey] = true;
-    }
-  }
-
-  const filtered = [];
-  for (let i = 0; i < services.length; i++) {
-    const entry = services[i];
-    const logicalKey = getLogicalServiceKey(entry);
-    const configOnly = Array.isArray(entry.sources)
-      && entry.sources.length === 1
-      && entry.sources[0] === 'replicator.config';
-    if (configOnly && logicalKey && logicalHasNonConfig[logicalKey]) {
-      continue;
-    }
-    filtered.push(entry);
-  }
-
-  return { services: filtered, warnings };
+  return { services, warnings };
 }
 
 async function getServiceStatus(name) {
@@ -474,7 +406,7 @@ async function runSequential(names, runner) {
 }
 
 function saveStoppedState(names) {
-  // update 직후 start가 가능해야 하므로, package 파일이 바뀌어도 보존되는 data 디렉토리에 기록한다.
+  // config-only replicator는 package start 대상이 아니므로, 실제로 멈춘 installed service만 저장한다.
   writeJson(STOP_STATE_FILE, {
     savedAt: Date.now(),
     ttlMs: STOP_STATE_TTL_MS,
