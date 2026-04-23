@@ -3,13 +3,14 @@
 ## 개요
 
 - CGI 경로 기준 루트: `127.0.0.1:5654/public/neo-pkg-replication/cgi-bin`
+- 이 문서의 경로는 extensionless 형식(`/api/rc/list`)을 표준으로 적는다. Machbase Neo CGI 라우팅에서는 대응하는 `.js` 경로(`/api/rc/list.js`)도 허용된다.
 - 설정 파일:
   - replication: `conf.d/{name}.json`
   - server profile: `conf.d/server/{name}.json`
 - service name은 API name 앞에 `"_rpl_"` 를 붙여 사용한다.
 - `POST /api/rc` 는 config 저장 후 service `install` 까지 수행한다.
 - `PUT /api/rc` 는 config 저장 후 service가 실행 중일 때만 `stop -> start` 한다.
-- `DELETE /api/rc` 는 service `uninstall` 후 config, pid, checkpoint/data를 정리한다.
+- `DELETE /api/rc` 는 실행 중인 service를 먼저 `stop` 하고, service `uninstall` 후 service definition, config, pid, checkpoint/data를 정리한다.
 
 ## 공통 응답
 
@@ -52,7 +53,7 @@
 
 ### 규칙
 
-- `GET` 응답에는 `password`, `token`을 포함하지 않는다.
+- 저장된 profile 조회/list 응답에는 `password`, `token`을 포함하지 않는다. `default` 템플릿 응답은 생성 form 초기값이므로 빈 `password`, `token` 필드를 포함한다.
 - `GET` 응답에는 `targetOnly` 가 포함되며, `mqtt-api`, `mqtt-publish` 는 `true` 이다.
 - MQTT `clientId` 는 runtime connection마다 내부 생성되며 profile에 저장하지 않는다.
 - `PUT`에서 `password`, `token`이 없거나 `null` 또는 `""` 이면 기존 값을 유지한다.
@@ -64,23 +65,20 @@
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| `GET` | `/api/server/list.js` | server profile 목록 |
-| `GET` | `/api/server/default.js?type=...` | type별 server profile 기본 템플릿 |
-| `POST` | `/api/server.js` | server profile 생성 |
-| `GET` | `/api/server.js?name=...` | server profile 단건 조회 |
-| `PUT` | `/api/server.js?name=...` | server profile 수정 |
-| `DELETE` | `/api/server.js?name=...` | server profile 삭제 |
-| `POST` | `/api/server/test.js` | 저장된 server 또는 미저장 profile 연결 테스트 |
-| `GET` | `/api/log/list` | 로그 파일 목록 조회 |
-| `GET` | `/api/log/content?name=...` | 로그 파일 라인 범위 조회 |
-| `GET` | `/api/log/content/all?name=...` | 로그 파일 전체 내용 조회 |
+| `GET` | `/api/server/list` | server profile 목록 |
+| `GET` | `/api/server/default?type=...` | type별 server profile 기본 템플릿 |
+| `POST` | `/api/server` | server profile 생성 |
+| `GET` | `/api/server?name=...` | server profile 단건 조회 |
+| `PUT` | `/api/server?name=...` | server profile 수정 |
+| `DELETE` | `/api/server?name=...` | server profile 삭제 |
+| `POST` | `/api/server/test` | 저장된 server 또는 미저장 profile 연결 테스트 |
 
 ### 예시
 
-### `GET /api/server/default.js?type=...`
+### `GET /api/server/default?type=...`
 
 - `type` 은 필수이며 `native`, `http`, `mqtt-api`, `mqtt-publish` 중 하나여야 한다.
-- 응답의 `profile` 은 `POST /api/server.js` 와 같은 key 구조를 가진 create 템플릿이다.
+- 응답의 `profile` 은 `POST /api/server` 와 같은 key 구조를 가진 create 템플릿이다.
 - `targetOnly` 는 저장되지 않는 파생 정보이며, 프론트엔드가 source 선택 가능 여부를 판단할 때 사용한다.
 
 응답 예시:
@@ -109,22 +107,22 @@
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
   --data '{"name":"local","host":"127.0.0.1","port":5656,"user":"SYS","password":"manager","type":"native"}' \
-  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
+  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server
 ```
 
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
   --data '{"name":"local_http","host":"127.0.0.1","port":5654,"type":"http","protocol":"http","token":""}' \
-  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
+  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server
 ```
 
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
   --data '{"name":"local_mqtt","host":"127.0.0.1","port":5653,"type":"mqtt-api","token":"","qos":1}' \
-  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server.js
+  http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server
 ```
 
-### `POST /api/server/test.js`
+### `POST /api/server/test`
 
 - 요청 body는 `{ "name": "saved_profile_name" }` 또는 `{ "profile": { ... } }` 둘 중 하나만 허용한다.
 - 저장 전 테스트에서는 `profile.name` 이 없어도 된다.
@@ -308,6 +306,8 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | `baseDelayMs` | number | `100` |
 | `maxDelayMs` | number | `30000` |
 
+위 기본값은 `GET /api/rc/default` 템플릿 기준이다. config에서 `retry` 자체를 생략하면 런타임 fallback은 `maxAttempts: null`(무제한), `baseDelayMs: 1000`, `maxDelayMs: 60000` 이다.
+
 ### LoggingConfig
 
 | 필드 | 타입 | 기본값 | 설명 |
@@ -326,18 +326,18 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| `GET` | `/api/rc/list.js` | replication 목록 (`installed`, `running`) |
-| `GET` | `/api/rc/default.js` | replication create 기본 템플릿 |
-| `POST` | `/api/rc.js` | replication 생성 + service install |
-| `GET` | `/api/rc.js?name=...` | replication 단건 조회 + checkpoint + metaSync |
-| `PUT` | `/api/rc.js?name=...` | replication 수정 |
-| `DELETE` | `/api/rc.js?name=...` | replication 삭제 + cleanup |
-| `POST` | `/api/rc/install.js?name=...` | 기존 config 기준 service install |
-| `POST` | `/api/rc/start.js?name=...` | service start |
-| `POST` | `/api/rc/stop.js?name=...` | service stop |
-| `POST` | `/api/rc/dryrun.js` | config dry-run validation |
+| `GET` | `/api/rc/list` | replication 목록 (`installed`, `running`) |
+| `GET` | `/api/rc/default` | replication create 기본 템플릿 |
+| `POST` | `/api/rc` | replication 생성 + service install |
+| `GET` | `/api/rc?name=...` | replication 단건 조회 + checkpoint + metaSync |
+| `PUT` | `/api/rc?name=...` | replication 수정 |
+| `DELETE` | `/api/rc?name=...` | replication 삭제 + cleanup |
+| `POST` | `/api/rc/install?name=...` | 기존 config 기준 service install |
+| `POST` | `/api/rc/start?name=...` | service start |
+| `POST` | `/api/rc/stop?name=...` | service stop |
+| `POST` | `/api/rc/dryrun` | config dry-run validation |
 
-### `GET /api/rc/list.js`
+### `GET /api/rc/list`
 
 응답 예시:
 
@@ -350,7 +350,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 }
 ```
 
-### `GET /api/rc.js?name=...`
+### `GET /api/rc?name=...`
 
 - `metaSync` 는 TAG + native/http target 조합에서만 의미가 있다.
 - 초기 TAG metadata 전체 동기화 또는 data-driven catch-up 이 진행 중이면 `status`, `progress`, `message` 로 상태를 확인할 수 있다.
@@ -393,9 +393,9 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 }
 ```
 
-### `GET /api/rc/default.js`
+### `GET /api/rc/default`
 
-- 응답의 `config` 는 `POST /api/rc.js` 와 호환되는 기본 템플릿이다.
+- 응답의 `config` 는 `POST /api/rc` 와 호환되는 기본 템플릿이다.
 - 템플릿은 저장 형식 참고용이므로, `source.server`, `source.table`, `target.server`, `target.table` 같은 필수 값은 호출 측에서 채워야 한다.
 - `guide` 는 저장 대상이 아닌 참고 정보이며, `rep_target_cond` / `transform` 의 기본 구조 예시를 포함한다.
 - `mqtt-publish` target을 만들 때는 `target.topic` 을 함께 채우는 것을 권장한다.
@@ -454,7 +454,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 }
 ```
 
-### `POST /api/rc.js`
+### `POST /api/rc`
 
 요청 예시:
 
@@ -496,11 +496,27 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 }
 ```
 
-### `PUT /api/rc.js?name=...`
+### `PUT /api/rc?name=...`
 
 - service가 install되지 않았거나 running이 아니면 config만 저장한다.
 
-### `POST /api/rc/dryrun.js`
+### `DELETE /api/rc?name=...`
+
+- service가 실행 중이면 먼저 stop 한다.
+- service uninstall 후 service definition, pid file, config file, checkpoint/data directory를 정리한다.
+- 로그 파일은 삭제하지 않는다.
+
+### `POST /api/rc/start?name=...`
+
+- config가 없으면 실패한다.
+- 이미 running 상태면 실패한다.
+
+### `POST /api/rc/stop?name=...`
+
+- config가 없으면 실패한다.
+- service stop 후 pid file을 정리한다.
+
+### `POST /api/rc/dryrun`
 
 - body는 `config` 또는 `{ "config": ... }` 둘 다 허용한다.
 - 실제 저장/설치 없이 DB 연결, 테이블 존재, columns/meta 길이/타입, `startMode`/`ridAfter`, 수치 설정 범위, filter/transform 구조를 검증한다.
@@ -515,11 +531,11 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| `POST` | `/api/table/list.js` | 테이블 목록 조회 |
-| `POST` | `/api/table/columns.js` | 테이블 컬럼 정보 조회 |
-| `POST` | `/api/table/tags.js` | TAG 이름 목록 페이지 조회 |
+| `POST` | `/api/table/list` | 테이블 목록 조회 |
+| `POST` | `/api/table/columns` | 테이블 컬럼 정보 조회 |
+| `POST` | `/api/table/tags` | TAG 이름 목록 페이지 조회 |
 
-요청은 server profile 참조 방식만 문서화한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
+표준 요청은 server profile 참조 방식이다. 이전 호환을 위해 `server` 대신 inline connection 필드(`host`, `port`, `user`, `password`, `token`, `type`, `protocol`, `qos`, `retain`)도 허용한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
 
 지원 type:
 
@@ -556,7 +572,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 }
 ```
 
-### `POST /api/table/list.js`
+### `POST /api/table/list`
 
 요청은 `table` 없이 server profile만 전달한다.
 
@@ -566,7 +582,21 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 }
 ```
 
-### `POST /api/table/tags.js`
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "tables": [
+      { "name": "HOME", "tableType": "TAG", "owner": "SYS" },
+      { "name": "LOG_TABLE", "tableType": "LOG", "owner": "SYS" }
+    ]
+  }
+}
+```
+
+### `POST /api/table/tags`
 
 요청:
 
@@ -612,8 +642,8 @@ curl -sS -X POST -H 'Content-Type: application/json' \
   "ok": true,
   "data": {
     "files": [
-      { "name": "collector-a.log", "size": 4096 },
-      { "name": "collector-a_20260415_034234.log", "size": 10485760 }
+      { "name": "repli-a.log", "size": 4096 },
+      { "name": "repli-a_20260415_034234.log", "size": 10485760 }
     ]
   }
 }
@@ -621,7 +651,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 ### `GET /api/log/content?name=...&start=...&end=...`
 
-- `name`은 로그 파일명
+- `name`은 로그 파일명이다. 경로 구분자를 포함할 수 없고 파일명만 허용한다.
 - `start`, `end`는 1-based line number
 - `start/end`를 생략하면 전체 내용을 반환한다.
 
@@ -631,7 +661,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 {
   "ok": true,
   "data": {
-    "name": "repli.log",
+    "name": "repli-a.log",
     "start": 1,
     "end": 3,
     "totalLines": 125438,
@@ -642,7 +672,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 ### `GET /api/log/content/all?name=...`
 
-- `name`은 로그 파일명
+- `name`은 로그 파일명이다. 경로 구분자를 포함할 수 없고 파일명만 허용한다.
 - 파일 전체 내용을 문자열로 반환한다.
 
 응답 예시:
@@ -651,7 +681,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 {
   "ok": true,
   "data": {
-    "name": "collector-a.log",
+    "name": "repli-a.log",
     "content": "[INFO] 2026-04-15 ..."
   }
 }
