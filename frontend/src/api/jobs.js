@@ -29,10 +29,6 @@ export const startJob = (name) => request("POST", `${RC}/start?name=${encodeURIC
 
 export const stopJob = (name) => request("POST", `${RC}/stop?name=${encodeURIComponent(name)}`);
 
-export const recoverJob = (name) => request("POST", `${RC}/recover?name=${encodeURIComponent(name)}`);
-
-export const overwriteJob = (name) => request("POST", `${RC}/overwrite?name=${encodeURIComponent(name)}`);
-
 export const installJob = (name) => request("POST", `${RC}/install?name=${encodeURIComponent(name)}`);
 
 // dry-run 검증 (저장 없이 config 검증)
