@@ -40,6 +40,7 @@ export default function LogFilesModal({ onClose, name }) {
     const [contentError, setContentError] = useState(null);
     const [page, setPage] = useState(0);
     const [wrap, setWrap] = useState(true);
+    const [downloadingName, setDownloadingName] = useState(null);
 
     const bodyRef = useRef(null);
 
@@ -94,6 +95,28 @@ export default function LogFilesModal({ onClose, name }) {
         setSelected(file);
         setAllLines(null);
         loadFile(file);
+    };
+
+    const downloadFile = async (file) => {
+        if (downloadingName) return;
+        setDownloadingName(file.name);
+        try {
+            const data = await fetchLogContentAll({ name: file.name });
+            const text = data?.content ?? "";
+            const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = file.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            setListError(err.message || "Failed to download log file");
+        } finally {
+            setDownloadingName(null);
+        }
     };
 
     const backToList = () => {
@@ -179,30 +202,88 @@ export default function LogFilesModal({ onClose, name }) {
                             </div>
                         ) : (
                             <div className="server-card-list">
-                                {files.map((f) => (
-                                    <button
-                                        key={f.name}
-                                        type="button"
-                                        className="server-card"
-                                        onClick={() => openFile(f)}
-                                        style={{ textAlign: "left", cursor: "pointer" }}
-                                    >
-                                        <div className="server-card-info">
-                                            <div className="server-card-name-row">
-                                                <span className="server-card-name">{f.name}</span>
+                                {files.map((f) => {
+                                    const isDownloading = downloadingName === f.name;
+                                    return (
+                                        <div
+                                            key={f.name}
+                                            style={{
+                                                display: "flex",
+                                                gap: "var(--spacing-8)",
+                                                alignItems: "stretch",
+                                            }}
+                                        >
+                                            <div
+                                                role="button"
+                                                tabIndex={0}
+                                                className="server-card"
+                                                onClick={() => openFile(f)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === "Enter" || e.key === " ") {
+                                                        e.preventDefault();
+                                                        openFile(f);
+                                                    }
+                                                }}
+                                                style={{
+                                                    flex: 1,
+                                                    minWidth: 0,
+                                                    cursor: "pointer",
+                                                    textAlign: "left",
+                                                }}
+                                            >
+                                                <div
+                                                    style={{
+                                                        display: "flex",
+                                                        alignItems: "center",
+                                                        gap: "var(--spacing-16)",
+                                                        minWidth: 0,
+                                                    }}
+                                                >
+                                                    <span
+                                                        className="server-card-name"
+                                                        style={{
+                                                            overflow: "hidden",
+                                                            textOverflow: "ellipsis",
+                                                        }}
+                                                    >
+                                                        {f.name}
+                                                    </span>
+                                                    <span
+                                                        className="server-card-detail"
+                                                        style={{ marginLeft: "auto", flexShrink: 0 }}
+                                                    >
+                                                        {formatBytes(f.size)}
+                                                    </span>
+                                                </div>
+                                                <Icon
+                                                    name="chevron_right"
+                                                    className="text-on-surface-tertiary"
+                                                />
                                             </div>
-                                            <div className="server-card-detail">
-                                                {formatBytes(f.size)}
-                                            </div>
+                                            <button
+                                                type="button"
+                                                className="server-card tooltip tooltip-above"
+                                                data-tooltip="Download"
+                                                disabled={isDownloading}
+                                                onClick={() => downloadFile(f)}
+                                                style={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    justifyContent: "center",
+                                                    width: 56,
+                                                    flexShrink: 0,
+                                                    cursor: isDownloading ? "default" : "pointer",
+                                                    color: "var(--color-on-surface-tertiary)",
+                                                }}
+                                            >
+                                                <Icon
+                                                    name={isDownloading ? "progress_activity" : "download"}
+                                                    className={isDownloading ? "animate-spin" : ""}
+                                                />
+                                            </button>
                                         </div>
-                                        <div className="server-card-actions">
-                                            <Icon
-                                                name="chevron_right"
-                                                className="text-on-surface-tertiary"
-                                            />
-                                        </div>
-                                    </button>
-                                ))}
+                                    );
+                                })}
                             </div>
                         )}
                     </div>

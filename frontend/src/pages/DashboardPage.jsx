@@ -5,7 +5,7 @@ import StatusBadge from "../components/common/StatusBadge";
 import ConfirmDialog from "../components/common/ConfirmDialog";
 import Icon from "../components/common/Icon";
 import useServers from "../hooks/useServers";
-// import LiveLogs from "../components/jobs/LiveLogs";
+import LiveLogs from "../components/jobs/LiveLogs";
 import LogFilesModal from "../components/jobs/LogFilesModal";
 
 const LOG_LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
@@ -645,7 +645,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                         );
                     })()}
 
-                    {/* <LiveLogs jobId={listJob.id} /> */}
+                    <LiveLogs jobId={listJob.id} />
 
                     {logFilesOpen && <LogFilesModal name={listJob.id} onClose={() => setLogFilesOpen(false)} />}
 

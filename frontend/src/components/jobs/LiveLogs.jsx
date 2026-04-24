@@ -1,9 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Icon from "../common/Icon";
 
 const MAX_LINES = 100;
-// TODO: flip to false once backend SSE endpoint is ready
-const USE_MOCK = true;
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/public/neo-pkg-replication/cgi-bin/api";
 
 const KNOWN_LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
@@ -47,34 +45,20 @@ export default function LiveLogs({ jobId }) {
             });
         };
 
-        if (USE_MOCK) {
-            setConnected(true);
-            let i = 0;
-            const levels = ["INFO", "DEBUG", "WARN", "ERROR"];
-            const id = setInterval(() => {
-                i += 1;
-                const ts = new Date().toISOString();
-                const lv = levels[Math.floor(Math.random() * levels.length)];
-                append(`[${lv}] ${ts} ${jobId} mock log line #${i}`);
-            }, 300);
-            return () => {
-                clearInterval(id);
-                setConnected(false);
-            };
-        }
-
-        const url = `${API_BASE}/rc/logs.stream?name=${encodeURIComponent(jobId)}`;
+        const url = `${API_BASE}/log/tail?name=${encodeURIComponent(jobId)}&intervalMs=500`;
         const es = new EventSource(url);
+        const onLine = (e) => append(e.data);
         es.onopen = () => setConnected(true);
-        es.onmessage = (e) => append(e.data);
+        es.addEventListener("line", onLine);
         es.onerror = () => setConnected(false);
         return () => {
+            es.removeEventListener("line", onLine);
             es.close();
             setConnected(false);
         };
     }, [jobId]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const el = bodyRef.current;
         if (!el || !stickToBottomRef.current) return;
         el.scrollTop = el.scrollHeight;
