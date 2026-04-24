@@ -6,7 +6,7 @@
  * 저장 파일 형식 (cgi-bin/data/{replicatorId}/{dataTable}.json):
  * {
  *   "version": 1,
- *   "source": { "server": "...", "table": "...", "dataTable": "..." },
+ *   "source": { "server": "...", "table": "...", "dataTable": "...", "tableId": "123" },
  *   "checkpoint": { "lastSuccessRid": "12345", "totalRowsWritten": "12345", "updatedAt": "...", "hasMore": false }
  * }
  */
@@ -26,6 +26,18 @@ const BIGINT_KEYS = new Set(['lastSuccessRid', 'totalRowsWritten']);
  */
 function _isBigInt(v) {
   return typeof v === 'bigint' || (v !== null && typeof v === 'object' && v.constructor && v.constructor.name === 'BigInt');
+}
+
+/**
+ * checkpoint에 저장할 source logical table id를 문자열로 정규화한다.
+ * legacy checkpoint는 이 필드가 없을 수 있으므로 null을 허용한다.
+ * @param {*|null} value
+ * @returns {string|null}
+ */
+function _normalizeSourceTableId(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text ? text : null;
 }
 
 // ─── CheckpointStore ──────────────────────────────────────────────────────────
@@ -81,34 +93,45 @@ class CheckpointStore {
       return { cp: null, exists: false, err: new Error('checkpoint dataTable mismatch') };
     }
 
-    const cp = data.checkpoint;
-    if (!cp || typeof cp.lastSuccessRid !== 'bigint') {
+    const rawCp = data.checkpoint;
+    if (!rawCp || typeof rawCp.lastSuccessRid !== 'bigint') {
       getLogger().error('checkpoint_io', {
         dataTable,
         msg: `invalid checkpoint structure (lastSuccessRid missing or wrong type), invalidating`,
       });
       return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
     }
-    if (cp.totalRowsWritten === undefined) {
-      cp.totalRowsWritten = 0n;
-    } else if (typeof cp.totalRowsWritten !== 'bigint') {
+    if (rawCp.totalRowsWritten === undefined) {
+      rawCp.totalRowsWritten = 0n;
+    } else if (typeof rawCp.totalRowsWritten !== 'bigint') {
       getLogger().error('checkpoint_io', {
         dataTable,
         msg: `invalid checkpoint structure (totalRowsWritten wrong type), invalidating`,
       });
       return { cp: null, exists: false, err: new Error('checkpoint structure invalid') };
     }
-    if (cp.initializedOnly === true) {
+    if (rawCp.initializedOnly === true) {
       // placeholder checkpoint는 "resume 가능한 checkpoint"로 취급하지 않는다.
       return { cp: null, exists: false, err: null };
     }
+
+    const cp = {
+      lastSuccessRid: rawCp.lastSuccessRid,
+      totalRowsWritten: rawCp.totalRowsWritten,
+      updatedAt: rawCp.updatedAt || '',
+      hasMore: rawCp.hasMore === true,
+      sourceServer: data.source?.server || '',
+      sourceTable: data.source?.table || '',
+      sourceDataTable: data.source?.dataTable || dataTable,
+      sourceTableId: _normalizeSourceTableId(data.source?.tableId),
+    };
 
     return { cp, exists: true, err: null };
   }
 
   /**
    * 체크포인트 저장 (atomic write)
-   * @param {{ lastSuccessRid: bigint, totalRowsWritten?: bigint, sourceServer?: string, sourceTable?: string }} cp
+   * @param {{ lastSuccessRid: bigint, totalRowsWritten?: bigint, sourceServer?: string, sourceTable?: string, sourceTableId?: string|number|bigint|null }} cp
    * @param {{ rowsRead: number, rowsWritten: number, droppedNoMeta: number, skippedExists: number }} stats
    * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number, initializedOnly?: boolean, hasMore?: boolean }} [opts]
    * @returns {Error|null}
@@ -128,6 +151,7 @@ class CheckpointStore {
     const droppedNoMeta = stats?.droppedNoMeta ?? 0;
     const skippedExists = stats?.skippedExists ?? 0;
     const queryLimit = opts?.queryLimit;
+    const sourceTableId = _normalizeSourceTableId(cp.sourceTableId);
     const hasMore = typeof opts?.hasMore === 'boolean'
       ? opts.hasMore
       : (typeof queryLimit === 'number'
@@ -137,7 +161,12 @@ class CheckpointStore {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       const content = JSON.stringify({
         version: 1,
-        source:     { server: cp.sourceServer || '', table: cp.sourceTable || '', dataTable },
+        source:     {
+          server: cp.sourceServer || '',
+          table: cp.sourceTable || '',
+          dataTable,
+          tableId: sourceTableId || undefined,
+        },
         checkpoint: {
           lastSuccessRid: cp.lastSuccessRid,
           totalRowsWritten,

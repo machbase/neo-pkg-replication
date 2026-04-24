@@ -4,12 +4,14 @@
  * @fileoverview Replicator — 소스→대상 데이터 복제 오케스트레이터
  */
 
+const fs = require('fs');
 const path = require('path');
 const process = require('process');
 const { MachbaseClient } = require('../db/client.js');
 const { createQueryClient } = require('../db/remote.js');
 const { TagTable, LogTable } = require('../db/table.js');
-const { Worker } = require('./worker.js');
+const CheckpointStore = require('../db/checkpoint.js');
+const { Worker, SOURCE_TABLE_RECREATED_CODE } = require('./worker.js');
 const { TagMetaSyncManager } = require('./tag-meta-sync.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 const { ColumnType, Column, TableSchema, FLAG_METADATA } = require('../db/types.js');
@@ -24,6 +26,21 @@ class AbortSignal {
 class AbortController {
   constructor() { this.signal = new AbortSignal(); }
   abort() { this.signal.aborted = true; }
+}
+
+function _normalizeSourceTableId(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function _tableTypeFromSourceInfo(sourceInfo) {
+  if (!sourceInfo || sourceInfo.type == null) return 'UNSUPPORTED';
+  switch (sourceInfo.type) {
+    case 6: return 'TAG';
+    case 0: return 'LOG';
+    default: return 'UNSUPPORTED';
+  }
 }
 
 class Replicator {
@@ -47,6 +64,7 @@ class Replicator {
     this.retry = config.retry ?? null;
     this.logging = config.logging ?? null;
     this.runtimeHints = config._runtime || null;
+    this.forceFreshStart = false;
     this.logCtx = {
       source: `${this.source.host}:${this.source.port}/${this.source.table}`,
       target: `${this.target.host}:${this.target.port}/${this.target.table}`,
@@ -109,7 +127,14 @@ class Replicator {
     let sourceClient = null;
     try {
       sourceClient = await this._openSourceClient();
-      const { type: tableType } = await sourceClient.selectTableTypeQualified(this.source.table);
+      const rawSourceInfo = await sourceClient.selectTableInfoQualified(this.source.table);
+      const sourceInfo = {
+        owner: rawSourceInfo.owner,
+        table: rawSourceInfo.table,
+        id: _normalizeSourceTableId(rawSourceInfo.id),
+        type: rawSourceInfo.type,
+      };
+      const tableType = _tableTypeFromSourceInfo(sourceInfo);
       if (tableType === 'UNSUPPORTED') {
         getLogger().error('replicator', { ...this.logCtx, msg: `source table '${this.source.table}' not found` });
         return null;
@@ -148,6 +173,7 @@ class Replicator {
             dataTables,
             srcSchema: await srcTable.getSchema(),
             dstSchema,
+            sourceInfo,
           };
         } finally {
           try { await srcTable.close(); } catch (_) {}
@@ -182,6 +208,7 @@ class Replicator {
             dataTables: [this.source.table],
             srcSchema: await srcTable.getSchema(),
             dstSchema,
+            sourceInfo,
           };
         } finally {
           try { await srcTable.close(); } catch (_) {}
@@ -198,12 +225,85 @@ class Replicator {
     }
   }
 
+  _getCheckpointDirectory() {
+    return path.join(CHECKPOINT_DIRECTORY, this.id);
+  }
+
+  _clearCheckpointDirectory(logFields) {
+    const checkpointDir = this._getCheckpointDirectory();
+    try {
+      fs.rmSync(checkpointDir, { recursive: true, force: true });
+      if (logFields) {
+        getLogger().warn('replicator', { ...this.logCtx, ...logFields });
+      }
+      return true;
+    } catch (err) {
+      getLogger().error('replicator', {
+        ...this.logCtx,
+        checkpointDir,
+        msg: `failed to clear checkpoint directory: ${err.message}`,
+      });
+      return false;
+    }
+  }
+
+  _resetCheckpointDirectoryIfSourceTableChanged(sourceInfo) {
+    const currentSourceTableId = _normalizeSourceTableId(sourceInfo && sourceInfo.id);
+    if (!currentSourceTableId) return false;
+
+    const checkpointDir = this._getCheckpointDirectory();
+    let fileNames = null;
+    try {
+      fileNames = fs.readdirSync(checkpointDir)
+        .filter((name) => name.endsWith('.json') && name !== 'meta-sync.json');
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return false;
+      getLogger().error('replicator', {
+        ...this.logCtx,
+        checkpointDir,
+        msg: `failed to inspect checkpoint directory: ${err.message}`,
+      });
+      return false;
+    }
+
+    let mismatch = null;
+    for (const fileName of fileNames) {
+      const dataTable = fileName.replace(/\.json$/, '');
+      const loaded = new CheckpointStore(checkpointDir, dataTable).load();
+      if (!loaded.exists || !loaded.cp || !loaded.cp.sourceTableId) {
+        continue;
+      }
+      if (loaded.cp.sourceTableId !== currentSourceTableId) {
+        mismatch = {
+          checkpointFile: fileName,
+          storedSourceTableId: loaded.cp.sourceTableId,
+        };
+        break;
+      }
+    }
+
+    if (!mismatch) return false;
+
+    return this._clearCheckpointDirectory({
+      sourceTable: this.source.table,
+      checkpointFile: mismatch.checkpointFile,
+      storedSourceTableId: mismatch.storedSourceTableId,
+      currentSourceTableId,
+      msg: 'source table id changed since the saved checkpoint, cleared checkpoint and metadata sync state before restart from rid 0',
+    });
+  }
+
   async runWorkers(discovered) {
-    const { tableType, dataTables, srcSchema, dstSchema } = discovered;
+    const { tableType, dataTables, srcSchema, dstSchema, sourceInfo } = discovered;
+    // source table recreation은 기존 job의 startMode(now/ridAfter)를 이어받지 않고 새 테이블 전체를 다시 읽어야 한다.
+    const startupReset = this._resetCheckpointDirectoryIfSourceTableChanged(sourceInfo);
+    const forceFreshStart = this.forceFreshStart || startupReset;
+    this.forceFreshStart = false;
     getLogger().info('replicator', {
       ...this.logCtx,
       table_type: tableType,
       partitions: dataTables.length,
+      forceFreshStart,
       msg: `starting ${dataTables.length} worker(s)`,
     });
 
@@ -213,10 +313,11 @@ class Replicator {
       target: this.target,
       queryLimit: this.queryLimit,
       pollIntervalMs: this.pollIntervalMs,
-      startMode: this.startMode,
+      startMode: forceFreshStart ? 'full' : this.startMode,
       ridAfter: this.ridAfter,
       onSaveFailure: this.onSaveFailure,
       retry: this.retry,
+      sourceTableId: _normalizeSourceTableId(sourceInfo && sourceInfo.id),
     };
 
     let metaSyncManager = null;
@@ -241,27 +342,50 @@ class Replicator {
 
     const ac = new AbortController();
     const { signal } = ac;
+    let failure = null;
 
     try {
       await Promise.all(workers.map((worker) =>
         worker.run(signal).then(() => {
-          if (!this.shutdownFlag.value && !signal.aborted) {
+          if (!this.shutdownFlag.value && !signal.aborted && !failure) {
+            failure = {
+              err: new Error('worker exited unexpectedly'),
+              partition: worker.dataTable,
+            };
             getLogger().warn('replicator', { ...this.logCtx, partition: worker.dataTable, msg: 'worker exited unexpectedly, aborting' });
             ac.abort();
           }
         }).catch((err) => {
-          getLogger().error('replicator', { ...this.logCtx, partition: worker.dataTable, msg: `worker error: ${err.message}` });
+          if (!failure) {
+            failure = { err, partition: worker.dataTable };
+          }
+          if (!(err && err.code === SOURCE_TABLE_RECREATED_CODE)) {
+            getLogger().error('replicator', { ...this.logCtx, partition: worker.dataTable, msg: `worker error: ${err.message}` });
+          }
           ac.abort();
-          throw err;
         })
       ));
+      if (failure) {
+        if (failure.err && failure.err.code === SOURCE_TABLE_RECREATED_CODE) {
+          const details = failure.err.details || {};
+          this.forceFreshStart = true;
+          this._clearCheckpointDirectory({
+            sourceTable: this.source.table,
+            partition: failure.partition,
+            previousSourceTableId: details.previousSourceTableId || '',
+            currentSourceTableId: details.currentSourceTableId || '',
+            checkpointRid: details.checkpointRid || '',
+            startRid: details.startRid || '',
+            currentMaxRid: details.currentMaxRid || '',
+            msg: 'source table recreation detected while replicating, cleared checkpoint and metadata sync state before restart from rid 0',
+          });
+        } else if (!this.shutdownFlag.value) {
+          getLogger().info('replicator', { ...this.logCtx, msg: 'workers aborted, restarting' });
+        }
+        return false;
+      }
       getLogger().debug('replicator', { ...this.logCtx, msg: 'all workers finished' });
       return true;
-    } catch (_) {
-      if (!this.shutdownFlag.value) {
-        getLogger().info('replicator', { ...this.logCtx, msg: 'workers aborted, restarting' });
-      }
-      return false;
     } finally {
       try { metaSyncManager && await metaSyncManager.close(); } catch (_) {}
     }
