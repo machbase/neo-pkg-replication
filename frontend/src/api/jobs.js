@@ -13,10 +13,19 @@ export const listJobs = async () => {
     return data.map(mapListItem);
 };
 
-// 단건 응답: { name, config: { ... }, checkpoints: { ... } }
+// 단건 응답: { name, config: { ... }, checkpoints: { ... },
+//   checkpointStatus: { source_row_count: string, target_row_count: string, warnings: Array<{code, side, table, message}> },
+//   metaSync: object | null }
+// row_count: "" = 조회 불가/미지원 (e.g. mqtt-publish target), "0" = 빈 테이블
+// warning code: "source_table_dropped" | "target_table_dropped"
 export const getJob = async (name) => {
     const data = await request("GET", `${RC}?name=${encodeURIComponent(name)}`);
-    return { name: data.name, ...data.config, checkpoints: data.checkpoints };
+    return {
+        name: data.name,
+        ...data.config,
+        checkpoints: data.checkpoints,
+        checkpointStatus: data.checkpointStatus || null,
+    };
 };
 
 export const createJob = (data) => request("POST", RC, data);
