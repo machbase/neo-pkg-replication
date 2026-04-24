@@ -19,6 +19,7 @@ const { applyTransformRules, collectReferencedColumns } = require('./rules.js');
 const CHECKPOINT_BASE = path.resolve(path.dirname(process.argv[1]));
 const CHECKPOINT_DIRECTORY = path.join(CHECKPOINT_BASE, 'data');
 const INTEGRITY_BATCH_LIMIT = 500;
+const SOURCE_TABLE_RECREATED_CODE = 'source_table_recreated';
 
 async function _withRetry({ fn, retry, shutdownFlag, logCtx, exhaustedMsg, retryMsg, phase }) {
   const ctx = phase ? { ...logCtx, phase } : logCtx;
@@ -129,6 +130,19 @@ function _uniqueNames(values) {
 
 function _toEpochNs(value) {
   return parseEpochNsLike(value);
+}
+
+function _normalizeSourceTableId(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function _createSourceTableRecreatedError(details) {
+  const err = new Error('source table recreated');
+  err.code = SOURCE_TABLE_RECREATED_CODE;
+  err.details = details || {};
+  return err;
 }
 
 class Worker {
@@ -322,7 +336,7 @@ class Worker {
     return { appendRows, resolved, maxSourceTagId };
   }
 
-  async _skipEmptyRidRange({ srcTable, startRid, endRid, maxRid, totalRowsWritten, checkpointStore, retry, shutdownFlag, logCtx, phase, batchSize, options }) {
+  async _skipEmptyRidRange({ srcTable, startRid, endRid, maxRid, totalRowsWritten, checkpointStore, retry, shutdownFlag, logCtx, phase, batchSize, options, sourceTableId }) {
     const nextSearchStart = endRid + 1n;
     if (nextSearchStart > maxRid) {
       this._saveCheckpoint(checkpointStore, maxRid, totalRowsWritten, {
@@ -330,7 +344,7 @@ class Worker {
         rowsWritten: 0,
         droppedNoMeta: 0,
         skippedExists: 0,
-      }, false, batchSize);
+      }, false, batchSize, sourceTableId);
       return { nextStartRid: maxRid + 1n };
     }
 
@@ -352,7 +366,7 @@ class Worker {
         rowsWritten: 0,
         droppedNoMeta: 0,
         skippedExists: 0,
-      }, false, batchSize);
+      }, false, batchSize, sourceTableId);
       getLogger().debug('worker', {
         ...logCtx,
         phase,
@@ -370,7 +384,7 @@ class Worker {
       rowsWritten: 0,
       droppedNoMeta: 0,
       skippedExists: 0,
-    }, true, batchSize);
+    }, true, batchSize, sourceTableId);
     getLogger().debug('worker', {
       ...logCtx,
       phase,
@@ -382,17 +396,42 @@ class Worker {
     return { nextStartRid: nextRid };
   }
 
-  _saveCheckpoint(checkpointStore, rid, totalRowsWritten, stats, hasMore, queryLimit) {
+  _saveCheckpoint(checkpointStore, rid, totalRowsWritten, stats, hasMore, queryLimit, sourceTableId) {
     checkpointStore.save({
       lastSuccessRid: rid,
       totalRowsWritten,
       sourceServer: this.config.source.host,
       sourceTable: this.config.source.table,
+      sourceTableId,
     }, stats, {
       onSaveFailure: this.config.onSaveFailure,
       queryLimit,
       hasMore,
     });
+  }
+
+  async _getSourceTableInfo(srcTable, retry, shutdownFlag, logCtx, phase) {
+    const result = await _withRetry({
+      fn: async () => {
+        try {
+          return { done: true, value: await srcTable.client.selectTableInfoQualified(this.config.source.table) };
+        } catch (err) {
+          return {
+            done: false,
+            retryable: retry.shouldRetry(err),
+            msg: `non-retryable source table info error: ${err.message}`,
+            detail: err.message,
+          };
+        }
+      },
+      retry,
+      shutdownFlag,
+      logCtx,
+      exhaustedMsg: 'source table info retry exhausted, stopping worker',
+      retryMsg: 'source table info retry',
+      phase,
+    });
+    return result.ok ? result.value : null;
   }
 
   async _getMaxRid(srcTable, retry, shutdownFlag, logCtx, phase) {
@@ -434,7 +473,25 @@ class Worker {
       return;
     }
 
+    const runSourceTableInfo = await this._getSourceTableInfo(srcTable, retry, shutdownFlag, logCtx, 'RESOLVE_SOURCE_TABLE');
+    const runSourceTableId = _normalizeSourceTableId(
+      (runSourceTableInfo && runSourceTableInfo.id != null)
+        ? runSourceTableInfo.id
+        : this.config.sourceTableId
+    );
+    if (!runSourceTableId) {
+      // source table id가 확인되지 않으면 drop/recreate 자동 감지 신뢰도가 깨지므로 로그를 남기고 best-effort로 진행한다.
+      getLogger().warn('worker', {
+        ...logCtx,
+        msg: 'source table id unavailable at worker start, drop/recreate detection will be best-effort for this run',
+      });
+    }
+
     const { cp, exists: cpExists } = checkpointStore.load();
+    const checkpointSourceTableId = cpExists && cp ? _normalizeSourceTableId(cp.sourceTableId) : null;
+    const expectedSourceTableId = checkpointSourceTableId || runSourceTableId;
+    // legacy checkpoint는 source table id가 없으므로, 이번 실행에서는 기존 checkpoint를 current table id로 덮어쓰지 않는다.
+    const saveSourceTableId = cpExists && cp ? checkpointSourceTableId : runSourceTableId;
     let startRid;
     let sourceRidRegressionLogged = false;
     let totalRowsWritten = cpExists && cp && cp.totalRowsWritten != null ? BigInt(String(cp.totalRowsWritten)) : 0n;
@@ -465,7 +522,7 @@ class Worker {
         rowsWritten: 0,
         droppedNoMeta: 0,
         skippedExists: 0,
-      }, false, batchSize);
+      }, false, batchSize, saveSourceTableId);
     }
 
     if (plan.isTag) {
@@ -494,6 +551,7 @@ class Worker {
           checkpointStore,
           plan,
           readOptions,
+          sourceTableId: saveSourceTableId,
         });
         if (result === null) return;
         startRid = result.startRid;
@@ -512,17 +570,40 @@ class Worker {
         const maxRid = await this._getMaxRid(srcTable, retry, shutdownFlag, logCtx, 'STEADY_MAXRID');
         if (maxRid == null) return;
         // DELETE 후 재적재는 새 _RID가 기존 checkpoint를 계속 넘어가므로 여기서 막히지 않는다.
-        // 반대로 source table이 DROP/recreate 되면 새 _RID가 0부터 다시 시작해 checkpoint보다 작아진다.
-        // 이 경우 현재 구현은 복구를 시도하지 않고 idle 상태로 남으므로, 운영자가 원인을 바로 알 수 있게
-        // checkpoint와 현재 source max rid의 역전을 경고 로그로 남겨 둔다.
+        // 반대로 source table DROP/recreate는 새 _RID가 0부터 다시 시작해 checkpoint보다 작아질 수 있다.
+        // 역전 자체는 trigger이고, 실제 복구 판단은 source logical table id를 다시 읽어 확인한다.
         if (cpExists && cp && !sourceRidRegressionLogged && maxRid >= 0n && startRid > maxRid) {
+          const currentSourceTableInfo = await this._getSourceTableInfo(srcTable, retry, shutdownFlag, logCtx, 'STEADY_SOURCE_TABLE');
+          const currentSourceTableId = _normalizeSourceTableId(currentSourceTableInfo && currentSourceTableInfo.id);
+          if (expectedSourceTableId && currentSourceTableId && expectedSourceTableId !== currentSourceTableId) {
+            getLogger().warn('worker', {
+              ...logCtx,
+              checkpointRid: String(cp.lastSuccessRid),
+              startRid: String(startRid),
+              currentMaxRid: String(maxRid),
+              previousSourceTableId: expectedSourceTableId,
+              currentSourceTableId,
+              msg: 'source max rid regressed and source table id changed, source table was dropped and recreated',
+            });
+            throw _createSourceTableRecreatedError({
+              previousSourceTableId: expectedSourceTableId,
+              currentSourceTableId,
+              checkpointRid: String(cp.lastSuccessRid),
+              startRid: String(startRid),
+              currentMaxRid: String(maxRid),
+            });
+          }
+
           sourceRidRegressionLogged = true;
-          getLogger().warn('worker', {
+          getLogger().error('worker', {
             ...logCtx,
             checkpointRid: String(cp.lastSuccessRid),
             startRid: String(startRid),
             currentMaxRid: String(maxRid),
-            msg: 'source max rid is behind checkpoint; source table may have been dropped and recreated, replication will stay idle until checkpoint is reset or source rid catches up',
+            checkpointSourceTableId: checkpointSourceTableId || '',
+            runSourceTableId: runSourceTableId || '',
+            currentSourceTableId: currentSourceTableId || '',
+            msg: 'source max rid regressed without a source table id change; source state is abnormal and replication will stay idle until manually resolved',
           });
         }
 
@@ -533,7 +614,7 @@ class Worker {
             rowsWritten: 0,
             droppedNoMeta: 0,
             skippedExists: 0,
-          }, false, batchSize);
+          }, false, batchSize, saveSourceTableId);
           const signal = await retry.sleepOrShutdown(pollIntervalMs, shutdownFlag);
           if (signal === 'shutdown') return;
           continue;
@@ -566,6 +647,7 @@ class Worker {
             phase: 'STEADY',
             batchSize,
             options: readOptions,
+            sourceTableId: saveSourceTableId,
           });
           if (skipped == null) return;
           startRid = skipped.nextStartRid;
@@ -602,7 +684,7 @@ class Worker {
           rowsWritten: processed.appendRows.length,
           droppedNoMeta: 0,
           skippedExists: 0,
-        }, endRid < maxRid, batchSize);
+        }, endRid < maxRid, batchSize, saveSourceTableId);
 
         startRid = endRid + 1n;
       }
@@ -611,7 +693,7 @@ class Worker {
     }
   }
 
-  async _runStartupIntegrity({ startRid, totalRowsWritten, srcTable, dstTable, retry, shutdownFlag, logCtx, checkpointStore, plan, readOptions }) {
+  async _runStartupIntegrity({ startRid, totalRowsWritten, srcTable, dstTable, retry, shutdownFlag, logCtx, checkpointStore, plan, readOptions, sourceTableId }) {
     getLogger().debug('worker', { ...logCtx, fromRid: String(startRid), msg: 'integrity check start' });
 
     let integrityRid = startRid;
@@ -645,6 +727,7 @@ class Worker {
           phase: 'STARTUP_INTEGRITY',
           batchSize: integrityBatchSize,
           options: readOptions,
+          sourceTableId,
         });
         if (skipped == null) return null;
         integrityRid = skipped.nextStartRid;
@@ -658,7 +741,7 @@ class Worker {
           rowsWritten: 0,
           droppedNoMeta: 0,
           skippedExists: 0,
-        }, endRid < maxRid, integrityBatchSize);
+        }, endRid < maxRid, integrityBatchSize, sourceTableId);
         integrityRid = endRid + 1n;
         continue;
       }
@@ -684,7 +767,7 @@ class Worker {
             rowsWritten: 0,
             droppedNoMeta: 0,
             skippedExists: result.firstMissIdx,
-          }, true, integrityBatchSize);
+          }, true, integrityBatchSize, sourceTableId);
           getLogger().debug('worker', { ...logCtx, firstMissRid: String(firstMissRid), safeCpRid: String(safeCpRid), msg: 'integrity check: first missing row found' });
           startRid = firstMissRid;
           break;
@@ -707,7 +790,7 @@ class Worker {
           rowsWritten: 0,
           droppedNoMeta: 0,
           skippedExists: processed.resolved.length,
-        }, endRid < maxRid, integrityBatchSize);
+        }, endRid < maxRid, integrityBatchSize, sourceTableId);
         integrityRid = endRid + 1n;
       } finally {
         try { await intConn.close(); } catch (_) {}
@@ -719,4 +802,4 @@ class Worker {
   }
 }
 
-module.exports = { Worker };
+module.exports = { Worker, SOURCE_TABLE_RECREATED_CODE };
