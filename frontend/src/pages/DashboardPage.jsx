@@ -133,6 +133,23 @@ export default function DashboardPage({ jobs, onDelete }) {
     const checkpoints = jobDetail.checkpoints && Object.keys(jobDetail.checkpoints).length > 0 ? jobDetail.checkpoints : {};
     const cpEntries = Object.entries(checkpoints);
 
+    // checkpointStatus: { source_row_count, target_row_count, warnings: [{code, side, table, message}] }
+    // row_count is a string: "" = unsupported/unavailable, "0" = empty table, otherwise count as string
+    const checkpointStatus = jobDetail.checkpointStatus || null;
+    const formatRowCount = (v) => {
+        if (v == null || v === "") return null;
+        try {
+            return BigInt(String(v)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        } catch {
+            return null;
+        }
+    };
+    const sourceRowCountLabel = formatRowCount(checkpointStatus?.source_row_count);
+    const targetRowCountLabel = formatRowCount(checkpointStatus?.target_row_count);
+    const warnings = Array.isArray(checkpointStatus?.warnings) ? checkpointStatus.warnings : [];
+    const hasSourceWarning = warnings.some((w) => w?.side === "source");
+    const hasTargetWarning = warnings.some((w) => w?.side === "target");
+
     const srcColumns = Array.isArray(src.columns) ? src.columns : [];
     const tgtColumns = Array.isArray(tgt.columns) ? tgt.columns : [];
     const schemaRowCount = Math.max(srcColumns.length, tgtColumns.length);
@@ -211,6 +228,18 @@ export default function DashboardPage({ jobs, onDelete }) {
                 <div className="page-body-inner">
                     {/* Replication Info — full width */}
                     <section className="repl-info-card">
+                        {warnings.length > 0 && (
+                            <div className="repl-info-warnings">
+                                {warnings.map((w, i) => (
+                                    <div key={i} className="repl-info-warning">
+                                        <Icon name="warning" className="icon-sm" />
+                                        <span className="repl-info-warning-text">
+                                            {w.message || `${w.side || ""} table '${w.table || ""}' issue (${w.code || "unknown"})`}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                         {(() => {
                             const totalRows = sumTotalRows(checkpoints);
                             const hasAnyMore = cpEntries.length > 0 && cpEntries.some(([, v]) => v.hasMore);
@@ -223,9 +252,26 @@ export default function DashboardPage({ jobs, onDelete }) {
                             return (
                                 <div className="repl-info-grid">
                                     <div className="repl-info-endpoint">
-                                        <span className="repl-info-label">SOURCE</span>
+                                        <span className="repl-info-label">
+                                            SOURCE
+                                            {hasSourceWarning && (
+                                                <span
+                                                    className="tooltip ml-4"
+                                                    data-tooltip="Source table issue — see warnings above"
+                                                    style={{ color: "var(--color-warning)", verticalAlign: "middle" }}
+                                                >
+                                                    <Icon name="warning" className="icon-sm" />
+                                                </span>
+                                            )}
+                                        </span>
                                         <span className="repl-info-table">{src.table || "—"}</span>
                                         <span className="repl-info-db">{src.server || "—"}</span>
+                                        {sourceRowCountLabel !== null && (
+                                            <span className="repl-info-row-count">
+                                                <span className="repl-info-row-count-value">{sourceRowCountLabel}</span>
+                                                <span className="repl-info-row-count-label">ROWS</span>
+                                            </span>
+                                        )}
                                     </div>
 
                                     <div className="repl-info-center">
@@ -264,6 +310,15 @@ export default function DashboardPage({ jobs, onDelete }) {
                                                     <Icon name="podcasts" className="icon-sm" />
                                                 </span>
                                             )}
+                                            {hasTargetWarning && (
+                                                <span
+                                                    className="tooltip ml-4"
+                                                    data-tooltip="Target table issue — see warnings above"
+                                                    style={{ color: "var(--color-warning)", verticalAlign: "middle" }}
+                                                >
+                                                    <Icon name="warning" className="icon-sm" />
+                                                </span>
+                                            )}
                                         </span>
                                         <span className="repl-info-table">{tgt.table || "—"}</span>
                                         <span className="repl-info-db">
@@ -278,6 +333,12 @@ export default function DashboardPage({ jobs, onDelete }) {
                                                 </span>
                                             )}
                                         </span>
+                                        {targetRowCountLabel !== null && (
+                                            <span className="repl-info-row-count">
+                                                <span className="repl-info-row-count-value">{targetRowCountLabel}</span>
+                                                <span className="repl-info-row-count-label">ROWS</span>
+                                            </span>
+                                        )}
                                     </div>
                                 </div>
                             );

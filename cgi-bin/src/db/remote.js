@@ -418,6 +418,18 @@ class SqlLikeClient {
     return raw == null ? -1n : BigInt(raw);
   }
 
+  /**
+   * 논리 테이블 전체 행 수를 조회한다.
+   * checkpoint API는 transport별 partition layout과 무관하게 logical table 기준 count를 노출한다.
+   * @param {string} tableName
+   * @returns {Promise<bigint>}
+   */
+  async selectCountRows(tableName) {
+    const rows = await this.query(`SELECT COUNT(*) as row_count FROM ${tableName}`);
+    const raw = rows?.[0]?.row_count;
+    return raw == null ? 0n : BigInt(raw);
+  }
+
   async selectTagNames(logicalTable) {
     return this.query(`SELECT _ID, name FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
   }

@@ -969,6 +969,61 @@ class Handler {
   }
 
   /**
+   * 테이블이 제거되어 조회에 실패한 오류인지 판별한다.
+   * checkpoint 경고는 missing-table만 사용자 주의사항으로 노출하고, 일반 장애는 dropped로 오판하지 않는다.
+   * @param {Error} err
+   * @returns {boolean}
+   */
+  static isMissingTableError(err) {
+    const message = err && err.message ? String(err.message).toLowerCase() : '';
+    if (message.indexOf('unknown table') >= 0 || message.indexOf('no such table') >= 0) {
+      return true;
+    }
+    const mentionsTable = message.indexOf('table') >= 0 || message.indexOf('relation') >= 0;
+    return mentionsTable && (
+      message.indexOf('does not exist') >= 0
+      || message.indexOf('not found') >= 0
+    );
+  }
+
+  /**
+   * query 가능한 endpoint에서 logical table row count를 best-effort로 조회한다.
+   * missing-table만 dropped 경고 후보로 올리고, 그 외 오류는 count를 비워서 transient 문제와 구분한다.
+   * @param {object} endpoint
+   * @param {string} tableName
+   * @returns {Promise<{ count: string, dropped: boolean }>}
+   */
+  static async readTableRowCount(endpoint, tableName) {
+    const type = String(endpoint?.type || 'native').trim().toLowerCase();
+    const normalizedTable = String(tableName || endpoint?.table || '').trim().toUpperCase();
+    if (!normalizedTable || type === 'mqtt-publish') {
+      return { count: '', dropped: false };
+    }
+
+    let client = null;
+    try {
+      client = type === 'native'
+        ? new MachbaseClient({ ...endpoint, table: normalizedTable })
+        : createQueryClient({ ...endpoint, table: normalizedTable });
+      if (!client) {
+        return { count: '', dropped: false };
+      }
+      await client.connect();
+      return {
+        count: String(await client.selectCountRows(normalizedTable)),
+        dropped: false,
+      };
+    } catch (err) {
+      return {
+        count: '',
+        dropped: Handler.isMissingTableError(err),
+      };
+    } finally {
+      try { client && await client.close(); } catch (_) {}
+    }
+  }
+
+  /**
    * serviceInfo의 status가 RUNNING인지 확인한다.
    * @param {object} serviceInfo
    * @returns {boolean}
@@ -1135,6 +1190,52 @@ class Handler {
     }
 
     return result;
+  }
+
+  /**
+   * checkpoint와 함께 보여줄 logical-table 수준 상태를 반환한다.
+   * 파티션 checkpoint는 내부 worker 진행상태용이고, row count/drop warning은 운영자가 현재 source/target 상황을 빠르게 파악하기 위한 보조 정보다.
+   * @param {object} config - replicator runtime config
+   * @returns {Promise<{ source_row_count: string, target_row_count: string, warnings: Array<object> }>}
+   */
+  static async readCheckpointStatus(config) {
+    const source = config?.source || {};
+    const target = config?.target || {};
+    const sourceTable = String(source.table || '').trim().toUpperCase();
+    const targetTable = String(target.table || sourceTable).trim().toUpperCase();
+    const status = {
+      source_row_count: '',
+      target_row_count: '',
+      warnings: [],
+    };
+
+    const sourceCount = await Handler.readTableRowCount(source, sourceTable);
+    status.source_row_count = sourceCount.count;
+    if (sourceCount.dropped) {
+      status.warnings.push({
+        code: 'source_table_dropped',
+        side: 'source',
+        table: sourceTable,
+        message: `source table '${sourceTable}' is missing`,
+      });
+    }
+
+    const targetType = String(target.type || 'native').trim().toLowerCase();
+    if (targetType === 'mqtt-publish') {
+      return status;
+    }
+
+    const targetCount = await Handler.readTableRowCount(target, targetTable);
+    status.target_row_count = targetCount.count;
+    if (targetCount.dropped) {
+      status.warnings.push({
+        code: 'target_table_dropped',
+        side: 'target',
+        table: targetTable,
+        message: `target table '${targetTable}' is missing`,
+      });
+    }
+    return status;
   }
 
   /**
@@ -1401,7 +1502,7 @@ class Handler {
   /**
    * replicator 설정과 checkpoint 정보를 반환한다. password는 제거된다.
    * @param {string} name
-   * @param {function(Error|null, { name: string, config: object, checkpoints: object, metaSync: object|null }=): void} callback
+   * @param {function(Error|null, { name: string, config: object, checkpoints: object, checkpointStatus: object, metaSync: object|null }=): void} callback
    */
   static async getReplicator(name, callback) {
     if (!name) { callback(new Error('name is required')); return; }
@@ -1417,9 +1518,12 @@ class Handler {
     const sourceTable = config.source?.table || '';
     const targetTable = config.target?.table || sourceTable;
     const replicatorId = config.id || (sourceTable && targetTable ? `${sourceTable}_${targetTable}` : '');
-    const checkpoints = await Handler.readCheckpoints(replicatorId, runtimeConfig);
+    const [checkpoints, checkpointStatus] = await Promise.all([
+      Handler.readCheckpoints(replicatorId, runtimeConfig),
+      Handler.readCheckpointStatus(runtimeConfig),
+    ]);
     const metaSync = Handler.readMetaSync(replicatorId);
-    callback(null, { name, config: safeConfig, checkpoints, metaSync });
+    callback(null, { name, config: safeConfig, checkpoints, checkpointStatus, metaSync });
   }
 
   /**
