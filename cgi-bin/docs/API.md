@@ -658,6 +658,28 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 }
 ```
 
+### `GET /api/log/tail?name=...&intervalMs=...`
+
+- SSE(`text/event-stream`) 기반 active 로그 tail API이다.
+- `name`은 로그 파일명이 아니라 replication job name이다.
+- tail 대상 파일은 내부적으로 `{name}.log` active 로그 파일로 고정된다.
+- 기존 로그 내용은 전송하지 않고, 연결 이후 append되는 최신 로그 라인만 전송한다.
+- 로그 파일이 아직 없으면 연결을 유지하고, 파일이 생성된 뒤부터 follow 한다.
+- `intervalMs`는 polling 주기이며 기본값은 `500`이다. 허용 범위는 `250`부터 `5000`까지이다.
+- event name은 `line`이고, payload는 JSON이 아닌 로그 라인 문자열이다.
+
+프론트엔드 사용 예시:
+
+```js
+const es = new EventSource(
+  `${API_BASE}/log/tail?name=${encodeURIComponent(jobId)}&intervalMs=500`
+);
+
+es.addEventListener("line", (event) => {
+  appendLine(event.data);
+});
+```
+
 ### `GET /api/log/content?name=...&start=...&end=...`
 
 - `name`은 로그 파일명이다. 경로 구분자를 포함할 수 없고 파일명만 허용한다.

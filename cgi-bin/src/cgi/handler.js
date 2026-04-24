@@ -123,6 +123,20 @@ class Handler {
   }
 
   /**
+   * job name 기준 active log 파일 경로를 반환한다.
+   * Logger의 fileStem sanitize 정책과 맞춰 실시간 tail 대상은 항상 {jobName}.log 이다.
+   * @param {string} name
+   * @returns {string}
+   */
+  static resolveActiveLogFilePath(name) {
+    const text = String(name || '').trim();
+    if (!text) throw new Error('name is required');
+    const safe = text.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!safe) throw new Error('invalid log name');
+    return Handler.resolveLogFilePath(`${safe}.log`);
+  }
+
+  /**
    * 텍스트의 라인 수를 계산한다.
    * @param {string} text
    * @returns {number}
