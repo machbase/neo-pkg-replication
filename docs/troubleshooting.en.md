@@ -178,3 +178,8 @@ So after changing Source or Target, review the following again:
 - Then check whether the Source / Target tables exist.
 - Then check dashboard warnings and row count.
 - Finally, check the log files.
+
+## Navigation
+
+- [Previous: Monitoring and Logs](./monitoring-and-logs.en.md)
+- [Back to Index](./index.en.md)

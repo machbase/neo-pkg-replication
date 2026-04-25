@@ -119,3 +119,8 @@ You can run the test before saving the server, and you can also test an already 
 - It is normal that `mqtt-api` and `mqtt-publish` do not appear on the Source side.
 - If the Target is `mqtt-publish`, data is sent to a **Topic** instead of a table.
 - On the edit screen, existing passwords or tokens are kept even if you do not enter them again.
+
+## Navigation
+
+- [Back to Index](./index.en.md)
+- [Next: Create and Run Jobs](./create-and-run-job.en.md)

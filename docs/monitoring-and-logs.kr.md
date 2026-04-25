@@ -132,3 +132,9 @@ Logging Controls 영역의 **Log Files** 버튼을 누르면 현재 Job의 로�
 - 로그 레벨을 제한적으로 설정하면 Live Logs에 거의 아무 내용도 보이지 않을 수 있습니다.
 - 로그가 많으면 파일 내용이 페이지 단위로 나뉘어 보일 수 있습니다.
 - 로그 레벨을 너무 낮게 두면 파일이 빠르게 증가할 수 있습니다.
+
+## 문서 이동
+
+- [이전: Job 생성과 실행](./create-and-run-job.kr.md)
+- [목차로 돌아가기](./index.kr.md)
+- [다음: 문제 해결](./troubleshooting.kr.md)

@@ -119,3 +119,8 @@ Replication Job을 만들기 전에 먼저 연결할 서버를 등록해야 합�
 - `mqtt-api`, `mqtt-publish`는 Source 쪽에서 선택되지 않는 것이 정상입니다.
 - Target이 `mqtt-publish`인 경우에는 테이블 대신 **Topic**으로 전송됩니다.
 - 편집 화면에서 비밀번호나 토큰을 다시 입력하지 않아도 기존 값은 유지됩니다.
+
+## 문서 이동
+
+- [목차로 돌아가기](./index.kr.md)
+- [다음: Job 생성과 실행](./create-and-run-job.kr.md)

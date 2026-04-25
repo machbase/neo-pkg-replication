@@ -132,3 +132,9 @@ If a problem is suspected, the following order is usually helpful:
 - If the log level is restrictive, Live Logs may show little or no output.
 - If the logs are large, file contents may be split into pages.
 - If the log level is set too low, log files may grow quickly.
+
+## Navigation
+
+- [Previous: Create and Run Jobs](./create-and-run-job.en.md)
+- [Back to Index](./index.en.md)
+- [Next: Troubleshooting](./troubleshooting.en.md)
