@@ -178,3 +178,8 @@ weight: 50
 - 그다음 Source/Target 테이블 존재 여부를 본다.
 - 그다음 대시보드 경고와 row count를 본다.
 - 마지막으로 로그 파일을 본다.
+
+## 문서 이동
+
+- [이전: 모니터링과 로그 확인](./monitoring-and-logs.kr.md)
+- [목차로 돌아가기](./index.kr.md)

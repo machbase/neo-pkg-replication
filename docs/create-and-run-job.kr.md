@@ -187,3 +187,9 @@ weight: 30
 - `mqtt-api`, `mqtt-publish`는 Source 쪽에서 선택되지 않는 것이 정상입니다.
 - Target이 `mqtt-publish`인 경우에는 Topic 값이 유효한지 반드시 확인해야 합니다.
 - `Now`는 신규 데이터 추적에 적합하고, 초기 전체 복제가 필요하면 `Full`을 사용해야 합니다.
+
+## 문서 이동
+
+- [이전: Server 설정](./server-settings.kr.md)
+- [목차로 돌아가기](./index.kr.md)
+- [다음: 모니터링과 로그 확인](./monitoring-and-logs.kr.md)

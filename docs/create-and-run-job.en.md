@@ -187,3 +187,9 @@ In that case, it is best to check [Troubleshooting](./troubleshooting.en.md) fir
 - It is normal that `mqtt-api` and `mqtt-publish` are not available on the Source side.
 - If the Target is `mqtt-publish`, always validate the Topic value carefully.
 - `Now` is suitable for following only new incoming data. If you need an initial full copy, use `Full`.
+
+## Navigation
+
+- [Previous: Server Settings](./server-settings.en.md)
+- [Back to Index](./index.en.md)
+- [Next: Monitoring and Logs](./monitoring-and-logs.en.md)

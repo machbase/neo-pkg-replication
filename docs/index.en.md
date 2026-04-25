@@ -58,3 +58,7 @@ Installation may take a short time, so wait until it is completed.
 | Source | The side data is read from. In most cases, `native` or `http` is used. |
 | Target | The side data is written to. `native`, `http`, `mqtt-api`, and `mqtt-publish` are supported. |
 | TAG / LOG | Machbase table types |
+
+## Navigation
+
+- [Next: Server Settings](./server-settings.en.md)

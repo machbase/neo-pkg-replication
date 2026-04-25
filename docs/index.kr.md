@@ -58,3 +58,7 @@ Machbase Neo 좌측 사이드 패널에는 사용 가능한 패키지 목록이 
 | Source | 데이터를 읽어 오는 쪽. 일반적으로 `native` 또는 `http` 서버를 사용합니다. |
 | Target | 데이터를 보내는 쪽. `native`, `http`, `mqtt-api`, `mqtt-publish`를 사용할 수 있습니다. |
 | TAG / LOG | Machbase 테이블 유형 |
+
+## 문서 이동
+
+- [다음: Server 설정](./server-settings.kr.md)
