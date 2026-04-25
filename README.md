@@ -1,17 +1,25 @@
 ## Replication
 
-A high-availability replication technology that goes beyond simple data copying to ensure data survivability.
+Replication copies data from a source table to a target in near real time.
+It is designed for moving selected data between Machbase systems or to MQTT-based targets while keeping replication progress with checkpoints.
+You can configure jobs from the web UI, monitor their status from the dashboard, and review logs when you need to check current activity or troubleshoot a problem.
 
 ## Key Features
 
-- **Intelligent Filtering**  
-  Replicate only selected tags with optional expressions applied (e.g., `Value + 1000 * 1.3`)  
+- **Web-based job setup**  
+  Create and manage replication jobs from the UI without editing configuration files directly.
 
-- **Flexible Schema Mapping**  
-  Support selective mapping even when source and target schemas differ  
+- **Independent source and target selection**  
+  Choose source and target servers separately, including Machbase and supported MQTT-based targets.
 
-- **n:m Multi-Replication**  
-  Configure independent target tables across multiple instances  
+- **Flexible schema mapping**  
+  Map source columns to different target columns when the table structures do not match exactly.
 
-- **Automatic Failover Recovery**  
-  Resume replication from the last successful checkpoint after restart, ensuring data integrity  
+- **Selective replication**  
+  Replicate only the rows you need by applying conditions and simple transformation rules.
+
+- **Operational visibility**  
+  Check running status, warnings, row count information, and live logs from the dashboard.
+
+- **Checkpoint-based recovery**  
+  Resume replication from the last saved progress point after restart or temporary interruption.
