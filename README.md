@@ -4,6 +4,8 @@ Replication copies data from a source table to a target in near real time.
 It is designed for moving selected data between Machbase systems or to MQTT-based targets while keeping replication progress with checkpoints.
 You can configure jobs from the web UI, monitor their status from the dashboard, and review logs when you need to check current activity or troubleshoot a problem.
 
+Manual: [User Manual](https://github.com/machbase/neo-pkg-replication/blob/main/docs/index.en.md)
+
 ## Key Features
 
 - **Web-based job setup**  
