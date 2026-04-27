@@ -5,6 +5,8 @@ weight: 10
 
 # Replication User Manual
 
+[한국어](./index.kr.md) | **English**
+
 This document explains how to install the **Machbase Neo Replication package**, configure servers, create replication jobs, check status, and review logs.
 
 ## Installation
