@@ -397,12 +397,16 @@ class Worker {
   }
 
   _saveCheckpoint(checkpointStore, rid, totalRowsWritten, stats, hasMore, queryLimit, sourceTableId) {
+    const sourceDataTableId = _normalizeSourceTableId(
+      this.config.sourceDataTableIds && this.config.sourceDataTableIds[this.dataTable]
+    );
     checkpointStore.save({
       lastSuccessRid: rid,
       totalRowsWritten,
       sourceServer: this.config.source.host,
       sourceTable: this.config.source.table,
       sourceTableId,
+      sourceDataTableId,
     }, stats, {
       onSaveFailure: this.config.onSaveFailure,
       queryLimit,

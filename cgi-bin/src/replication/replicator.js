@@ -34,6 +34,24 @@ function _normalizeSourceTableId(value) {
   return text ? text : null;
 }
 
+function _rowValue(row, lowerName, upperName) {
+  if (!row) return null;
+  if (row[lowerName] !== undefined && row[lowerName] !== null) return row[lowerName];
+  return row[upperName];
+}
+
+function _buildDataTableIds(rows) {
+  const ids = {};
+  for (const row of rows || []) {
+    const name = _rowValue(row, 'data_table', 'DATA_TABLE');
+    const id = _normalizeSourceTableId(_rowValue(row, 'table_id', 'TABLE_ID'));
+    if (name && id) {
+      ids[String(name)] = id;
+    }
+  }
+  return ids;
+}
+
 function _tableTypeFromSourceInfo(sourceInfo) {
   if (!sourceInfo || sourceInfo.type == null) return 'UNSUPPORTED';
   switch (sourceInfo.type) {
@@ -144,7 +162,9 @@ class Replicator {
         const srcTable = new TagTable(this.source, this.source.table);
         try {
           await srcTable.open();
-          const dataTables = (await srcTable.getDataTables()).map((item) => item.data_table);
+          const dataTableRows = await srcTable.getDataTables();
+          const dataTables = dataTableRows.map((item) => _rowValue(item, 'data_table', 'DATA_TABLE')).filter(Boolean);
+          const dataTableIds = _buildDataTableIds(dataTableRows);
           if (dataTables.length === 0) {
             getLogger().error('replicator', { ...this.logCtx, msg: 'no source data partitions found' });
             return null;
@@ -171,6 +191,7 @@ class Replicator {
           return {
             tableType,
             dataTables,
+            dataTableIds,
             srcSchema: await srcTable.getSchema(),
             dstSchema,
             sourceInfo,
@@ -206,6 +227,7 @@ class Replicator {
           return {
             tableType,
             dataTables: [this.source.table],
+            dataTableIds: { [this.source.table]: _normalizeSourceTableId(sourceInfo.id) },
             srcSchema: await srcTable.getSchema(),
             dstSchema,
             sourceInfo,
@@ -294,7 +316,7 @@ class Replicator {
   }
 
   async runWorkers(discovered) {
-    const { tableType, dataTables, srcSchema, dstSchema, sourceInfo } = discovered;
+    const { tableType, dataTables, dataTableIds, srcSchema, dstSchema, sourceInfo } = discovered;
     // source table recreation은 기존 job의 startMode(now/ridAfter)를 이어받지 않고 새 테이블 전체를 다시 읽어야 한다.
     const startupReset = this._resetCheckpointDirectoryIfSourceTableChanged(sourceInfo);
     const forceFreshStart = this.forceFreshStart || startupReset;
@@ -318,6 +340,7 @@ class Replicator {
       onSaveFailure: this.onSaveFailure,
       retry: this.retry,
       sourceTableId: _normalizeSourceTableId(sourceInfo && sourceInfo.id),
+      sourceDataTableIds: dataTableIds || {},
     };
 
     let metaSyncManager = null;

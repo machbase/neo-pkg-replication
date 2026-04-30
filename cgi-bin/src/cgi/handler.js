@@ -1098,6 +1098,117 @@ class Handler {
 
   // ── checkpoint ───────────────────────────────────────────────────────────
 
+  static normalizeTableId(value) {
+    if (value == null) return null;
+    const text = String(value).trim();
+    return text ? text : null;
+  }
+
+  static queryTableIdValue(value) {
+    const text = Handler.normalizeTableId(value);
+    if (!text) return null;
+    const numeric = Number(text);
+    return Number.isSafeInteger(numeric) ? numeric : text;
+  }
+
+  static rowValue(row, lowerName, upperName) {
+    if (!row) return null;
+    if (row[lowerName] !== undefined && row[lowerName] !== null) return row[lowerName];
+    return row[upperName];
+  }
+
+  static tableTypeFromDbType(type) {
+    if (type === 'TAG' || type === 'LOG') return type;
+    const text = String(type);
+    if (text === '6') return 'TAG';
+    if (text === '0') return 'LOG';
+    switch (type) {
+      case 6: return 'TAG';
+      case 0: return 'LOG';
+      default: return 'UNSUPPORTED';
+    }
+  }
+
+  static canUseCheckpointDataTableId(record, currentSourceTableId) {
+    if (!record || !record.sourceDataTableId) return false;
+    const storedSourceTableId = Handler.normalizeTableId(record.sourceTableId);
+    const currentId = Handler.normalizeTableId(currentSourceTableId);
+    return !!storedSourceTableId && !!currentId && storedSourceTableId === currentId;
+  }
+
+  static async selectFastMaxRid(client, tableType, dataTableId) {
+    const id = Handler.queryTableIdValue(dataTableId);
+    if (id == null) return null;
+
+    let rows = null;
+    if (tableType === 'TAG') {
+      rows = await client.query(
+        'SELECT TABLE_END_RID AS end_rid FROM V$STORAGE_TAG_INDEX WHERE TABLE_ID = ?',
+        [id]
+      );
+    } else if (tableType === 'LOG') {
+      rows = await client.query(
+        'SELECT END_RID AS end_rid FROM V$STORAGE_DC_TABLES WHERE ID = ?',
+        [id]
+      );
+    } else {
+      return null;
+    }
+
+    const raw = Handler.rowValue(rows && rows[0], 'end_rid', 'END_RID');
+    if (raw == null) return null;
+    const endRid = BigInt(raw);
+    return endRid > 0n ? endRid - 1n : -1n;
+  }
+
+  static async selectCheckpointMaxRid(client, tableType, dataTable, dataTableId) {
+    try {
+      const fast = await Handler.selectFastMaxRid(client, tableType, dataTableId);
+      if (fast !== null && fast !== undefined) return fast;
+    } catch (_) {}
+    return client.selectMaxRid(dataTable);
+  }
+
+  static readCheckpointRecords(name) {
+    const records = {};
+    if (!name || typeof name !== 'string' || !name.trim()) return records;
+    const dirPath = path.join(DATA_DIR, name.trim());
+    let files;
+    try {
+      files = fs.readdirSync(dirPath).filter(f => f.endsWith('.json'));
+    } catch (_) {
+      files = [];
+    }
+    for (const f of files) {
+      try {
+        const filePath = path.join(dirPath, f);
+        const d = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const dataTable = d.source?.dataTable;
+        const lastSuccessRid = d.checkpoint?.lastSuccessRid;
+        const totalRowsWritten = d.checkpoint?.totalRowsWritten;
+        if (!dataTable || lastSuccessRid === undefined) continue;
+        const updatedAt = d.checkpoint?.updatedAt || '';
+        const initializedOnly = d.checkpoint?.initializedOnly === true;
+        const ridText = String(lastSuccessRid);
+        const totalRowsWrittenText = totalRowsWritten === undefined ? '0' : String(totalRowsWritten);
+        const isNegativeRid = /^-/.test(ridText);
+        const hasMore = !initializedOnly && !isNegativeRid && d.checkpoint?.hasMore === true;
+        const prev = records[dataTable];
+        if (!prev || updatedAt >= prev.updatedAt) {
+          records[dataTable] = {
+            lastSuccessRid: initializedOnly || isNegativeRid ? '' : ridText,
+            totalRowsWritten: totalRowsWrittenText,
+            hasMore,
+            updatedAt,
+            sourceTableId: Handler.normalizeTableId(d.source?.tableId),
+            sourceDataTableId: Handler.normalizeTableId(d.source?.dataTableId),
+          };
+        }
+      } catch (_) {}
+    }
+    return records;
+  }
+
   /**
    * checkpoint 디렉토리들을 훑어 파티션별 checkpoint 상태를 반환한다.
    * checkpoint 파일이 없는 파티션도 빈 값으로 포함한다.
@@ -1107,6 +1218,7 @@ class Handler {
    */
   static async readCheckpoints(name, config) {
     const result = {};
+    const records = Handler.readCheckpointRecords(name);
     const ensureEntry = (dataTable) => {
       if (!dataTable || result[dataTable]) return;
       result[dataTable] = {
@@ -1125,29 +1237,40 @@ class Handler {
       try {
         const normalizedTable = String(logicalTable).toUpperCase();
         const sourceType = String(source.type || 'native').toLowerCase();
+        const dataTableIds = {};
         client = sourceType === 'native'
           ? new MachbaseClient({ ...source, table: normalizedTable })
           : createQueryClient({ ...source, table: normalizedTable });
         await client.connect();
-        const tableType = (await client.selectTableTypeQualified(normalizedTable)).type;
+        const tableInfo = await client.selectTableInfoQualified(normalizedTable);
+        const tableType = Handler.tableTypeFromDbType(tableInfo.type);
+        const currentSourceTableId = Handler.normalizeTableId(tableInfo.id);
         const seen = {};
-        const push = (value) => {
+        const push = (value, tableId) => {
           if (typeof value !== 'string') return;
           const dataTable = value.trim();
           if (!dataTable || seen[dataTable]) return;
           seen[dataTable] = true;
           ensureEntry(dataTable);
+          dataTableIds[dataTable] = Handler.normalizeTableId(tableId);
         };
         if (tableType === 'TAG') {
           for (const part of (await client.selectTagDataTables(normalizedTable))) {
-            push(part?.data_table);
+            push(
+              Handler.rowValue(part, 'data_table', 'DATA_TABLE'),
+              Handler.rowValue(part, 'table_id', 'TABLE_ID')
+            );
           }
         } else if (tableType === 'LOG') {
-          push(normalizedTable);
+          push(normalizedTable, currentSourceTableId);
         }
         for (const dataTable of Object.keys(result)) {
           try {
-            result[dataTable].max_rid = String(await client.selectMaxRid(dataTable));
+            const record = records[dataTable];
+            const dataTableId = Handler.canUseCheckpointDataTableId(record, currentSourceTableId)
+              ? record.sourceDataTableId
+              : dataTableIds[dataTable];
+            result[dataTable].max_rid = String(await Handler.selectCheckpointMaxRid(client, tableType, dataTable, dataTableId));
           } catch (_) {}
         }
       } catch (_) {
@@ -1159,39 +1282,6 @@ class Handler {
 
     // checkpoint 파일 병합
     if (name && typeof name === 'string' && name.trim()) {
-      const dirPath = path.join(DATA_DIR, name.trim());
-      let files;
-      try {
-        files = fs.readdirSync(dirPath).filter(f => f.endsWith('.json'));
-      } catch (_) {
-        files = [];
-      }
-      const records = {};
-      for (const f of files) {
-        try {
-          const filePath = path.join(dirPath, f);
-          const d = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-          const dataTable = d.source?.dataTable;
-          const lastSuccessRid = d.checkpoint?.lastSuccessRid;
-          const totalRowsWritten = d.checkpoint?.totalRowsWritten;
-          if (!dataTable || lastSuccessRid === undefined) continue;
-          const updatedAt = d.checkpoint?.updatedAt || '';
-          const initializedOnly = d.checkpoint?.initializedOnly === true;
-          const ridText = String(lastSuccessRid);
-          const totalRowsWrittenText = totalRowsWritten === undefined ? '0' : String(totalRowsWritten);
-          const isNegativeRid = /^-/.test(ridText);
-          const hasMore = !initializedOnly && !isNegativeRid && d.checkpoint?.hasMore === true;
-          const prev = records[dataTable];
-          if (!prev || updatedAt >= prev.updatedAt) {
-            records[dataTable] = {
-              lastSuccessRid: initializedOnly || isNegativeRid ? '' : ridText,
-              totalRowsWritten: totalRowsWrittenText,
-              hasMore,
-              updatedAt,
-            };
-          }
-        } catch (_) {}
-      }
       for (const dataTable in records) {
         ensureEntry(dataTable);
         result[dataTable] = {

@@ -671,7 +671,7 @@ class TagTable {
 
   /**
    * TAG 데이터 파티션 목록 조회
-   * @returns {Array<{ data_table: string }>}
+   * @returns {Array<{ data_table: string, table_id: number|string }>}
    */
   async getDataTables() {
     return this.client.selectTagDataTables(this.logicalTable);

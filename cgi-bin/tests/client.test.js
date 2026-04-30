@@ -54,6 +54,7 @@ suite('MachbaseClient', () => {
       assert.ok(Array.isArray(parts));
       assert.ok(parts.length > 0, 'should have at least one partition');
       assert.ok(parts[0].data_table, 'data_table field missing');
+      assert.ok(parts[0].table_id !== undefined && parts[0].table_id !== null, 'table_id field missing');
     } finally {
       client.close();
     }

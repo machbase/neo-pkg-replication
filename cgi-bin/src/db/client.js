@@ -223,13 +223,13 @@ class MachbaseClient {
   /**
    * TAG 데이터 파티션 목록 조회
    * @param {string} tableName - 논리 테이블명
-   * @returns {Array<{ data_table: string }>}
+   * @returns {Array<{ data_table: string, table_id: number|string }>}
    */
   selectTagDataTables(tableName) {
     const logicalTable = this.splitQualifiedTableName(tableName).table;
     const pattern = `_${logicalTable}_DATA_%`;
     const sql = `
-      SELECT m.NAME AS data_table
+      SELECT m.ID AS table_id, m.NAME AS data_table
       FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m
       WHERE v.ID = m.ID AND m.NAME LIKE ?
       ORDER BY m.NAME
