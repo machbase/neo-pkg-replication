@@ -16,7 +16,7 @@ const LEVEL_LABEL = { trace: 'TRACE', debug: 'DEBUG', info: 'INFO', warn: 'WARN'
  * 파일명: {serviceName}.log, {serviceName}_YYYYMMDD_HHMMSS.log, ...
  * 파일당 최대 크기: 10 MB
  *
- * 포맷: [LEVEL] YYYY-MM-DD HH:MM:SS.sss  stage  message  (key=value ...)
+ * 포맷: [LEVEL] YYYY-MM-DD HH:MM:SS.sss TZ  stage  message  (key=value ...)
  *
  * 설정 (config.logging):
  *   level    : "trace"|"debug"|"info"|"warn"|"error"  (기본 "info")
@@ -63,7 +63,7 @@ class Logger {
    */
   banner(msg) {
     if (this._disabled) return;
-    const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
+    const ts = _formatLocalTimestamp(new Date());
     const line = '-'.repeat(72);
     const text = `${line}\n  ${ts}  ${msg}\n${line}`;
     this._appendToFile(text + '\n');
@@ -93,7 +93,7 @@ class Logger {
    * @returns {string}
    */
   _format(level, stage, fields) {
-    const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
+    const ts = _formatLocalTimestamp(new Date());
     const label = LEVEL_LABEL[level] || level.toUpperCase();
 
     const { msg, ...rest } = fields;
@@ -228,6 +228,44 @@ class Logger {
  */
 function _quoteIfNeeded(str) {
   return /[ ="]/.test(str) ? `"${str.replace(/"/g, '\\"')}"` : str;
+}
+
+function _formatLocalTimestamp(date) {
+  return [
+    date.getFullYear(),
+    '-',
+    _pad2(date.getMonth() + 1),
+    '-',
+    _pad2(date.getDate()),
+    ' ',
+    _pad2(date.getHours()),
+    ':',
+    _pad2(date.getMinutes()),
+    ':',
+    _pad2(date.getSeconds()),
+    '.',
+    String(date.getMilliseconds()).padStart(3, '0'),
+    ' ',
+    _formatLocalTimezone(date),
+  ].join('');
+}
+
+function _formatLocalTimezone(date) {
+  const match = String(date).match(/\(([^)]+)\)$/);
+  if (!match || !match[1]) {
+    return 'LOC';
+  }
+  const label = match[1].trim();
+  if (/^[A-Z]{3}$/.test(label)) {
+    return label;
+  }
+  return label
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0))
+    .join('')
+    .toUpperCase()
+    .slice(0, 3) || 'LOC';
 }
 
 function _formatLocalFileStamp(date) {

@@ -6,7 +6,7 @@
  * 저장 파일 형식 (cgi-bin/data/{replicatorId}/{dataTable}.json):
  * {
  *   "version": 1,
- *   "source": { "server": "...", "table": "...", "dataTable": "...", "tableId": "123" },
+ *   "source": { "server": "...", "table": "...", "dataTable": "...", "tableId": "123", "dataTableId": "456" },
  *   "checkpoint": { "lastSuccessRid": "12345", "totalRowsWritten": "12345", "updatedAt": "...", "hasMore": false }
  * }
  */
@@ -29,12 +29,12 @@ function _isBigInt(v) {
 }
 
 /**
- * checkpoint에 저장할 source logical table id를 문자열로 정규화한다.
+ * checkpoint에 저장할 table id를 문자열로 정규화한다.
  * legacy checkpoint는 이 필드가 없을 수 있으므로 null을 허용한다.
  * @param {*|null} value
  * @returns {string|null}
  */
-function _normalizeSourceTableId(value) {
+function _normalizeTableId(value) {
   if (value == null) return null;
   const text = String(value).trim();
   return text ? text : null;
@@ -123,7 +123,8 @@ class CheckpointStore {
       sourceServer: data.source?.server || '',
       sourceTable: data.source?.table || '',
       sourceDataTable: data.source?.dataTable || dataTable,
-      sourceTableId: _normalizeSourceTableId(data.source?.tableId),
+      sourceTableId: _normalizeTableId(data.source?.tableId),
+      sourceDataTableId: _normalizeTableId(data.source?.dataTableId),
     };
 
     return { cp, exists: true, err: null };
@@ -131,7 +132,7 @@ class CheckpointStore {
 
   /**
    * 체크포인트 저장 (atomic write)
-   * @param {{ lastSuccessRid: bigint, totalRowsWritten?: bigint, sourceServer?: string, sourceTable?: string, sourceTableId?: string|number|bigint|null }} cp
+   * @param {{ lastSuccessRid: bigint, totalRowsWritten?: bigint, sourceServer?: string, sourceTable?: string, sourceTableId?: string|number|bigint|null, sourceDataTableId?: string|number|bigint|null }} cp
    * @param {{ rowsRead: number, rowsWritten: number, droppedNoMeta: number, skippedExists: number }} stats
    * @param {{ onSaveFailure?: 'continue'|'abort', queryLimit?: number, initializedOnly?: boolean, hasMore?: boolean }} [opts]
    * @returns {Error|null}
@@ -151,7 +152,8 @@ class CheckpointStore {
     const droppedNoMeta = stats?.droppedNoMeta ?? 0;
     const skippedExists = stats?.skippedExists ?? 0;
     const queryLimit = opts?.queryLimit;
-    const sourceTableId = _normalizeSourceTableId(cp.sourceTableId);
+    const sourceTableId = _normalizeTableId(cp.sourceTableId);
+    const sourceDataTableId = _normalizeTableId(cp.sourceDataTableId);
     const hasMore = typeof opts?.hasMore === 'boolean'
       ? opts.hasMore
       : (typeof queryLimit === 'number'
@@ -166,6 +168,7 @@ class CheckpointStore {
           table: cp.sourceTable || '',
           dataTable,
           tableId: sourceTableId || undefined,
+          dataTableId: sourceDataTableId || undefined,
         },
         checkpoint: {
           lastSuccessRid: cp.lastSuccessRid,

@@ -236,6 +236,7 @@ suite('Replicator - discover', () => {
     assert.ok(discovered, 'discover should succeed');
     assert.equal(discovered.tableType, 'TAG');
     assert.ok(discovered.dataTables.length > 0);
+    assert.ok(discovered.dataTableIds && discovered.dataTableIds[discovered.dataTables[0]], 'data table id should be discovered');
     assert.ok(discovered.srcSchema);
     assert.ok(discovered.dstSchema);
   });
