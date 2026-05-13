@@ -682,6 +682,178 @@ class Handler {
   }
 
   /**
+   * service definition의 executable을 이 패키지의 replication.js와 비교할 때 사용할 경로를 반환한다.
+   * @returns {string}
+   */
+  static expectedReplicationExecutablePath() {
+    return path.normalize(path.join(APP_DIR, 'replication.js'));
+  }
+
+  /**
+   * service definition의 executable 값을 비교 가능한 절대 경로로 정규화한다.
+   * @param {object|null} definition
+   * @returns {string}
+   */
+  static normalizeServiceExecutablePath(definition) {
+    const executable = definition && definition.executable != null ? String(definition.executable).trim() : '';
+    if (!executable) return '';
+    if (path.isAbsolute(executable)) return path.normalize(executable);
+    const workingDir = definition && definition.working_dir != null ? String(definition.working_dir).trim() : '';
+    return path.normalize(path.join(workingDir || APP_DIR, executable));
+  }
+
+  /**
+   * 이 패키지의 replication service definition인지 판별한다.
+   * executable이 있으면 그것을 우선하고, 없으면 legacy/fallback으로 _rpl_ prefix를 사용한다.
+   * @param {string} serviceName
+   * @param {object|null} definition
+   * @returns {boolean}
+   */
+  static isReplicationServiceDefinition(serviceName, definition) {
+    const executable = Handler.normalizeServiceExecutablePath(definition);
+    if (executable) {
+      return executable === Handler.expectedReplicationExecutablePath();
+    }
+    return String(serviceName || '').startsWith(SERVICE_NAME_PREFIX);
+  }
+
+  /**
+   * 설치된 replication service definition 목록을 반환한다.
+   * @returns {Array<{ name: string, path: string, definition: object|null }>}
+   */
+  static getReplicationServiceDefinitions() {
+    const result = [];
+    const seen = {};
+
+    for (const serviceDir of Handler.getServiceDirectoryCandidates()) {
+      let files = [];
+      try {
+        files = fs.readdirSync(serviceDir);
+      } catch (_) {
+        continue;
+      }
+
+      for (const fileName of files) {
+        if (!fileName || !fileName.endsWith('.json')) continue;
+        const serviceName = fileName.replace(/\.json$/, '');
+        if (!serviceName || seen[serviceName]) continue;
+
+        const filePath = path.join(serviceDir, fileName);
+        const definition = Handler._read(filePath);
+        if (!Handler.isReplicationServiceDefinition(serviceName, definition)) continue;
+
+        seen[serviceName] = true;
+        result.push({ name: serviceName, path: filePath, definition });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * service.list() 결과에서 service config를 추출한다.
+   * @param {object|null} serviceInfo
+   * @returns {object|null}
+   */
+  static serviceConfigFromInfo(serviceInfo) {
+    if (!serviceInfo || typeof serviceInfo !== 'object') return null;
+    if (serviceInfo.config && typeof serviceInfo.config === 'object') return serviceInfo.config;
+    return serviceInfo;
+  }
+
+  /**
+   * service.list() 결과를 replication service 요약으로 변환한다.
+   * @param {Array} services
+   * @returns {{ scope: string, total: number, running: number, errors: Array }}
+   */
+  static summarizeReplicationServiceList(services) {
+    const summary = {
+      scope: 'replication',
+      total: 0,
+      running: 0,
+      errors: [],
+    };
+
+    const list = Array.isArray(services) ? services : [];
+    for (const serviceInfo of list) {
+      const config = Handler.serviceConfigFromInfo(serviceInfo);
+      const serviceName = config && config.name ? String(config.name) : '';
+      if (!Handler.isReplicationServiceDefinition(serviceName, config)) continue;
+
+      summary.total += 1;
+      if (Handler.isServiceRunningStatus(serviceInfo)) {
+        summary.running += 1;
+      }
+      if (serviceInfo && serviceInfo.error) {
+        summary.errors.push({ name: serviceName, reason: String(serviceInfo.error) });
+      }
+      if (config && config.read_error) {
+        summary.errors.push({ name: serviceName, reason: String(config.read_error) });
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * health API에서 사용할 replication service 요약 정보를 best-effort로 계산한다.
+   * service controller 오류는 health 실패로 전파하지 않고 errors 배열에만 기록한다.
+   * @param {function(Error|null, object=): void} callback
+   */
+  static getReplicationServiceSummary(callback) {
+    Handler.callService('list', [], (listErr, services) => {
+      if (!listErr) {
+        callback(null, Handler.summarizeReplicationServiceList(services));
+        return;
+      }
+      Handler.getReplicationServiceSummaryFromDefinitions(listErr, callback);
+    });
+  }
+
+  /**
+   * service.list()가 불가한 환경에서 service definition scan으로 replication service 요약을 계산한다.
+   * @param {Error|null} listErr
+   * @param {function(Error|null, object=): void} callback
+   */
+  static getReplicationServiceSummaryFromDefinitions(listErr, callback) {
+    const definitions = Handler.getReplicationServiceDefinitions();
+    const summary = {
+      scope: 'replication',
+      total: definitions.length,
+      running: 0,
+      errors: [],
+    };
+
+    if (listErr) {
+      summary.errors.push({
+        reason: listErr.message || String(listErr),
+      });
+    }
+
+    const next = (index) => {
+      if (index >= definitions.length) {
+        callback(null, summary);
+        return;
+      }
+
+      const item = definitions[index];
+      Handler.callService('status', [item.name], (err, serviceInfo) => {
+        if (err) {
+          summary.errors.push({
+            name: item.name,
+            reason: err.message || String(err),
+          });
+        } else if (Handler.isServiceRunningStatus(serviceInfo)) {
+          summary.running += 1;
+        }
+        next(index + 1);
+      });
+    };
+
+    next(0);
+  }
+
+  /**
    * start/stop/status 등 제어에 쓸 service 이름 목록을 반환한다.
    * 실제 설치된 이름을 우선하고, 없으면 canonical prefixed 이름으로 폴백한다.
    * @param {string} name

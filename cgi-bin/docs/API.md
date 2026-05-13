@@ -30,6 +30,40 @@
 }
 ```
 
+## Health
+
+### `GET /api/health`
+
+패키지 상태 확인용 API다. 기존 health 응답 구조는 공통 사용을 위해 유지하고, replication service 요약은 `data.service_summary`에 확장 필드로 제공한다.
+
+응답 예시:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "healthy": true,
+    "status": "running",
+    "pid": 0,
+    "exit_code": null,
+    "error": "",
+    "service_summary": {
+      "scope": "replication",
+      "total": 3,
+      "running": 2,
+      "errors": []
+    }
+  }
+}
+```
+
+- `total`: 설치된 replication service 수
+- `running`: `RUNNING` 상태인 replication service 수
+- `scope`: 이 summary가 대상으로 삼은 service 범위
+- `errors`: service 상태 조회 중 실패한 항목. health API 자체는 이 값이 있어도 `ok: true`를 유지한다.
+- service 정보는 JSH `service.list()`를 우선 사용한다. 사용할 수 없는 환경에서는 service definition scan으로 fallback한다.
+- replication service 판별은 service config의 `executable`이 이 패키지의 `replication.js`인지 먼저 확인하고, executable 정보가 없으면 service name의 `"_rpl_"` prefix를 fallback으로 사용한다.
+
 ## Server Profile
 
 ### 저장 위치
