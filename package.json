@@ -1,15 +1,15 @@
 {
-  "name": "neo-pkg-replication",
-  "version": "1.0.1",
-  "bin": {},
-  "scripts": {
-    "start": "./scripts/repli-service-start.js",
-    "stop": "./scripts/repli-service-stop.js",
-    "uninstall": "./scripts/repli-service-uninstall.js"
-  },
-  "packageService": {
-    "managed": false,
-    "reason": "Replication jobs are managed as individual services."
-  },
-  "dependencies": {}
+    "name": "neo-pkg-replication",
+    "version": "1.0.2",
+    "bin": {},
+    "scripts": {
+        "start": "./scripts/repli-service-start.js",
+        "stop": "./scripts/repli-service-stop.js",
+        "uninstall": "./scripts/repli-service-uninstall.js"
+    },
+    "packageService": {
+        "managed": false,
+        "reason": "Replication jobs are managed as individual services."
+    },
+    "dependencies": {}
 }
