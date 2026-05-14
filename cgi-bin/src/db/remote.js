@@ -339,7 +339,7 @@ class SqlLikeClient {
     let rows;
     if (!qualified.owner) {
       rows = await this.query(
-        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ?',
+        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_ID = -1',
         [qualified.table]
       );
     } else {
@@ -351,6 +351,7 @@ class SqlLikeClient {
           ON t.USER_ID = u.USER_ID
         WHERE u.NAME = ?
           AND t.NAME = ?
+          AND t.DATABASE_ID = -1
         `.trim(),
         [qualified.owner, qualified.table]
       );
@@ -385,6 +386,7 @@ class SqlLikeClient {
       LEFT JOIN M$SYS_USERS u
         ON t.USER_ID = u.USER_ID
       WHERE t.TYPE IN (0, 6)
+        AND t.DATABASE_ID = -1
       ORDER BY t.NAME
     `.trim());
   }
@@ -408,6 +410,7 @@ class SqlLikeClient {
       SELECT m.ID AS table_id, m.NAME AS data_table
       FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m
       WHERE v.ID = m.ID AND m.NAME LIKE ?
+        AND m.DATABASE_ID = -1
       ORDER BY m.NAME
     `.trim(), [pattern]);
   }

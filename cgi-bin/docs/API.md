@@ -618,6 +618,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 ### `POST /api/table/list`
 
 요청은 `table` 없이 server profile만 전달한다.
+Mounted backup database의 테이블은 쓰기 대상이 아니므로 목록에서 제외된다.
 
 ```json
 {

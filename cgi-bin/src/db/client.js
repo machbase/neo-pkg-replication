@@ -129,7 +129,7 @@ class MachbaseClient {
    */
   selectTableType(tableName) {
     const rows = this.query(
-      'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ?',
+      'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_ID = -1',
       [tableName]
     );
     if (!rows || rows.length === 0) return { type: 'UNSUPPORTED' };
@@ -178,7 +178,7 @@ class MachbaseClient {
     let rows;
     if (!qualified.owner) {
       rows = this.query(
-        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ?',
+        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_ID = -1',
         [qualified.table]
       );
     } else {
@@ -190,6 +190,7 @@ class MachbaseClient {
           ON t.USER_ID = u.USER_ID
         WHERE u.NAME = ?
           AND t.NAME = ?
+          AND t.DATABASE_ID = -1
         `.trim(),
         [qualified.owner, qualified.table]
       );
@@ -232,6 +233,7 @@ class MachbaseClient {
       SELECT m.ID AS table_id, m.NAME AS data_table
       FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m
       WHERE v.ID = m.ID AND m.NAME LIKE ?
+        AND m.DATABASE_ID = -1
       ORDER BY m.NAME
     `.trim();
     return this.query(sql, [pattern]);
@@ -246,6 +248,7 @@ class MachbaseClient {
       SELECT NAME, TYPE
       FROM M$SYS_TABLES
       WHERE TYPE IN (0, 6)
+        AND DATABASE_ID = -1
     `.trim();
     return this.query(sql);
   }
@@ -263,6 +266,7 @@ class MachbaseClient {
       LEFT JOIN M$SYS_USERS u
         ON t.USER_ID = u.USER_ID
       WHERE t.TYPE IN (0, 6)
+        AND t.DATABASE_ID = -1
       ORDER BY t.NAME
     `.trim();
     return this.query(sql);
@@ -278,6 +282,7 @@ class MachbaseClient {
       SELECT c.NAME, c.TYPE, c.ID, c.LENGTH, c.FLAG
       FROM M$SYS_COLUMNS c, M$SYS_TABLES t
       WHERE c.TABLE_ID = t.ID AND t.NAME = ?
+        AND t.DATABASE_ID = -1
         AND c.ID < 65534
       ORDER BY c.ID ASC
     `.trim();
