@@ -1,6 +1,11 @@
 
 # Project Guidelines
 
+## Mandatory Git Safety Rule
+
+- Git repository에 read 이외의 권한으로 접근하는 작업은 현재 approval 설정과 무관하게 반드시 사용자 승인을 먼저 받는다. 여기에는 `git commit`, `git push`, `git pull`, `git fetch`, `git merge`, `git rebase`, `git reset`, `git checkout`, branch/tag 생성·삭제, remote 변경, hook/config 변경, index/staging 변경이 포함된다.
+- 실행된 경로 상위의 경로에 파일을 write/delete하는 작업은 현재 approval 설정과 무관하게 반드시 사용자 승인을 먼저 받는다. 이때 사용자가 범위를 지정하면 해당 범위 안의 write/delete 작업은 일괄 승인된 것으로 본다.
+
 ## Runtime
 
 - Write code in JavaScript.
