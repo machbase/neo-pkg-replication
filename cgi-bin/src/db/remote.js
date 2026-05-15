@@ -396,8 +396,11 @@ class SqlLikeClient {
     if (info.id == null) return [];
     return this.query(`
       SELECT c.NAME, c.TYPE, c.ID, c.LENGTH, c.FLAG
-      FROM M$SYS_COLUMNS c
-      WHERE c.TABLE_ID = ?
+      FROM M$SYS_COLUMNS c, M$SYS_TABLES t
+      WHERE c.TABLE_ID = t.ID
+        AND c.DATABASE_ID = t.DATABASE_ID
+        AND t.ID = ?
+        AND t.DATABASE_ID = -1
         AND c.ID < 65534
       ORDER BY c.ID ASC
     `.trim(), [info.id]);
