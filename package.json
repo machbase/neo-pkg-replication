@@ -1,6 +1,6 @@
 {
     "name": "neo-pkg-replication",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "bin": {},
     "scripts": {
         "start": "./scripts/repli-service-start.js",

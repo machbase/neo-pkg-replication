@@ -146,7 +146,8 @@ export default function ServerForm({ server, onSave, onClose }) {
 
   const showField = (name) => {
     const t = form.type
-    if (name === 'protocol') return t === 'http'
+    // https 미지원 — protocol 셀렉트 숨기고 http로 고정 (buildPayload에서 default 'http')
+    if (name === 'protocol') return false
     if (name === 'token') return t === 'http' || t === 'mqtt-api' || t === 'mqtt-publish'
     if (name === 'user') return t === 'native' || t === 'mqtt-publish'
     if (name === 'password') return t === 'native' || t === 'mqtt-publish'
