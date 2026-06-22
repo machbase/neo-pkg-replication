@@ -27,6 +27,7 @@ export default function DashboardPage({ jobs, onDelete }) {
     const [execOpen, setExecOpen] = useState(false);
     const [advOpen, setAdvOpen] = useState(false);
     const [logFilesOpen, setLogFilesOpen] = useState(false);
+    const [showLiveLogs, setShowLiveLogs] = useState(false);
     const DASHBOARD_POLL_MS = 5000;
     const prevTotalRowsRef = useRef(null);
     const [rowsPerSec, setRowsPerSec] = useState(null);
@@ -209,6 +210,14 @@ export default function DashboardPage({ jobs, onDelete }) {
                         <StatusBadge status={listJob.status} />
                     </div>
                     <div className="flex gap-8">
+                        <button
+                            type="button"
+                            onClick={() => setShowLiveLogs((v) => !v)}
+                            className="btn btn-secondary"
+                        >
+                            <Icon name="terminal" className="icon-sm" />
+                            <span>Live Logs</span>
+                        </button>
                         <button
                             disabled={listJob.status === "running"}
                             onClick={() => navigate(`/jobs/${encodeURIComponent(listJob.id)}/edit`)}
@@ -645,7 +654,7 @@ export default function DashboardPage({ jobs, onDelete }) {
                         );
                     })()}
 
-                    <LiveLogs jobId={listJob.id} />
+                    <LiveLogs jobId={listJob.id} open={showLiveLogs} onClose={() => setShowLiveLogs(false)} />
 
                     {logFilesOpen && <LogFilesModal name={listJob.id} onClose={() => setLogFilesOpen(false)} />}
 
