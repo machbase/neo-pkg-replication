@@ -468,6 +468,17 @@ class Worker {
     const retry = new RetryHandler(this.config.retry || {});
     const checkpointStore = new CheckpointStore(path.join(CHECKPOINT_DIRECTORY, this.config.id), this.dataTable);
     const plan = this._buildPlan();
+    let metaSyncChangeSeq = 0;
+    const applyMetaSyncChanges = () => {
+      if (!plan.isTag || !this.metaSyncManager) return;
+      metaSyncChangeSeq = this.metaSyncManager.applyTagMetaUpdatesSince(srcTable, metaSyncChangeSeq);
+    };
+    const runMetaDeltaSyncIfDue = async () => {
+      if (!plan.isTag || !this.metaSyncManager) return true;
+      const ok = await this.metaSyncManager.runMetaDeltaSyncIfDue(logCtx);
+      applyMetaSyncChanges();
+      return ok;
+    };
     if (typeof dstTable.setAppendColumns === 'function') {
       dstTable.setAppendColumns(plan.appendColumns);
     }
@@ -534,6 +545,7 @@ class Worker {
       if (loadErr) {
         getLogger().warn('worker', { ...logCtx, msg: `loadTagMetaCache failed, falling back to per-row DB lookup: ${loadErr.message}` });
       }
+      applyMetaSyncChanges();
     }
     const doIntegrity = plan.isTag && plan.supportsIntegrity && cpExists;
     try {
@@ -571,6 +583,7 @@ class Worker {
       }
 
       while (!shutdownFlag.value) {
+        applyMetaSyncChanges();
         const maxRid = await this._getMaxRid(srcTable, retry, shutdownFlag, logCtx, 'STEADY_MAXRID');
         if (maxRid == null) return;
         // DELETE 후 재적재는 새 _RID가 기존 checkpoint를 계속 넘어가므로 여기서 막히지 않는다.
@@ -612,6 +625,8 @@ class Worker {
         }
 
         if (startRid > maxRid) {
+          const metaOk = await runMetaDeltaSyncIfDue();
+          if (!metaOk) return;
           const idleCpRid = startRid > 0n ? (startRid - 1n) : -1n;
           this._saveCheckpoint(checkpointStore, idleCpRid, totalRowsWritten, {
             rowsRead: 0,
@@ -689,6 +704,9 @@ class Worker {
           droppedNoMeta: 0,
           skippedExists: 0,
         }, endRid < maxRid, batchSize, saveSourceTableId);
+
+        const metaOk = await runMetaDeltaSyncIfDue();
+        if (!metaOk) return;
 
         startRid = endRid + 1n;
       }

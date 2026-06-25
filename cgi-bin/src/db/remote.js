@@ -2,7 +2,7 @@
 
 const http = require('http');
 const mqtt = require('mqtt');
-const { ColumnType } = require('./types.js');
+const { ColumnType, FLAG_PRIMARY } = require('./types.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 
 const DEFAULT_HTTP_TIMEOUT_MS = 10000;
@@ -21,6 +21,9 @@ function _sqlLiteral(value) {
     return String(value);
   }
   if (typeof value === 'boolean') return value ? '1' : '0';
+  if (typeof value === 'object') {
+    return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+  }
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
@@ -96,6 +99,33 @@ function _parseHttpQueryRows(result) {
     }
     return out;
   });
+}
+
+function _normalizeTagNameRows(rows, primaryColumnName) {
+  const column = primaryColumnName || 'name';
+  for (const row of (rows || [])) {
+    if (row.name != null) {
+      if (row.NAME == null) row.NAME = row.name;
+      continue;
+    }
+    let value = null;
+    if (row[column] != null) {
+      value = row[column];
+    } else {
+      const upper = String(column).toUpperCase();
+      if (row[upper] != null) {
+        value = row[upper];
+      } else {
+        const lower = String(column).toLowerCase();
+        if (row[lower] != null) value = row[lower];
+      }
+    }
+    if (value != null) {
+      row.name = value;
+      if (row.NAME == null) row.NAME = value;
+    }
+  }
+  return rows;
 }
 
 /**
@@ -338,6 +368,12 @@ class SqlLikeClient {
     `.trim(), [info.id]);
   }
 
+  async selectTagPrimaryColumnName(logicalTable) {
+    const rows = await this.selectColumnsByQualifiedTableName(logicalTable);
+    const primary = (rows || []).find((column) => (column.FLAG & FLAG_PRIMARY) !== 0);
+    return primary ? primary.NAME : 'NAME';
+  }
+
   async selectTagDataTables(tableName) {
     const logicalTable = this.splitQualifiedTableName(tableName).table;
     const pattern = `_${logicalTable}_DATA_%`;
@@ -368,18 +404,22 @@ class SqlLikeClient {
     return raw == null ? 0n : BigInt(raw);
   }
 
-  async selectTagNames(logicalTable) {
-    return this.query(`SELECT _ID, name FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+  async selectTagNames(logicalTable, primaryColumnName = null) {
+    const column = primaryColumnName || await this.selectTagPrimaryColumnName(logicalTable);
+    const rows = await this.query(`SELECT _ID, ${column} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    return _normalizeTagNameRows(rows, column);
   }
 
-  async selectTagMeta(logicalTable, metaColNames) {
+  async selectTagMeta(logicalTable, metaColNames, primaryColumnName = 'name') {
     const extraCols = metaColNames && metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    return this.query(`SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    const rows = await this.query(`SELECT _ID, ${primaryColumnName}${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    return _normalizeTagNameRows(rows, primaryColumnName);
   }
 
-  async selectTagMetaById(logicalTable, tagId, metaColNames) {
+  async selectTagMetaById(logicalTable, tagId, metaColNames, primaryColumnName = 'name') {
     const extraCols = metaColNames && metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    const rows = await this.query(`SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE _ID = ?`, [tagId]);
+    const rows = await this.query(`SELECT _ID, ${primaryColumnName}${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE _ID = ?`, [tagId]);
+    _normalizeTagNameRows(rows, primaryColumnName);
     return rows?.[0] ?? null;
   }
 
@@ -389,15 +429,25 @@ class SqlLikeClient {
     return raw == null ? 0 : Number(raw);
   }
 
-  async selectTagNamesPaged(logicalTable, offset, limit) {
-    return this.query(
-      `SELECT NAME FROM ${this.qualifiedTagMetaTable(logicalTable)} ORDER BY NAME LIMIT ${offset}, ${limit}`
+  async selectTagNamesPaged(logicalTable, offset, limit, primaryColumnName = null) {
+    const column = primaryColumnName || await this.selectTagPrimaryColumnName(logicalTable);
+    const rows = await this.query(
+      `SELECT ${column} FROM ${this.qualifiedTagMetaTable(logicalTable)} ORDER BY ${column} LIMIT ${offset}, ${limit}`
     );
+    return _normalizeTagNameRows(rows, column);
   }
 
   async insertTagMeta(logicalTable, values) {
     const placeholders = values.map(() => '?').join(', ');
     return this.execute(`INSERT INTO ${logicalTable} METADATA VALUES (${placeholders})`, ...values);
+  }
+
+  async updateTagMeta(logicalTable, oldName, sets, primaryColumnName = 'NAME') {
+    if (!Array.isArray(sets) || sets.length === 0) return;
+    const setClauses = sets.map(({ name, value }) => `${name} = ${_sqlLiteral(value)}`).join(', ');
+    return this.execute(
+      `UPDATE ${logicalTable} METADATA SET ${setClauses} WHERE ${primaryColumnName} = ${_sqlLiteral(oldName)}`
+    );
   }
 }
 

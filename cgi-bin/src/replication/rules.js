@@ -96,14 +96,15 @@ function _buildConditionSql(condition, context) {
   const column = condition.column;
   const value = Array.isArray(condition.value) ? condition.value : [];
   if (context.tableType === 'TAG' && column === context.primaryColumnName) {
+    const metaPrimaryColumnName = context.metaPrimaryColumnName || context.primaryColumnName || 'NAME';
     if (condition.op === 'IN') {
       return {
-        sql: `${column} IN (SELECT _ID FROM _${context.logicalTable}_META WHERE NAME IN (${value.map(() => '?').join(', ')}))`,
+        sql: `${column} IN (SELECT _ID FROM _${context.logicalTable}_META WHERE ${metaPrimaryColumnName} IN (${value.map(() => '?').join(', ')}))`,
         params: value.slice(),
       };
     }
     return {
-      sql: `${column} IN (SELECT _ID FROM _${context.logicalTable}_META WHERE NAME LIKE ?)`,
+      sql: `${column} IN (SELECT _ID FROM _${context.logicalTable}_META WHERE ${metaPrimaryColumnName} LIKE ?)`,
       params: [value[0]],
     };
   }
