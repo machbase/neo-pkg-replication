@@ -318,7 +318,19 @@ function _buildDerivedTargetInfo(storedConfig, runtimeConfig, sourceInfo) {
 async function _describeTable(client, tableName) {
   const normalizedTable = normalizeColumnName(tableName);
   const qualified = client.splitQualifiedTableName(normalizedTable);
-  const { type: tableType } = await client.selectTableTypeQualified(normalizedTable);
+  const rawInfo = await client.selectTableInfoQualified(normalizedTable);
+  let tableType = 'UNSUPPORTED';
+  switch (rawInfo.type) {
+    case 6:
+      tableType = 'TAG';
+      break;
+    case 0:
+      tableType = 'LOG';
+      break;
+    default:
+      tableType = 'UNSUPPORTED';
+      break;
+  }
   if (tableType === 'UNSUPPORTED') {
     throw new Error(`table '${normalizedTable}' not found`);
   }
@@ -335,6 +347,7 @@ async function _describeTable(client, tableName) {
   return {
     table: qualified.owner ? `${qualified.owner}.${qualified.table}` : qualified.table,
     logicalTable: qualified.table,
+    id: rawInfo.id,
     tableType,
     rows,
     dataColumns,
@@ -344,6 +357,85 @@ async function _describeTable(client, tableName) {
     primaryColumn: dataColumns.find((column) => (column.FLAG & FLAG_PRIMARY) !== 0) || null,
     baseTimeColumn: dataColumns.find((column) => (column.FLAG & FLAG_BASETIME) !== 0) || null,
   };
+}
+
+function _rowValue(row, ...names) {
+  if (!row) return null;
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(row, name)) return row[name];
+  }
+  for (const name of names) {
+    const upper = String(name).toUpperCase();
+    if (Object.prototype.hasOwnProperty.call(row, upper)) return row[upper];
+  }
+  for (const name of names) {
+    const lower = String(name).toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(row, lower)) return row[lower];
+  }
+  return null;
+}
+
+function _normalizeHostForSameInstance(host) {
+  const text = String(host || '').trim().toLowerCase();
+  if (!text) return '';
+  if (text === 'localhost' || text === '::1' || text === '[::1]') return '127.0.0.1';
+  return text;
+}
+
+function _normalizeEndpointType(endpoint) {
+  return String(endpoint?.type || 'native').trim().toLowerCase();
+}
+
+function _normalizeEndpointProtocol(endpoint) {
+  const type = _normalizeEndpointType(endpoint);
+  if (type !== 'http') return '';
+  return String(endpoint?.protocol || 'http').trim().toLowerCase();
+}
+
+function _sameEndpointAddress(source, target) {
+  const sourceType = _normalizeEndpointType(source);
+  const targetType = _normalizeEndpointType(target);
+  if (sourceType !== targetType) return false;
+  if (_normalizeEndpointProtocol(source) !== _normalizeEndpointProtocol(target)) return false;
+  if (_normalizeHostForSameInstance(source?.host) !== _normalizeHostForSameInstance(target?.host)) return false;
+  return String(source?.port || '') === String(target?.port || '');
+}
+
+async function _selectDbsPath(client) {
+  const rows = await client.query("SELECT VALUE FROM V$PROPERTY WHERE NAME = 'DBS_PATH'");
+  const value = _rowValue(rows && rows[0], 'VALUE', 'value');
+  return value == null ? '' : String(value).trim();
+}
+
+async function _sameMachbaseInstance(source, target, sourceClient, targetClient) {
+  if (_sameEndpointAddress(source, target)) return true;
+
+  const sourceHost = _normalizeHostForSameInstance(source?.host);
+  const targetHost = _normalizeHostForSameInstance(target?.host);
+  if (!sourceHost || !targetHost || sourceHost !== targetHost) return false;
+
+  try {
+    const sourceDbsPath = await _selectDbsPath(sourceClient);
+    const targetDbsPath = await _selectDbsPath(targetClient);
+    return !!sourceDbsPath && sourceDbsPath === targetDbsPath;
+  } catch (_) {
+    // Older or restricted endpoints may not expose V$PROPERTY; keep validation
+    // conservative and only block endpoints proven to be the same instance.
+    return false;
+  }
+}
+
+async function _rejectSameSourceTargetTableIfNeeded(runtimeConfig, sourceInfo, targetInfo, sourceClient, targetClient) {
+  if (!targetClient) return;
+
+  const sourceTableId = sourceInfo && sourceInfo.id != null ? String(sourceInfo.id) : '';
+  const targetTableId = targetInfo && targetInfo.id != null ? String(targetInfo.id) : '';
+  if (!sourceTableId || !targetTableId || sourceTableId !== targetTableId) return;
+
+  const sameInstance = await _sameMachbaseInstance(runtimeConfig.source, runtimeConfig.target, sourceClient, targetClient);
+  if (!sameInstance) return;
+
+  throw new Error('source and target refer to the same Machbase Neo table');
 }
 
 function _validateServerProfile(profile, options = {}) {
@@ -708,6 +800,7 @@ async function prepareReplicatorConfig(config, readServerProfile) {
     if (targetClient && sourceInfo.tableType !== targetInfo.tableType) {
       throw new Error(`source/target table type mismatch: ${sourceInfo.tableType} != ${targetInfo.tableType}`);
     }
+    await _rejectSameSourceTargetTableIfNeeded(runtimeConfig, sourceInfo, targetInfo, sourceClient, targetClient);
 
     const sourceColumns = _normalizeMappingArray(storedConfig.source.columns, sourceInfo.dataColumns.map((column) => column.NAME));
     const targetColumns = _normalizeMappingArray(
