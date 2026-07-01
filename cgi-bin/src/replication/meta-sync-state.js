@@ -15,6 +15,12 @@ const { getInstance: getLogger } = require('../lib/logger.js');
 
 const BIGINT_KEYS = new Set(['lastMetaId', 'goalMetaId']);
 
+function _normalizeMetaUpdateTime(value) {
+  if (value == null) return '';
+  const text = String(value).trim();
+  return text;
+}
+
 function _isBigInt(value) {
   return typeof value === 'bigint' || (value !== null && typeof value === 'object' && value.constructor && value.constructor.name === 'BigInt');
 }
@@ -67,6 +73,7 @@ function _normalizeState(raw) {
     repTargetCond: _cloneCondition(raw.repTargetCond),
     pendingRepTargetCond: _cloneCondition(raw.pendingRepTargetCond),
     nameTransformRules: _cloneRules(raw.nameTransformRules),
+    lastMetaUpdateTime: _normalizeMetaUpdateTime(raw.lastMetaUpdateTime),
     startedAt: raw.startedAt || '',
     updatedAt: raw.updatedAt || '',
   };
@@ -141,6 +148,7 @@ class MetaSyncStateStore {
       progress: normalized.progress,
       lastMetaId: normalized.lastMetaId >= 0n ? normalized.lastMetaId.toString() : '',
       goalMetaId: normalized.goalMetaId >= 0n ? normalized.goalMetaId.toString() : '',
+      lastMetaUpdateTime: normalized.lastMetaUpdateTime || '',
       repTargetCond: _cloneCondition(normalized.pendingRepTargetCond || normalized.repTargetCond),
       startedAt: normalized.startedAt,
       updatedAt: normalized.updatedAt,

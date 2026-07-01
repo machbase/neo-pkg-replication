@@ -16,6 +16,47 @@ function _isStructureModifiedErrorMessage(message) {
     || text.toLowerCase().indexOf('structure was modified') >= 0;
 }
 
+function _sqlLiteral(value) {
+  if (value == null) return 'NULL';
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return 'NULL';
+    return String(value);
+  }
+  if (typeof value === 'boolean') return value ? '1' : '0';
+  if (typeof value === 'object') {
+    return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+  }
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function _normalizeTagNameRows(rows, primaryColumnName) {
+  const column = primaryColumnName || 'name';
+  for (const row of (rows || [])) {
+    if (row.name != null) {
+      if (row.NAME == null) row.NAME = row.name;
+      continue;
+    }
+    let value = null;
+    if (row[column] != null) {
+      value = row[column];
+    } else {
+      const upper = String(column).toUpperCase();
+      if (row[upper] != null) {
+        value = row[upper];
+      } else {
+        const lower = String(column).toLowerCase();
+        if (row[lower] != null) value = row[lower];
+      }
+    }
+    if (value != null) {
+      row.name = value;
+      if (row.NAME == null) row.NAME = value;
+    }
+  }
+  return rows;
+}
+
 
 /**
  * Machbase Neo DB 연결 및 쿼리 클라이언트
@@ -311,6 +352,12 @@ class MachbaseClient {
     return this.query(sql, [info.id]);
   }
 
+  selectTagPrimaryColumnName(logicalTable) {
+    const rows = this.selectColumnsByQualifiedTableName(logicalTable);
+    const primary = (rows || []).find((column) => (column.FLAG & FLAG_PRIMARY) !== 0);
+    return primary ? primary.NAME : 'NAME';
+  }
+
   /**
    * 테이블의 최대 RID 조회
    * @param {string} tableName
@@ -339,8 +386,10 @@ class MachbaseClient {
    * @param {string} logicalTable - 논리 테이블명
    * @returns {Array<{ _ID: bigint, name: string }>}
    */
-  selectTagNames(logicalTable) {
-    return this.query(`SELECT _ID, name FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+  selectTagNames(logicalTable, primaryColumnName = null) {
+    const column = primaryColumnName || this.selectTagPrimaryColumnName(logicalTable);
+    const rows = this.query(`SELECT _ID, ${column} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    return _normalizeTagNameRows(rows, column);
   }
 
   /**
@@ -349,8 +398,10 @@ class MachbaseClient {
    * @param {string} name
    * @returns {{ _ID: bigint, name: string }|null}
    */
-  selectTagName(logicalTable, name) {
-    const rows = this.query(`SELECT _ID, name FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE NAME = ?`, [name]);
+  selectTagName(logicalTable, name, primaryColumnName = null) {
+    const column = primaryColumnName || this.selectTagPrimaryColumnName(logicalTable);
+    const rows = this.query(`SELECT _ID, ${column} FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE ${column} = ?`, [name]);
+    _normalizeTagNameRows(rows, column);
     return rows?.[0] ?? null;
   }
 
@@ -360,9 +411,10 @@ class MachbaseClient {
    * @param {string[]} metaColNames - metadata column 이름 목록
    * @returns {Array<{ _ID: bigint, name: string, [col]: any }>}
    */
-  selectTagMeta(logicalTable, metaColNames = []) {
+  selectTagMeta(logicalTable, metaColNames = [], primaryColumnName = 'name') {
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
-    return this.query(`SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    const rows = this.query(`SELECT _ID, ${primaryColumnName}${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)}`);
+    return _normalizeTagNameRows(rows, primaryColumnName);
   }
 
   /**
@@ -371,13 +423,11 @@ class MachbaseClient {
    * @param {string} oldName
    * @param {Array<{ name: string, value: any }>} sets
    */
-  updateTagMeta(logicalTable, oldName, sets) {
-    const esc = v => v == null ? 'NULL'
-      : typeof v === 'string' ? `'${v.replace(/'/g, "''")}'`
-      : String(v);
-    const setClauses = sets.map(({ name, value }) => `${name} = ${esc(value)}`).join(', ');
+  updateTagMeta(logicalTable, oldName, sets, primaryColumnName = 'NAME') {
+    if (!Array.isArray(sets) || sets.length === 0) return;
+    const setClauses = sets.map(({ name, value }) => `${name} = ${_sqlLiteral(value)}`).join(', ');
     this.execute(
-      `UPDATE ${logicalTable} METADATA SET ${setClauses} WHERE NAME = ${esc(oldName)}`
+      `UPDATE ${logicalTable} METADATA SET ${setClauses} WHERE ${primaryColumnName} = ${_sqlLiteral(oldName)}`
     );
   }
 
@@ -398,12 +448,13 @@ class MachbaseClient {
    * @param {string[]} metaColNames
    * @returns {{ _ID: bigint, name: string, [col]: any }|null}
    */
-  selectTagMetaById(logicalTable, tagId, metaColNames = []) {
+  selectTagMetaById(logicalTable, tagId, metaColNames = [], primaryColumnName = 'name') {
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
     const rows = this.query(
-      `SELECT _ID, name${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE _ID = ?`,
+      `SELECT _ID, ${primaryColumnName}${extraCols} FROM ${this.qualifiedTagMetaTable(logicalTable)} WHERE _ID = ?`,
       [tagId]
     );
+    _normalizeTagNameRows(rows, primaryColumnName);
     return rows?.[0] ?? null;
   }
 
@@ -425,10 +476,12 @@ class MachbaseClient {
    * @param {number} limit
    * @returns {Array<{ NAME: string }>}
    */
-  selectTagNamesPaged(logicalTable, offset, limit) {
-    return this.query(
-      `SELECT NAME FROM ${this.qualifiedTagMetaTable(logicalTable)} ORDER BY NAME LIMIT ${offset}, ${limit}`
+  selectTagNamesPaged(logicalTable, offset, limit, primaryColumnName = null) {
+    const column = primaryColumnName || this.selectTagPrimaryColumnName(logicalTable);
+    const rows = this.query(
+      `SELECT ${column} FROM ${this.qualifiedTagMetaTable(logicalTable)} ORDER BY ${column} LIMIT ${offset}, ${limit}`
     );
+    return _normalizeTagNameRows(rows, column);
   }
 
   /**

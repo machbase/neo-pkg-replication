@@ -69,6 +69,16 @@ function _stringifyParams(params) {
   }
 }
 
+function _rowColumnValue(row, columnName) {
+  if (!row || !columnName) return null;
+  if (row[columnName] != null) return row[columnName];
+  const upper = String(columnName).toUpperCase();
+  if (row[upper] != null) return row[upper];
+  const lower = String(columnName).toLowerCase();
+  if (row[lower] != null) return row[lower];
+  return null;
+}
+
 function _toEpochMs(value) {
   if (value == null) return value;
   if (typeof value === 'bigint') {
@@ -854,27 +864,32 @@ class TagTable {
     const metaColNames = this.schema
       ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
       : [];
+    const primaryColumn = this.schema
+      ? this.schema.columns.find(c => c.flag & FLAG_PRIMARY)
+      : null;
+    const primaryColumnName = primaryColumn ? primaryColumn.name : 'NAME';
     const extraCols = metaColNames.length > 0 ? ', ' + metaColNames.join(', ') : '';
 
     let whereClauses = [];
     let params = [];
     if (nameFilter?.in && nameFilter.in.length > 0) {
-      whereClauses.push(`name IN (${nameFilter.in.map(() => '?').join(', ')})`);
+      whereClauses.push(`${primaryColumnName} IN (${nameFilter.in.map(() => '?').join(', ')})`);
       params.push(...nameFilter.in);
     }
     if (nameFilter?.like) {
-      whereClauses.push(`name LIKE ?`);
+      whereClauses.push(`${primaryColumnName} LIKE ?`);
       params.push(nameFilter.like);
     }
     const where = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
-    const sql = `SELECT _ID, name${extraCols} FROM _${this.logicalTable}_META${where}`;
+    const metaTable = this.client.qualifiedTagMetaTable(this.qualifiedTable);
+    const sql = `SELECT _ID, ${primaryColumnName}${extraCols} FROM ${metaTable}${where}`;
 
     const rows = await this.client.query(sql, params.length > 0 ? params : undefined);
     const cache = new TagMetaCache();
     for (const row of (rows || [])) {
       const meta = {};
       for (const col of metaColNames) meta[col] = row[col];
-      cache.set(row._ID, row.name, meta);
+      cache.set(row._ID, _rowColumnValue(row, primaryColumnName), meta);
     }
     return cache;
   }
@@ -945,7 +960,11 @@ class TagDataTable {
       const metaColNames = this.schema
         ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
         : [];
-      const rows = await this.client.selectTagMeta(this.logicalTable, metaColNames);
+      const primaryColumn = this.schema
+        ? this.schema.columns.find(c => c.flag & FLAG_PRIMARY)
+        : null;
+      const primaryColumnName = primaryColumn ? primaryColumn.name : 'name';
+      const rows = await this.client.selectTagMeta(this.logicalTable, metaColNames, primaryColumnName);
       this.aliasCache = new TagMetaCache();
       for (const row of (rows || [])) {
         const meta = {};
@@ -968,12 +987,33 @@ class TagDataTable {
     const metaColNames = this.schema
       ? this.schema.columns.filter(c => c.flag & FLAG_METADATA).map(c => c.name)
       : [];
-    const row = await this.client.selectTagMetaById(this.logicalTable, tagId, metaColNames);
+    const primaryColumn = this.schema
+      ? this.schema.columns.find(c => c.flag & FLAG_PRIMARY)
+      : null;
+    const primaryColumnName = primaryColumn ? primaryColumn.name : 'name';
+    const row = await this.client.selectTagMetaById(this.logicalTable, tagId, metaColNames, primaryColumnName);
     if (row == null) return false;
     const meta = {};
     for (const col of metaColNames) meta[col] = row[col];
     this.aliasCache.set(row._ID, row.name, meta);
     return true;
+  }
+
+  /**
+   * target metadata 반영이 끝난 source metadata 변경을 worker cache에 적용한다.
+   * rename은 target update 성공 후에만 이 경로로 들어와야 한다.
+   * @param {Array<{ sourceId: string|number|bigint, sourceName: string, meta?: object }>} changes
+   * @returns {number} 적용된 변경 수
+   */
+  applyTagMetaUpdates(changes) {
+    if (!this.aliasCache || !Array.isArray(changes) || changes.length === 0) return 0;
+    let applied = 0;
+    for (const change of changes) {
+      if (!change || change.sourceId == null || change.sourceName == null) continue;
+      this.aliasCache.set(change.sourceId, String(change.sourceName), change.meta || {});
+      applied++;
+    }
+    return applied;
   }
 
   /**
