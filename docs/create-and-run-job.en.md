@@ -41,6 +41,9 @@ Use the Database cards to select the server and table for each side.
 - `mqtt-api` and `mqtt-publish` appear only on the Target side.
 - If you select a regular DB target, choose the target table.
 - If you select `mqtt-publish`, a **Topic** field appears instead of a table selector.
+- The same physical table in the same Machbase Neo instance cannot be used as both Source and Target.
+
+The table selector lists only local TAG/LOG logical tables. Tables from a mounted database or backup are not shown.
 
 When using `mqtt-publish`, make sure the Topic format is valid.
 
@@ -61,6 +64,14 @@ In `Column Mapping`, you define how Source columns map to Target columns.
 In practice, it is usually best to select the correct Source and Target tables first, and then adjust the mapping.
 
 ![Column Mapping screen](./images/job-form-column-mapping.png)
+
+### TAG Metadata Synchronization
+
+When a TAG table is replicated to a `native` or `http` Target, the required TAG metadata is synchronized automatically before its data.
+
+- Metadata for a new tag is prepared before data for that tag is stored.
+- Tag names and metadata changed while the job is running are also applied in order.
+- If metadata synchronization has a problem, data storage may wait. Check Live Logs for messages related to `meta_sync`.
 
 ## 4. Replication Target Condition
 
@@ -105,8 +116,6 @@ This section controls how the job starts and how often it checks for new data.
   - Reads everything from the beginning.
 - `Now (latest)`
   - Follows only new data from the current point.
-- `RID After`
-  - Starts after the specified RID.
 
 ### On Save Failure
 
@@ -127,8 +136,6 @@ This section controls how the job starts and how often it checks for new data.
 
 These are advanced options.
 
-- `Integrity Check`
-  - Runs a consistency check during recovery.
 - `Retry Max Attempts`
   - Number of retry attempts
 - `Retry Base Delay (ms)`
@@ -187,6 +194,7 @@ In that case, it is best to check [Troubleshooting](./troubleshooting.en.md) fir
 - It is normal that `mqtt-api` and `mqtt-publish` are not available on the Source side.
 - If the Target is `mqtt-publish`, always validate the Topic value carefully.
 - `Now` is suitable for following only new incoming data. If you need an initial full copy, use `Full`.
+- A job cannot be saved when its Source and Target refer to the same Machbase Neo table.
 
 ## Navigation
 

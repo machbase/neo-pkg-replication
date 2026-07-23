@@ -5,179 +5,138 @@ weight: 50
 
 # Troubleshooting
 
-This document summarizes common issues you may see in the UI and the recommended checks for each case.
+This document explains likely causes and recommended checks for common symptoms in the Replication UI.
 
-## 1. The Source Server Does Not Appear in the List
+## 1. A Server or Table Cannot Be Selected
 
-Possible causes:
+### The Source Server Is Missing from the List
 
-- No server has been registered yet
-- The server type cannot be used as a Source
+Check the following:
 
-How to check:
+1. Confirm that the server is registered in Server Settings.
+2. Run a connection test.
+3. Confirm that the server type is `native` or `http`.
 
-1. Open Server Settings.
-2. Confirm that the server is actually registered.
-3. Confirm that the connection test succeeds.
+It is normal for `mqtt-api` and `mqtt-publish` not to appear in the Source list because they are Target-only.
 
-Note:
+### The Table List Is Empty or a Table Is Missing
 
-- `mqtt-api` and `mqtt-publish` should be treated as Target-only.
+Check the following:
 
-## 2. The Table List Is Empty
+1. Confirm that you selected the correct server and Port.
+2. Confirm that the connection account can query tables.
+3. Confirm that the table exists in the actual database.
 
-Possible causes:
+The Replication UI lists only local TAG/LOG logical tables. It is normal for tables from a mounted database or backup to be excluded.
 
-- The server connection works, but the account cannot query tables
-- The wrong server or port was selected
-- The target table has not been created yet
+If the Target is `mqtt-publish`, a Topic field appears instead of the table list.
 
-Check in this order:
+## 2. Job Save or Validation Fails
 
-1. Run the connection test again from Server Settings.
-2. Confirm that you selected the correct server.
-3. Confirm that the table actually exists in the Source / Target DB.
+### Save Fails When the Target Is `mqtt-publish`
 
-Note:
+Check whether the Topic contains a space, `+`, or `#`, or starts or ends with `/`.
+In general, use a combination of letters, numbers, `.`, `_`, `-`, and `/`.
 
-- If the Target is `mqtt-publish`, it is normal to see a Topic field instead of a table list.
+### Validation Warnings Appear
 
-## 3. Save Fails When the Target Is `mqtt-publish`
+Validation Warnings are different from errors that prevent saving. Review the Source/Target mapping and conditions, and select `Save Anyway` if the configuration is intentional.
 
-Possible cause:
+### An Error Says That Source and Target Are the Same Table
 
-- The Topic format is invalid
+The same physical table in the same Machbase Neo instance cannot be used as both Source and Target. Saving is rejected even if the Server names are different when they refer to the same instance and table.
 
-How to check:
+Change either the Source or Target table, and then save again.
 
-- Check the Topic value again in Target Database.
-- Confirm that it does not contain spaces, `+`, or `#`.
-- Confirm that it does not start or end with `/`.
-- Try again with only letters, numbers, `.`, `_`, `-`, and `/`.
+## 3. A Job Cannot Be Registered, Started, Edited, or Deleted
 
-## 4. Validation Warnings Appear During Save
+### The Job Was Created but Did Not Start Immediately
 
-This dialog is different from a hard save error.  
-It means the situation is not necessarily fatal, but it still requires confirmation.
+The job configuration may exist in a config-only state because service registration did not complete.
 
-Recommended action:
+1. Check whether a `Register` button appears to the right of the job in the sidebar.
+2. Click `Register` to retry service registration.
+3. When a switch appears after registration, start the job.
 
-1. Read the warning message.
-2. Review the Source / Target mapping and conditions.
-3. If the configuration is still intentional, use `Save Anyway`.
+In the normal creation flow, a job is registered and started automatically.
 
-## 5. The Job Was Created but Did Not Start Immediately
+### The Edit or Delete Button Is Disabled
 
-Possible causes:
+A running job cannot be edited or deleted. Stop the job with the switch in the sidebar, and then try again.
 
-- The job configuration was created, but service registration did not complete
-- A temporary install error or environment difference left the job in a config-only state
+### A Server Cannot Be Deleted
 
-How to check:
+Server deletion is rejected when a job uses that Server as its Source or Target.
 
-- Check whether a `Register` button appears to the right of the job in the sidebar.
-- In general, the job starts right after creation, so if a `Register` button appears, it should be treated as an exception case.
-- Click `Register` to try the service registration again.
-- After registration, a switch should appear so you can start or stop the job normally.
+1. Check the job shown in the error message.
+2. Change the Server setting for that job or delete the job.
+3. Try deleting the Server again.
 
-## 6. Edit or Delete Does Not Work
+## 4. Less Data Is Replicated Than Expected
 
-Possible cause:
+Check the following settings:
 
-- The job is running
+- Whether `Replication Target Condition` is narrowly set to `IN` or `LIKE`
+- Whether a range `filter` is applied in Data Pipeline Builder
+- Whether Start Mode is set to `Now` even though an initial full copy is required
+- Whether a required Source column is disabled in the Source/Target column mapping
 
-Recommended order:
+`Now` processes only new data generated after the job is first started. Use `Full` when existing data must also be replicated.
 
-1. Stop the job first.
-2. After confirming it is stopped, try Edit or Delete again.
+## 5. TAG Metadata Synchronization Is Delayed or Fails
 
-## 7. A Warning Is Shown on the Dashboard
-
-Typical causes:
-
-- The Source table was removed or changed
-- The Target table was removed or changed
-- The current row count lookup failed
+When a TAG table is replicated to a `native` or `http` Target, required TAG metadata is synchronized before its data. Data for that tag may wait until metadata synchronization completes.
 
 Check in this order:
 
-1. Read the warning message.
-2. Confirm that the Source / Target server and table still exist.
-3. Check whether the current error continues in Live Logs.
-4. If needed, open or download older logs from Log Files.
+1. Open Live Logs and look for WARN or ERROR messages related to `meta_sync`.
+2. Confirm that both Source and Target connections work.
+3. Confirm that the Target account can register or update TAG metadata.
+4. Confirm that the Source/Target metadata column mapping is intentional.
 
-## 8. Less Data Is Replicated Than Expected
+Replication may pause temporarily while a new tag or a changed tag name and metadata are processed.
 
-Possible causes:
+## 6. A Warning Appears on the Dashboard
 
-- `Replication Target Condition` is too narrow
-- A filter is applied in Data Pipeline Builder
-- `Start Mode` is set to `Now`
+Typical causes include:
 
-Check:
+- The Source or Target table was removed or changed
+- Table row count lookup failed
+- A Server connection failed temporarily
 
-- Which condition was selected: `ALL`, `IN`, or `LIKE`
-- Whether a `filter` exists in the pipeline
-- Whether `Now` was used when a full initial replication was actually needed
+First read the warning at the top of the dashboard and confirm that the Source/Target servers and tables still exist. If the error continues, open Live Logs. If you need earlier records, inspect the files in Log Files.
 
-## 9. Too Many Logs Are Generated or Files Grow Too Quickly
+## 7. Live Logs Are Empty or Disconnected
 
-Possible causes:
+The Live Logs connection starts when the popup opens and ends when it closes.
 
-- The log level is set too low
-- File Limit is too large
+Check the following:
 
-Recommended adjustment:
+1. Open the popup with `Live Logs` at the top of the dashboard.
+2. Confirm that its connection status is `CONNECTED`.
+3. Confirm that the job status is `running`.
+4. If logging is paused, click `Resume`.
+5. Check whether the log level is set to `WARN` or `ERROR` and very few new logs are being generated.
 
-- For normal operation, start with `INFO` or `WARN`
-- Use `DEBUG` or `TRACE` only when needed
+Live Logs show recent output generated after the connection is established. To review or retain earlier records, open or download a file from Log Files.
 
-## 10. Live Logs Are Empty or Disconnected
+## 8. Log Files Grow Too Quickly
 
-Possible causes:
+Use `INFO` or `WARN` for normal operation, and use `DEBUG` or `TRACE` only when detailed analysis is required.
 
-- The job is not running yet
-- No new logs are being generated yet
-- The log file does not exist yet, or the connection was temporarily interrupted
+- The active log file is rotated automatically when it reaches 10MB.
+- Reducing `File Limit` reduces the total number of log files retained.
+- Log timestamps use the local time zone of the Machbase Neo host.
 
-Check in this order:
+## 9. Settings Change After Source or Target Is Changed
 
-1. Confirm that the job status is `running`.
-2. Confirm that the connection status at the top of Live Logs is `CONNECTED`.
-3. Confirm whether the current job naturally produces very little logging.
-4. If needed, check whether existing log files are available in Log Files.
+Related fields may be reset so that settings from the previous schema do not remain after a server or table change.
 
-## 11. You Need to Keep or Share Log Files
+- Changing a server resets the table selection and column/metadata mapping.
+- Changing a table resets the column/metadata mapping.
+- Changing the Source table may reset Replication Target Condition and Data Pipeline Builder rules.
 
-Recommended method:
-
-1. Open Log Files.
-2. Click the download button for the file you need.
-3. Use the downloaded file for deeper analysis or for sharing with others.
-
-## 12. Settings Look Different After Changing Source or Target
-
-This behavior may not be abnormal.
-
-Expected screen behavior:
-
-- Changing the server may reset the selected table.
-- Changing the table may reset the column mapping.
-- Changing the Source table may reset Data Pipeline Builder rules.
-
-So after changing Source or Target, review the following again:
-
-- Table selection
-- Column Mapping
-- Replication Target Condition
-- Data Pipeline Builder
-
-## Quick Checklist for Operators
-
-- Check the server connection test first.
-- Then check whether the Source / Target tables exist.
-- Then check dashboard warnings and row count.
-- Finally, check the log files.
+After the change, review Table selection, Column Mapping, Replication Target Condition, and Data Pipeline Builder in order.
 
 ## Navigation
 
