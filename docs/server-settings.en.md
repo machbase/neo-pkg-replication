@@ -75,7 +75,7 @@ For general users, the main points are:
 
 - `http`
   - Uses HTTP-based connection.
-  - Uses fields such as `Protocol` and `Token`.
+  - Uses `IP`, `Port`, and `Token`.
 - `mqtt-api`
   - Uses MQTT API connection.
   - Requires additional fields such as `Token` and `QoS`.
@@ -111,7 +111,8 @@ You can run the test before saving the server, and you can also test an already 
   - If you leave the password or token blank, the existing value is kept.
 - `Delete`
   - Deletes the server.
-  - If any job is using that server, check the impact first.
+  - A server cannot be deleted while it is referenced by a job.
+  - Change the job's Source or Target server, or delete the job, and then try again.
 
 ## Notes
 
@@ -119,6 +120,7 @@ You can run the test before saving the server, and you can also test an already 
 - It is normal that `mqtt-api` and `mqtt-publish` do not appear on the Source side.
 - If the Target is `mqtt-publish`, data is sent to a **Topic** instead of a table.
 - On the edit screen, existing passwords or tokens are kept even if you do not enter them again.
+- It is normal for deletion to be rejected while a server is referenced by a job.
 
 ## Navigation
 

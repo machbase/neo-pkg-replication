@@ -21,7 +21,7 @@ Main items to check:
 - Partition gap information
 - Warning messages
 - Logging settings
-- Live log tail
+- Live Logs button
 
 ![Job detail dashboard screen](./images/dashboard-job-detail.png)
 
@@ -61,23 +61,24 @@ This is useful when you want to quickly compare the amount of replicated data.
 
 ## Live Logs
 
-The **Live Logs** card at the bottom of the dashboard shows the active log for the running job in real time.
+Click **Live Logs** at the top of the dashboard to open the active log for the running job in a separate popup.
 
-This card is in the lower part of the detail screen, so it may not be visible if you only look at the top status cards.  
-Scroll down to the Live Logs area when needed.
+The live log connection starts when the popup opens and ends when it closes.
 
 Characteristics of Live Logs:
 
 - It follows the current active log file for the selected job.
-- It does not replay the full history. It mainly shows new lines appended after the connection is established.
+- It mainly shows new lines appended after the popup opens and does not replay the full history.
 - Up to 100 recent lines are kept on the screen.
 - The panel may appear empty if the log level is restrictive, such as `WARN` or `ERROR`, or if very few new logs are being produced.
+- Drag the title area to move the popup, or drag an edge or the lower-right corner to resize it.
 
 Available actions in the UI:
 
 - `Pause` / `Resume`
 - `Clear`
 - Connection status check (`CONNECTED` / `DISCONNECTED`)
+- Close
 
 Live Logs are best for checking current activity, while **Log Files** are better for reviewing or saving older logs.
 
@@ -100,6 +101,12 @@ Typical items shown are:
 If older rotated files exist, they may also appear in the list.
 
 ![Log file list screen](./images/log-files-list.png)
+
+Log files are managed according to these rules:
+
+- Log timestamps use the local time zone of the host running Machbase Neo.
+- When the active log file reaches 10MB, it is rotated to a file whose name includes a timestamp.
+- `File Limit` is the maximum total number of active and rotated files to retain.
 
 ## View Log File Contents
 
@@ -129,6 +136,7 @@ If a problem is suspected, the following order is usually helpful:
 
 - Live Logs are for checking current activity, while Log Files are for keeping or downloading older logs.
 - Live Logs do not replay old history. They are meant to show currently generated log lines.
+- The Live Logs connection starts when the popup opens and ends when it closes.
 - If the log level is restrictive, Live Logs may show little or no output.
 - If the logs are large, file contents may be split into pages.
 - If the log level is set too low, log files may grow quickly.

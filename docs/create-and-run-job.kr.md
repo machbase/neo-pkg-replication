@@ -41,6 +41,9 @@ weight: 30
 - `mqtt-api`, `mqtt-publish` 서버는 Target에서만 선택됩니다.
 - 일반 DB를 선택한 경우에는 대상 테이블을 선택합니다.
 - `mqtt-publish` 서버를 선택한 경우에는 테이블 선택 대신 **Topic** 입력 칸이 나타납니다.
+- 같은 Machbase Neo 인스턴스의 동일한 물리 테이블을 Source와 Target으로 지정할 수 없습니다.
+
+테이블 선택 목록에는 로컬 DB의 TAG/LOG 논리 테이블만 표시됩니다. mounted DB 또는 backup 테이블은 표시되지 않습니다.
 
 `mqtt-publish`를 사용할 때는 Topic 형식을 함께 확인해야 합니다.
 
@@ -61,6 +64,14 @@ weight: 30
 실무에서는 먼저 Source/Target 테이블을 정확히 고른 뒤, 그 다음에 매핑을 손보는 편이 좋습니다.
 
 ![Column Mapping 화면](./images/job-form-column-mapping.png)
+
+### TAG 메타데이터 동기화
+
+TAG 테이블을 `native` 또는 `http` Target으로 복제하면, 데이터에 필요한 TAG 메타데이터가 먼저 자동으로 동기화됩니다.
+
+- 신규 태그의 메타데이터가 준비된 뒤 해당 태그의 데이터가 저장됩니다.
+- Job 실행 중 변경된 태그 이름과 메타데이터도 순차적으로 반영됩니다.
+- 메타데이터 동기화에 문제가 있으면 데이터 저장이 대기할 수 있으므로 Live Logs에서 `meta_sync` 관련 메시지를 확인합니다.
 
 ## 4. Replication Target Condition
 
@@ -105,8 +116,6 @@ weight: 30
   - 처음부터 전체를 읽습니다.
 - `Now (latest)`
   - 현재 시점 이후의 새 데이터만 따라갑니다.
-- `RID After`
-  - 지정한 RID 다음부터 시작합니다.
 
 ### On Save Failure
 
@@ -127,8 +136,6 @@ weight: 30
 
 고급 옵션입니다.
 
-- `Integrity Check`
-  - 복구 시 일관성 검사를 수행합니다.
 - `Retry Max Attempts`
   - 재시도 횟수
 - `Retry Base Delay (ms)`
@@ -187,6 +194,7 @@ weight: 30
 - `mqtt-api`, `mqtt-publish`는 Source 쪽에서 선택되지 않는 것이 정상입니다.
 - Target이 `mqtt-publish`인 경우에는 Topic 값이 유효한지 반드시 확인해야 합니다.
 - `Now`는 신규 데이터 추적에 적합하고, 초기 전체 복제가 필요하면 `Full`을 사용해야 합니다.
+- Source와 Target이 같은 Machbase Neo 테이블을 가리키면 Job을 저장할 수 없습니다.
 
 ## 문서 이동
 
