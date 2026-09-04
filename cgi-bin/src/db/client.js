@@ -10,6 +10,8 @@
 const { Client } = require('machcli');
 const { ColumnType, Column, TableSchema, FLAG_BASETIME, FLAG_SUMMARIZED, FLAG_METADATA, FLAG_PRIMARY } = require('./types.js');
 
+const DEFAULT_DATABASE = 'MACHBASEDB';
+
 function _isStructureModifiedErrorMessage(message) {
   const text = String(message || '');
   return text.indexOf('MACHCLI-ERR-2361') >= 0
@@ -66,7 +68,10 @@ class MachbaseClient {
    * @param {{ host: string, port: number, user: string, password: string }} config - DB 접속 정보
    */
   constructor(config) {
-    this._config = config;
+    this._config = { ...config };
+    if (!this._config.database && !this._config.db) {
+      this._config.database = DEFAULT_DATABASE;
+    }
     this._db = null;
     this._conn = null;
   }
@@ -170,7 +175,7 @@ class MachbaseClient {
    */
   selectTableType(tableName) {
     const rows = this.query(
-      'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_ID = -1',
+      'SELECT TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_NAME = CURRENT_DATABASE()',
       [tableName]
     );
     if (!rows || rows.length === 0) return { type: 'UNSUPPORTED' };
@@ -219,7 +224,7 @@ class MachbaseClient {
     let rows;
     if (!qualified.owner) {
       rows = this.query(
-        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_ID = -1',
+        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_NAME = CURRENT_DATABASE()',
         [qualified.table]
       );
     } else {
@@ -231,7 +236,7 @@ class MachbaseClient {
           ON t.USER_ID = u.USER_ID
         WHERE u.NAME = ?
           AND t.NAME = ?
-          AND t.DATABASE_ID = -1
+          AND t.DATABASE_NAME = CURRENT_DATABASE()
         `.trim(),
         [qualified.owner, qualified.table]
       );
@@ -274,7 +279,7 @@ class MachbaseClient {
       SELECT m.ID AS table_id, m.NAME AS data_table
       FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m
       WHERE v.ID = m.ID AND m.NAME LIKE ?
-        AND m.DATABASE_ID = -1
+        AND m.DATABASE_NAME = CURRENT_DATABASE()
       ORDER BY m.NAME
     `.trim();
     return this.query(sql, [pattern]);
@@ -289,7 +294,7 @@ class MachbaseClient {
       SELECT NAME, TYPE
       FROM M$SYS_TABLES
       WHERE TYPE IN (0, 6)
-        AND DATABASE_ID = -1
+        AND DATABASE_NAME = CURRENT_DATABASE()
     `.trim();
     return this.query(sql);
   }
@@ -307,7 +312,7 @@ class MachbaseClient {
       LEFT JOIN M$SYS_USERS u
         ON t.USER_ID = u.USER_ID
       WHERE t.TYPE IN (0, 6)
-        AND t.DATABASE_ID = -1
+        AND t.DATABASE_NAME = CURRENT_DATABASE()
       ORDER BY t.NAME
     `.trim();
     return this.query(sql);
@@ -324,7 +329,8 @@ class MachbaseClient {
       FROM M$SYS_COLUMNS c, M$SYS_TABLES t
       WHERE c.TABLE_ID = t.ID AND t.NAME = ?
         AND c.DATABASE_ID = t.DATABASE_ID
-        AND t.DATABASE_ID = -1
+        AND c.TABLESPACE_ID = t.TABLESPACE_ID
+        AND t.DATABASE_NAME = CURRENT_DATABASE()
         AND c.ID < 65534
       ORDER BY c.ID ASC
     `.trim();
@@ -344,8 +350,9 @@ class MachbaseClient {
       FROM M$SYS_COLUMNS c, M$SYS_TABLES t
       WHERE c.TABLE_ID = t.ID
         AND c.DATABASE_ID = t.DATABASE_ID
+        AND c.TABLESPACE_ID = t.TABLESPACE_ID
         AND t.ID = ?
-        AND t.DATABASE_ID = -1
+        AND t.DATABASE_NAME = CURRENT_DATABASE()
         AND c.ID < 65534
       ORDER BY c.ID ASC
     `.trim();
@@ -521,7 +528,9 @@ class MachbaseClient {
    */
   createLogTable(tableName, schema) {
     const colDefs = schema.columns.map(c => `${c.name} ${c.sqlType()}`);
-    this.execute(`CREATE TABLE ${tableName} (${colDefs.join(', ')})`);
+    // Neo 8.7 uses bare CREATE TABLE for the transaction/RDB table family.
+    // Replication LOG targets must keep the append-only LOG table semantics.
+    this.execute(`CREATE LOG TABLE ${tableName} (${colDefs.join(', ')})`);
   }
 }
 

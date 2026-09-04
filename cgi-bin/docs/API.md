@@ -77,6 +77,7 @@
 | `name` | string | ✓ | profile 이름 |
 | `host` | string | ✓ | DB host |
 | `port` | number | ✓ | DB port |
+| `database` | string | 선택 | 접속할 database. 생략 시 `MACHBASEDB` (`mqtt-publish`에서는 사용하지 않음) |
 | `user` | string | 조건부 | `native`, `mqtt-publish` 에서 사용 가능 |
 | `password` | string | 조건부 | `native`, `mqtt-publish` 에서 사용 가능 |
 | `token` | string | 조건부 | `http`, `mqtt-api`, `mqtt-publish` 에서 사용 가능 |
@@ -125,6 +126,7 @@
       "name": "",
       "host": "127.0.0.1",
       "port": 5654,
+      "database": "MACHBASEDB",
       "user": null,
       "password": "",
       "token": "",
@@ -140,19 +142,19 @@
 
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
-  --data '{"name":"local","host":"127.0.0.1","port":5656,"user":"SYS","password":"manager","type":"native"}' \
+  --data '{"name":"local","host":"127.0.0.1","port":5656,"database":"MACHBASEDB","user":"SYS","password":"manager","type":"native"}' \
   http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server
 ```
 
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
-  --data '{"name":"local_http","host":"127.0.0.1","port":5654,"type":"http","protocol":"http","token":""}' \
+  --data '{"name":"local_http","host":"127.0.0.1","port":5654,"database":"MACHBASEDB","type":"http","protocol":"http","token":""}' \
   http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server
 ```
 
 ```bash
 curl -sS -X POST -H 'Content-Type: application/json' \
-  --data '{"name":"local_mqtt","host":"127.0.0.1","port":5653,"type":"mqtt-api","token":"","qos":1}' \
+  --data '{"name":"local_mqtt","host":"127.0.0.1","port":5653,"database":"MACHBASEDB","type":"mqtt-api","token":"","qos":1}' \
   http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server
 ```
 
@@ -569,6 +571,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 - 응답에는 정규화된 config, source/target schema 요약, `warnings` 배열이 포함된다.
 - startup integrity는 user config가 아니라 내부 동작이며, TAG + native/http target 재기동 경로에서만 자동 수행된다.
 - `mqtt-publish` target은 actual target schema 조회를 하지 않고, configured mapping 기준으로 payload schema를 구성한다.
+- LOG table 생성 시 Neo 8.7의 table type 구분을 위해 `CREATE LOG TABLE`을 명시한다. bare `CREATE TABLE`은 사용하지 않는다.
 
 ## Table Columns API
 
@@ -578,7 +581,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 | `POST` | `/api/table/columns` | 테이블 컬럼 정보 조회 |
 | `POST` | `/api/table/tags` | TAG 이름 목록 페이지 조회 |
 
-표준 요청은 server profile 참조 방식이다. 이전 호환을 위해 `server` 대신 inline connection 필드(`host`, `port`, `user`, `password`, `token`, `type`, `protocol`, `qos`, `retain`)도 허용한다. `table` 값은 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
+표준 요청은 server profile 참조 방식이다. 이전 호환을 위해 `server` 대신 inline connection 필드(`host`, `port`, `database`/`db`, `user`, `password`, `token`, `type`, `protocol`, `qos`, `retain`)도 허용한다. `database`를 생략하면 `MACHBASEDB`를 사용한다. `table` 값은 선택된 database 안의 `TABLE_NAME` 또는 `OWNER.TABLE_NAME` 둘 다 허용한다.
 
 지원 type:
 
@@ -618,7 +621,7 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 ### `POST /api/table/list`
 
 요청은 `table` 없이 server profile만 전달한다.
-Mounted backup database의 테이블은 쓰기 대상이 아니므로 목록에서 제외된다.
+선택한 active database의 테이블만 반환하며, 다른 logical database와 mounted backup database의 테이블은 제외된다.
 
 ```json
 {

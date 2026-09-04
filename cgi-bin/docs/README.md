@@ -126,6 +126,7 @@ replicator 하나당 파일 하나. CGI를 통해 등록/수정/삭제한다.
 | `logging.file.directory` | `/work/logs` | 절대경로 사용 필수 |
 
 - `source.server`, `target.server` 에서 참조하는 server profile은 미리 생성되어 있어야 한다.
+- server profile의 `database`로 logical database를 선택하며, 생략하면 `MACHBASEDB`를 사용한다.
 - 대상 테이블 자동 생성 옵션은 없다. target 테이블은 사전에 준비되어 있어야 한다.
 - `mqtt-publish` target은 `target.topic` 지정이 권장되며, topic은 영문자/숫자/`.`, `_`, `-`, `/` 만 허용한다.
 - startup integrity는 user config가 아니라 내부 동작이며, TAG + native/http target 재기동 시 자동 수행된다.

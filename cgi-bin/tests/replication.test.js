@@ -27,7 +27,7 @@ const LOG_NOW_JOB_ID = `rpl_log_now_${TEMP_SUFFIX}`;
 const SRC_JSON_LOG_TABLE = `RPL_JSRC_${TEMP_SUFFIX}`;
 const DST_JSON_HTTP_LOG_TABLE = `RPL_JHTTP_${TEMP_SUFFIX}`;
 const LOG_JSON_HTTP_JOB_ID = `rpl_log_json_http_${TEMP_SUFFIX}`;
-const DST_HTTP = { host: '127.0.0.1', port: 5654, protocol: 'http', type: 'http' };
+const DST_HTTP = { host: '127.0.0.1', port: 5654, database: DST.database, protocol: 'http', type: 'http' };
 
 /**
  * 테스트용 ReplicatorConfig 기본값을 생성한다.
@@ -374,7 +374,9 @@ suite('Replicator - replication', () => {
     const replicator = new Replicator(config, shutdownFlag);
 
     const startPromise = replicator.start();
-    const deadline = Date.now() + 5000;
+    // Neo 8.7 HTTP append can keep the appender open for about five seconds
+    // before the batch becomes visible to a native reader.
+    const deadline = Date.now() + 12000;
     let count = 0;
     while (Date.now() < deadline) {
       const dstClient = new MachbaseClient(DST);
