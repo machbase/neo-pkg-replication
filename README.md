@@ -10,7 +10,7 @@ You can configure jobs from the web UI, monitor their status from the dashboard,
   Create and manage replication jobs from the UI without editing configuration files directly.
 
 - **Independent source and target selection**  
-  Choose source and target servers separately, including Machbase and supported MQTT-based targets.
+  Choose source and target servers and logical databases separately, including Machbase and supported MQTT-based targets.
 
 - **Flexible schema mapping**  
   Map source columns to different target columns when the table structures do not match exactly.

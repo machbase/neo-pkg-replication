@@ -9,6 +9,7 @@ const DEFAULT_HTTP_TIMEOUT_MS = 10000;
 const DEFAULT_MQTT_TIMEOUT_MS = 10000;
 const DEFAULT_MQTT_QOS = 1;
 const DEFAULT_MQTT_REPLY_DELAY_MS = 50;
+const DEFAULT_DATABASE = 'MACHBASEDB';
 const NS_PER_MS = 1000000n;
 const NS_PER_SEC = 1000000000n;
 let mqttClientSeq = 0;
@@ -301,7 +302,7 @@ class SqlLikeClient {
     let rows;
     if (!qualified.owner) {
       rows = await this.query(
-        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_ID = -1',
+        'SELECT ID, TYPE FROM M$SYS_TABLES WHERE NAME = ? AND DATABASE_NAME = CURRENT_DATABASE()',
         [qualified.table]
       );
     } else {
@@ -313,7 +314,7 @@ class SqlLikeClient {
           ON t.USER_ID = u.USER_ID
         WHERE u.NAME = ?
           AND t.NAME = ?
-          AND t.DATABASE_ID = -1
+          AND t.DATABASE_NAME = CURRENT_DATABASE()
         `.trim(),
         [qualified.owner, qualified.table]
       );
@@ -348,7 +349,7 @@ class SqlLikeClient {
       LEFT JOIN M$SYS_USERS u
         ON t.USER_ID = u.USER_ID
       WHERE t.TYPE IN (0, 6)
-        AND t.DATABASE_ID = -1
+        AND t.DATABASE_NAME = CURRENT_DATABASE()
       ORDER BY t.NAME
     `.trim());
   }
@@ -361,8 +362,9 @@ class SqlLikeClient {
       FROM M$SYS_COLUMNS c, M$SYS_TABLES t
       WHERE c.TABLE_ID = t.ID
         AND c.DATABASE_ID = t.DATABASE_ID
+        AND c.TABLESPACE_ID = t.TABLESPACE_ID
         AND t.ID = ?
-        AND t.DATABASE_ID = -1
+        AND t.DATABASE_NAME = CURRENT_DATABASE()
         AND c.ID < 65534
       ORDER BY c.ID ASC
     `.trim(), [info.id]);
@@ -381,7 +383,7 @@ class SqlLikeClient {
       SELECT m.ID AS table_id, m.NAME AS data_table
       FROM V$STORAGE_TAG_TABLES v, M$SYS_TABLES m
       WHERE v.ID = m.ID AND m.NAME LIKE ?
-        AND m.DATABASE_ID = -1
+        AND m.DATABASE_NAME = CURRENT_DATABASE()
       ORDER BY m.NAME
     `.trim(), [pattern]);
   }
@@ -455,6 +457,7 @@ class HttpApiClient extends SqlLikeClient {
   constructor(config) {
     super();
     this.config = { ...config };
+    this.database = String(config.database || config.db || DEFAULT_DATABASE).trim() || DEFAULT_DATABASE;
     this.timeoutMs = _normalizeInteger(config.timeoutMs, DEFAULT_HTTP_TIMEOUT_MS);
     this.protocol = String(config.protocol || 'http').trim().toLowerCase() === 'https' ? 'https' : 'http';
   }
@@ -509,6 +512,7 @@ class HttpApiClient extends SqlLikeClient {
     const q = substituteSql(sql, values);
     const result = await this._request('POST', '/db/query', {
       q,
+      db: this.database,
       format: 'json',
       timeformat: 'RFC3339Nano',
       tz: 'UTC',
@@ -522,6 +526,7 @@ class HttpApiClient extends SqlLikeClient {
     const q = substituteSql(sql, values);
     const result = await this._request('POST', '/db/query', {
       q,
+      db: this.database,
       format: 'json',
       timeformat: 'RFC3339Nano',
       tz: 'UTC',
@@ -544,7 +549,7 @@ class HttpApiClient extends SqlLikeClient {
     const table = encodeURIComponent(String(tableName));
     const result = await this._request(
       'POST',
-      `/db/write/${table}?method=${encodeURIComponent(method || 'append')}&timeformat=RFC3339Nano&tz=UTC`,
+      `/db/write/${table}?method=${encodeURIComponent(method || 'append')}&timeformat=RFC3339Nano&tz=UTC&db=${encodeURIComponent(this.database)}`,
       { data: { columns, rows } },
       { 'Content-Type': 'application/json' }
     );
@@ -559,6 +564,7 @@ class MqttApiClient extends SqlLikeClient {
   constructor(config) {
     super();
     this.config = { ...config };
+    this.database = String(config.database || config.db || DEFAULT_DATABASE).trim() || DEFAULT_DATABASE;
     this.timeoutMs = _normalizeInteger(config.timeoutMs, DEFAULT_MQTT_TIMEOUT_MS);
     this.qos = _normalizeInteger(config.qos, DEFAULT_MQTT_QOS);
     if (this.qos < 0 || this.qos > 2) this.qos = DEFAULT_MQTT_QOS;
@@ -721,6 +727,7 @@ class MqttApiClient extends SqlLikeClient {
       publishTopic: 'db/query',
       buildPayload: (replyTopic) => ({
         q,
+        db: this.database,
         format: 'json',
         timeformat: 'RFC3339Nano',
         tz: 'UTC',
@@ -739,6 +746,7 @@ class MqttApiClient extends SqlLikeClient {
       publishTopic: 'db/query',
       buildPayload: (replyTopic) => ({
         q,
+        db: this.database,
         format: 'json',
         timeformat: 'RFC3339Nano',
         tz: 'UTC',
@@ -777,6 +785,7 @@ class MqttApiClient extends SqlLikeClient {
               method: 'append',
               timeformat: 'RFC3339Nano',
               tz: 'UTC',
+              db: this.database,
             },
           },
         }

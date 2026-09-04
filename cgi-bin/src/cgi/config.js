@@ -9,6 +9,7 @@ const DATA_DIR = path.join(APP_DIR, 'data');
 const SERVER_CONF_DIR = path.join(CONF_DIR, 'server');
 const SERVICE_NAME_PREFIX = '_rpl_';
 const DEFAULT_LOG_DIR = '/work/public/neo-pkg-replication/logs';
+const DEFAULT_DATABASE = 'MACHBASEDB';
 
 const CONDITION_OPS = { ALL: true, IN: true, LIKE: true };
 const EXPR_TYPES = { prefix: true, suffix: true, calc: true, filter: true };
@@ -46,6 +47,11 @@ function normalizeColumnName(value) {
   if (typeof value !== 'string') return value;
   const text = value.trim();
   return text ? text.toUpperCase() : null;
+}
+
+function normalizeDatabaseName(value) {
+  const normalized = normalizeOptionalString(value);
+  return typeof normalized === 'string' ? normalized.toUpperCase() : normalized;
 }
 
 function normalizeNameArray(values) {
@@ -264,6 +270,7 @@ function normalizeServerProfileForSave(profile) {
     name: normalizeOptionalString(profile.name),
     host: normalizeOptionalString(profile.host),
     port: normalizePort(profile.port),
+    database: normalizeDatabaseName(profile.database || profile.db) || DEFAULT_DATABASE,
     user: normalizeOptionalString(profile.user),
     password: profile.password == null ? '' : String(profile.password),
     token: normalizeOptionalString(profile.token),
@@ -299,6 +306,8 @@ function _normalizeEndpointForSave(endpoint) {
     normalized.server = serverName;
     delete normalized.host;
     delete normalized.port;
+    delete normalized.database;
+    delete normalized.db;
     delete normalized.user;
     delete normalized.password;
     delete normalized.token;
@@ -310,6 +319,10 @@ function _normalizeEndpointForSave(endpoint) {
   } else {
     if (endpoint.host !== undefined) normalized.host = normalizeOptionalString(endpoint.host);
     if (endpoint.port !== undefined) normalized.port = normalizePort(endpoint.port);
+    if (endpoint.database !== undefined || endpoint.db !== undefined) {
+      normalized.database = normalizeDatabaseName(endpoint.database || endpoint.db) || DEFAULT_DATABASE;
+    }
+    delete normalized.db;
     if (endpoint.user !== undefined) normalized.user = normalizeOptionalString(endpoint.user);
     if (endpoint.password !== undefined) normalized.password = endpoint.password == null ? '' : String(endpoint.password);
     if (endpoint.type !== undefined) normalized.type = normalizeServerType(endpoint.type);
@@ -397,6 +410,8 @@ function resolveEndpointConnection(endpoint, readServerProfile, side) {
   const resolved = profile ? { ...profile, ...normalized } : { ...normalized };
   delete resolved.clientId;
   resolved.type = normalizeServerType(resolved.type);
+  resolved.database = normalizeDatabaseName(resolved.database || resolved.db) || DEFAULT_DATABASE;
+  delete resolved.db;
   if (!resolved.host) throw new Error(`${side}.host is required`);
   if (!resolved.port) throw new Error(`${side}.port is required`);
   if (resolved.type === 'native') {
@@ -459,6 +474,7 @@ module.exports = {
   SERVER_CONF_DIR,
   SERVICE_NAME_PREFIX,
   DEFAULT_LOG_DIR,
+  DEFAULT_DATABASE,
   EXPR_TYPES,
   CONDITION_OPS,
   CALC_ORDERS,
@@ -468,6 +484,7 @@ module.exports = {
   normalizePort,
   normalizeTableName,
   normalizeColumnName,
+  normalizeDatabaseName,
   normalizeNameArray,
   normalizeServerType,
   normalizeProtocol,

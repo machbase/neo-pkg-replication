@@ -41,7 +41,7 @@
 
 - 저장 위치: `conf.d/server/{name}.json`
 - 필드:
-  - 공통: `name`, `host`, `port`, `type`
+  - 공통: `name`, `host`, `port`, `database`, `type` (`database` 생략 시 `MACHBASEDB`)
   - `native`: `user`, `password`
   - `http`: `protocol`, `token`
   - `mqtt-api`: `clientId`, `token`, `qos`
@@ -108,6 +108,8 @@
 ## runtime 배치 루프
 
 현재 worker는 아래 순서로 동작한다.
+
+Neo 8.7에서는 bare `CREATE TABLE`이 LOG table을 만들지 않으므로 LOG target 생성은 반드시 `CREATE LOG TABLE`을 사용한다.
 
 1. checkpoint 로드 후 `startRid` 결정
 2. TAG면 source meta cache 로드

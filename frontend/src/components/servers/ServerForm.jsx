@@ -14,7 +14,7 @@ const TYPES = [
 ]
 
 // backend에서 오는 profile keys 기준 (null 포함 전체 키). targetOnly는 저장 대상 아님.
-const PROFILE_KEYS = ['name', 'type', 'host', 'port', 'user', 'password', 'token', 'protocol', 'qos', 'retain']
+const PROFILE_KEYS = ['name', 'type', 'host', 'port', 'database', 'user', 'password', 'token', 'protocol', 'qos', 'retain']
 
 function pickProfile(src) {
   const out = {}
@@ -35,6 +35,7 @@ export default function ServerForm({ server, onSave, onClose }) {
     base.name = server?.name || ''
     base.password = ''
     base.token = ''
+    base.database = server?.database || 'MACHBASEDB'
     return base
   })
 
@@ -79,6 +80,7 @@ export default function ServerForm({ server, onSave, onClose }) {
   // 저장 payload: null/빈값 필드 + targetOnly 제거. 한국어 password/token은 이미 onChange에서 변환됨.
   const buildPayload = () => {
     const payload = { name: form.name, type: form.type, host: form.host, port: Number(form.port) }
+    if (form.type !== 'mqtt-publish') payload.database = form.database || 'MACHBASEDB'
     if (form.type === 'native') {
       payload.user = form.user
       payload.password = form.password
@@ -220,6 +222,20 @@ export default function ServerForm({ server, onSave, onClose }) {
                 />
               </div>
             </div>
+
+            {form.type !== 'mqtt-publish' && (
+              <div>
+                <label className={labelClass}>Database</label>
+                <input
+                  type="text"
+                  required
+                  value={form.database || 'MACHBASEDB'}
+                  onChange={onField('database')}
+                  className={inputClass}
+                  placeholder="MACHBASEDB"
+                />
+              </div>
+            )}
 
             {showField('protocol') && (
               <div>
