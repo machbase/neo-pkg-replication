@@ -1,7 +1,7 @@
 {
     "name": "neo-pkg-replication",
-    "version": "1.0.6",
-    "minServerVersion": "8.5.6",
+    "version": "1.0.7-rc2",
+    "minServerVersion": "8.7.0",
     "bin": {},
     "scripts": {
         "start": "./scripts/repli-service-start.js",
