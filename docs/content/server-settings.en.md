@@ -14,7 +14,7 @@ Other server types are also supported, but this manual only summarizes the main 
 
 Click the `dns` icon at the top of the left sidebar to open the **Server Settings** window.
 
-![Server Settings list screen](./images/server-settings-list.png)
+![Server Settings list screen]({{< asset "images/server-settings-list.png" >}})
 
 ## Recommended Starting Point
 
@@ -38,7 +38,7 @@ The examples in this manual are also based on `native`.
 6. If needed, run **Test connection** first.
 7. Click **Save**.
 
-![native server registration screen](./images/server-form-native.png)
+![native server registration screen]({{< asset "images/server-form-native.png" >}})
 
 ## Field Descriptions
 
@@ -124,5 +124,5 @@ You can run the test before saving the server, and you can also test an already 
 
 ## Navigation
 
-- [Back to Index](./index.en.md)
-- [Next: Create and Run Jobs](./create-and-run-job.en.md)
+- [Back to Index]({{< relref "/" >}})
+- [Next: Create and Run Jobs]({{< relref "create-and-run-job" >}})

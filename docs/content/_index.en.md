@@ -5,7 +5,7 @@ weight: 10
 
 # Replication User Manual
 
-[한국어](./index.kr.md) | **English**
+ [한국어]({{< relref "/" >}}) | **English**
 
 This document explains how to install the **Machbase Neo Replication package**, configure servers, create replication jobs, check status, and review logs.
 
@@ -16,7 +16,7 @@ Select the Replication package and click the `Install` button to install it.
 
 Installation may take a short time, so wait until it is completed.
 
-![Package installation screen](./images/package-install.png)
+![Package installation screen]({{< asset "images/package-install.png" >}})
 
 ## What This Manual Covers
 
@@ -42,14 +42,14 @@ Installation may take a short time, so wait until it is completed.
 - Main area: selected job details or the job create/edit form
 - Modal windows: server add/edit, log file viewer, tag selection, and warning dialogs
 
-![Replication main screen](./images/dashboard-main.png)
+![Replication main screen]({{< asset "images/dashboard-main.png" >}})
 
 ## Documents
 
-- [Server Settings](./server-settings.en.md)
-- [Create and Run Jobs](./create-and-run-job.en.md)
-- [Monitoring and Logs](./monitoring-and-logs.en.md)
-- [Troubleshooting](./troubleshooting.en.md)
+- [Server Settings]({{< relref "server-settings" >}})
+- [Create and Run Jobs]({{< relref "create-and-run-job" >}})
+- [Monitoring and Logs]({{< relref "monitoring-and-logs" >}})
+- [Troubleshooting]({{< relref "troubleshooting" >}})
 
 ## Terms
 
@@ -63,4 +63,4 @@ Installation may take a short time, so wait until it is completed.
 
 ## Navigation
 
-- [Next: Server Settings](./server-settings.en.md)
+- [Next: Server Settings]({{< relref "server-settings" >}})

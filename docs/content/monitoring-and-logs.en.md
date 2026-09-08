@@ -23,7 +23,7 @@ Main items to check:
 - Logging settings
 - Live Logs button
 
-![Job detail dashboard screen](./images/dashboard-job-detail.png)
+![Job detail dashboard screen]({{< asset "images/dashboard-job-detail.png" >}})
 
 ## Status Meanings
 
@@ -82,7 +82,7 @@ Available actions in the UI:
 
 Live Logs are best for checking current activity, while **Log Files** are better for reviewing or saving older logs.
 
-![Live Logs screen](./images/dashboard-live-logs.png)
+![Live Logs screen]({{< asset "images/dashboard-live-logs.png" >}})
 
 ## Open Log Files
 
@@ -100,7 +100,7 @@ Typical items shown are:
 
 If older rotated files exist, they may also appear in the list.
 
-![Log file list screen](./images/log-files-list.png)
+![Log file list screen]({{< asset "images/log-files-list.png" >}})
 
 Log files are managed according to these rules:
 
@@ -143,6 +143,6 @@ If a problem is suspected, the following order is usually helpful:
 
 ## Navigation
 
-- [Previous: Create and Run Jobs](./create-and-run-job.en.md)
-- [Back to Index](./index.en.md)
-- [Next: Troubleshooting](./troubleshooting.en.md)
+- [Previous: Create and Run Jobs]({{< relref "create-and-run-job" >}})
+- [Back to Index]({{< relref "/" >}})
+- [Next: Troubleshooting]({{< relref "troubleshooting" >}})

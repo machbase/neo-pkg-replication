@@ -23,7 +23,7 @@ Job을 선택하면 우측 상세 화면에 상태 정보가 표시됩니다.
 - 로그 설정
 - Live Logs 버튼
 
-![Job 상세 대시보드 화면](./images/dashboard-job-detail.png)
+![Job 상세 대시보드 화면]({{< asset "images/dashboard-job-detail.png" >}})
 
 ## 상태 해석
 
@@ -82,7 +82,7 @@ Job을 선택하면 우측 상세 화면에 상태 정보가 표시됩니다.
 
 실시간 로그는 실행 중 상태를 빠르게 확인하는 데 적합하고, 과거 로그 전체 조회나 저장은 **Log Files** 쪽이 더 적합합니다.
 
-![Live Logs 화면](./images/dashboard-live-logs.png)
+![Live Logs 화면]({{< asset "images/dashboard-live-logs.png" >}})
 
 ## Log Files 열기
 
@@ -100,7 +100,7 @@ Logging Controls 영역의 **Log Files** 버튼을 누르면 현재 Job의 로�
 
 과거의 로그 파일이 남아 있다면 목록에서 함께 보일 수 있습니다.
 
-![로그 파일 목록 화면](./images/log-files-list.png)
+![로그 파일 목록 화면]({{< asset "images/log-files-list.png" >}})
 
 로그 파일은 다음 규칙으로 관리됩니다.
 
@@ -143,6 +143,6 @@ Logging Controls 영역의 **Log Files** 버튼을 누르면 현재 Job의 로�
 
 ## 문서 이동
 
-- [이전: Job 생성과 실행](./create-and-run-job.kr.md)
-- [목차로 돌아가기](./index.kr.md)
-- [다음: 문제 해결](./troubleshooting.kr.md)
+- [이전: Job 생성과 실행]({{< relref "create-and-run-job" >}})
+- [목차로 돌아가기]({{< relref "/" >}})
+- [다음: 문제 해결]({{< relref "troubleshooting" >}})

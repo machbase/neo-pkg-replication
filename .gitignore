@@ -10,3 +10,6 @@ logs/
 .env
 .env.local
 .env.production.local
+docs/.hugo_build.lock
+docs/public/
+docs/resources/

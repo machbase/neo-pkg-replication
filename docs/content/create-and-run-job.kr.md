@@ -14,7 +14,7 @@ weight: 30
 
 좌측 사이드바 상단의 `+` 버튼을 클릭하면 **New Replication Job** 화면이 열립니다.
 
-![Job 생성 화면 전체](./images/job-form-overview.png)
+![Job 생성 화면 전체]({{< asset "images/job-form-overview.png" >}})
 
 ## 1. Job 이름
 
@@ -63,7 +63,7 @@ weight: 30
 
 실무에서는 먼저 Source/Target 테이블을 정확히 고른 뒤, 그 다음에 매핑을 손보는 편이 좋습니다.
 
-![Column Mapping 화면](./images/job-form-column-mapping.png)
+![Column Mapping 화면]({{< asset "images/job-form-column-mapping.png" >}})
 
 ### TAG 메타데이터 동기화
 
@@ -162,7 +162,7 @@ TAG 테이블을 `native` 또는 `http` Target으로 복제하면, 데이터에 
 - `Cancel`
 - `Save Anyway`
 
-![Validation Warnings 화면](./images/job-form-validation-warnings.png)
+![Validation Warnings 화면]({{< asset "images/job-form-validation-warnings.png" >}})
 
 ## 생성 후 확인할 일
 
@@ -176,7 +176,7 @@ TAG 테이블을 `native` 또는 `http` Target으로 복제하면, 데이터에 
 3. 필요하면 스위치로 정지하거나 다시 시작합니다.
 
 `Register` 버튼이 따로 보이는 경우는 일반적인 흐름이 아니라 예외 상황에 가깝습니다.  
-이 경우에는 [문제 해결](./troubleshooting.kr.md)을 먼저 확인하는 편이 좋습니다.
+이 경우에는 [문제 해결]({{< relref "troubleshooting" >}})을 먼저 확인하는 편이 좋습니다.
 
 ## 수정과 삭제
 
@@ -198,6 +198,6 @@ TAG 테이블을 `native` 또는 `http` Target으로 복제하면, 데이터에 
 
 ## 문서 이동
 
-- [이전: Server 설정](./server-settings.kr.md)
-- [목차로 돌아가기](./index.kr.md)
-- [다음: 모니터링과 로그 확인](./monitoring-and-logs.kr.md)
+- [이전: Server 설정]({{< relref "server-settings" >}})
+- [목차로 돌아가기]({{< relref "/" >}})
+- [다음: 모니터링과 로그 확인]({{< relref "monitoring-and-logs" >}})

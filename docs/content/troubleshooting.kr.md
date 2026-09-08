@@ -140,5 +140,5 @@ Live Logs는 연결 이후 생성되는 최신 로그를 보여줍니다. 이전
 
 ## 문서 이동
 
-- [이전: 모니터링과 로그 확인](./monitoring-and-logs.kr.md)
-- [목차로 돌아가기](./index.kr.md)
+- [이전: 모니터링과 로그 확인]({{< relref "monitoring-and-logs" >}})
+- [목차로 돌아가기]({{< relref "/" >}})

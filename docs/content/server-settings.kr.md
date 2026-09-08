@@ -14,7 +14,7 @@ Replication Job을 만들기 전에 먼저 연결할 서버를 등록해야 합�
 
 좌측 사이드바 상단의 `dns` 아이콘을 클릭하면 **Server Settings** 창이 열립니다.
 
-![Server Settings 목록 화면](./images/server-settings-list.png)
+![Server Settings 목록 화면]({{< asset "images/server-settings-list.png" >}})
 
 ## 먼저 권장하는 방식
 
@@ -38,7 +38,7 @@ Replication Job을 만들기 전에 먼저 연결할 서버를 등록해야 합�
 6. 필요하면 **Test connection**으로 연결을 먼저 확인합니다.
 7. **Save**로 저장합니다.
 
-![native 서버 등록 화면](./images/server-form-native.png)
+![native 서버 등록 화면]({{< asset "images/server-form-native.png" >}})
 
 ## 항목 설명
 
@@ -124,5 +124,5 @@ Replication Job을 만들기 전에 먼저 연결할 서버를 등록해야 합�
 
 ## 문서 이동
 
-- [목차로 돌아가기](./index.kr.md)
-- [다음: Job 생성과 실행](./create-and-run-job.kr.md)
+- [목차로 돌아가기]({{< relref "/" >}})
+- [다음: Job 생성과 실행]({{< relref "create-and-run-job" >}})

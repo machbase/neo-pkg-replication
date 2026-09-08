@@ -14,7 +14,7 @@ Other server types can also be selected, but for most users it is easier to star
 
 Click the `+` button at the top of the left sidebar to open the **New Replication Job** screen.
 
-![Full job creation screen](./images/job-form-overview.png)
+![Full job creation screen]({{< asset "images/job-form-overview.png" >}})
 
 ## 1. Job Name
 
@@ -63,7 +63,7 @@ In `Column Mapping`, you define how Source columns map to Target columns.
 
 In practice, it is usually best to select the correct Source and Target tables first, and then adjust the mapping.
 
-![Column Mapping screen](./images/job-form-column-mapping.png)
+![Column Mapping screen]({{< asset "images/job-form-column-mapping.png" >}})
 
 ### TAG Metadata Synchronization
 
@@ -162,7 +162,7 @@ In that case, you can choose one of the following:
 - `Cancel`
 - `Save Anyway`
 
-![Validation Warnings screen](./images/job-form-validation-warnings.png)
+![Validation Warnings screen]({{< asset "images/job-form-validation-warnings.png" >}})
 
 ## What to Check After Creation
 
@@ -176,7 +176,7 @@ Check the following:
 3. If needed, use the switch to stop or start it again.
 
 If a `Register` button appears, that is closer to an exception case than the normal flow.  
-In that case, it is best to check [Troubleshooting](./troubleshooting.en.md) first.
+In that case, it is best to check [Troubleshooting]({{< relref "troubleshooting" >}}) first.
 
 ## Edit and Delete
 
@@ -198,6 +198,6 @@ In that case, it is best to check [Troubleshooting](./troubleshooting.en.md) fir
 
 ## Navigation
 
-- [Previous: Server Settings](./server-settings.en.md)
-- [Back to Index](./index.en.md)
-- [Next: Monitoring and Logs](./monitoring-and-logs.en.md)
+- [Previous: Server Settings]({{< relref "server-settings" >}})
+- [Back to Index]({{< relref "/" >}})
+- [Next: Monitoring and Logs]({{< relref "monitoring-and-logs" >}})
