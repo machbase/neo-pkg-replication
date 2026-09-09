@@ -24,7 +24,9 @@ const {
   sanitizeReplicatorConfig,
 } = require('./config.js');
 const {
+  listServerDatabases,
   prepareReplicatorConfig,
+  validateServerDatabase,
   validateServerProfile,
 } = require('./validation.js');
 const { MetaSyncStateStore } = require('../replication/meta-sync-state.js');
@@ -1596,11 +1598,16 @@ class Handler {
    * @param {object} body
    * @param {function(Error|null, { name: string }=): void} callback
    */
-  static createServerProfile(body, callback) {
+  static async createServerProfile(body, callback) {
     if (!body || !body.name) { callback(new Error('name is required')); return; }
     if (Handler.getServerConfig(body.name)) { callback(new Error(`server '${body.name}' already exists`)); return; }
     try {
       const profile = Handler.validateServerProfile(body);
+      await validateServerDatabase(profile, {
+        label: 'server.database',
+        requireName: true,
+        requireWritable: false,
+      });
       Handler.writeServerConfig(profile.name, profile);
       callback(null, { name: profile.name });
     } catch (err) {
@@ -1626,13 +1633,18 @@ class Handler {
    * @param {object} body
    * @param {function(Error|null, { name: string }=): void} callback
    */
-  static updateServerProfile(name, body, callback) {
+  static async updateServerProfile(name, body, callback) {
     if (!name) { callback(new Error('name is required')); return; }
     const currentProfile = Handler.getServerConfig(name);
     if (!currentProfile) { callback(new Error(`server '${name}' not found`)); return; }
     try {
       const nextProfile = Handler._applyServerPasswordFallback({ ...(body || {}), name }, currentProfile);
       const profile = Handler.validateServerProfile(nextProfile);
+      await validateServerDatabase(profile, {
+        label: 'server.database',
+        requireName: true,
+        requireWritable: false,
+      });
       Handler.writeServerConfig(name, profile);
       callback(null, { name });
     } catch (err) {
@@ -1710,6 +1722,33 @@ class Handler {
         targetOnly: result.targetOnly,
         probe: result.probe,
       });
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  static async listServerDatabases(body, callback) {
+    const hasName = !!(body && typeof body.name === 'string' && body.name.trim());
+    const hasProfile = !!(body && body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile));
+    if (hasName === hasProfile) {
+      callback(new Error('exactly one of name or profile is required'));
+      return;
+    }
+
+    try {
+      let profile;
+      if (hasName) {
+        const name = String(body.name).trim();
+        profile = Handler.getServerConfig(name);
+        if (!profile) {
+          callback(new Error(`server '${name}' not found`));
+          return;
+        }
+      } else {
+        profile = Handler.validateServerProfileForTest(body.profile);
+      }
+      const databases = await listServerDatabases(profile);
+      callback(null, { databases });
     } catch (err) {
       callback(err);
     }

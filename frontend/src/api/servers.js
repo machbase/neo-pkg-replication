@@ -20,6 +20,8 @@ export const getServerDefault = (type) =>
 // 응답: { mode, type, targetOnly, probe }
 export const testServer = (payload) => request("POST", "/server/test", payload);
 
+export const listDatabases = (payload) => request("POST", "/server/database/list", payload);
+
 export const listTables = (server) => request("POST", "/table/list", { server });
 
 export const listTableTags = ({ server, table, page = 1, size = 50 }) =>

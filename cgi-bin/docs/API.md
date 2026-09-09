@@ -92,9 +92,12 @@
 - `GET` 응답에는 `targetOnly` 가 포함되며, `mqtt-api`, `mqtt-publish` 는 `true` 이다.
 - MQTT `clientId` 는 runtime connection마다 내부 생성되며 profile에 저장하지 않는다.
 - `PUT`에서 `password`, `token`이 없거나 `null` 또는 `""` 이면 기존 값을 유지한다.
+- `database`는 목록에서 선택하거나 직접 입력할 수 있다. 이름은 저장할 때 대문자로 정규화한다.
+- `POST`/`PUT`은 저장 전에 선택한 database가 현재 계정으로 접근 가능한 active database인지 확인한다.
 - 다른 replication config가 참조 중인 server profile은 `DELETE` 할 수 없다.
 - source로 사용할 수 있는 type은 현재 `native`, `http` 뿐이다.
 - `mqtt-api`, `mqtt-publish` 는 target 전용이다.
+- replication source database는 `READ_ONLY` 또는 `READ_WRITE`를 허용한다. target database는 `READ_WRITE`여야 한다. `mqtt-publish`는 database를 사용하지 않는다.
 
 ### 엔드포인트
 
@@ -107,6 +110,7 @@
 | `PUT` | `/api/server?name=...` | server profile 수정 |
 | `DELETE` | `/api/server?name=...` | server profile 삭제 |
 | `POST` | `/api/server/test` | 저장된 server 또는 미저장 profile 연결 테스트 |
+| `POST` | `/api/server/database/list` | 현재 접속 정보로 사용 가능한 active database 목록 조회 |
 
 ### 예시
 
@@ -156,6 +160,32 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 curl -sS -X POST -H 'Content-Type: application/json' \
   --data '{"name":"local_mqtt","host":"127.0.0.1","port":5653,"database":"MACHBASEDB","type":"mqtt-api","token":"","qos":1}' \
   http://127.0.0.1:5654/public/neo-pkg-replication/cgi-bin/api/server
+```
+
+### `POST /api/server/database/list`
+
+- 요청 body는 `{ "name": "saved_profile_name" }` 또는 `{ "profile": { ... } }` 둘 중 하나만 허용한다.
+- `native`, `http`, `mqtt-api` 연결에서 현재 계정이나 token으로 사용할 수 있는 active database를 반환한다.
+- `accessMode`가 `READ_WRITE`인 항목은 `writable: true`로 표시한다.
+- 목록 조회 실패와 관계없이 화면에서 database 이름을 직접 입력할 수 있지만, 실제 저장 시 사용 가능 여부를 다시 확인한다.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "databases": [
+      {
+        "name": "MACHBASEDB",
+        "kind": "ACTIVE",
+        "accessMode": "READ_WRITE",
+        "canUse": true,
+        "state": "NORMAL",
+        "isDefault": true,
+        "writable": true
+      }
+    ]
+  }
+}
 ```
 
 ### `POST /api/server/test`

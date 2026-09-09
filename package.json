@@ -1,6 +1,6 @@
 {
     "name": "neo-pkg-replication",
-    "version": "1.0.7-rc2",
+    "version": "1.0.7",
     "minServerVersion": "8.7.0",
     "bin": {},
     "scripts": {

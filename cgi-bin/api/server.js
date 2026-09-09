@@ -12,8 +12,8 @@ const Handler = require(path.join(ROOT, 'src', 'cgi', 'handler.js'));
 
 const { name } = Handler.parseQuery();
 
-function POST() {
-  Handler.createServerProfile(Handler.readBody(), (err, data) => {
+async function POST() {
+  await Handler.createServerProfile(Handler.readBody(), (err, data) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
   });
 }
@@ -24,8 +24,8 @@ function GET() {
   });
 }
 
-function PUT() {
-  Handler.updateServerProfile(name, Handler.readBody(), (err, data) => {
+async function PUT() {
+  await Handler.updateServerProfile(name, Handler.readBody(), (err, data) => {
     Handler.reply(err ? { ok: false, reason: err.message } : { ok: true, data });
   });
 }
@@ -39,7 +39,8 @@ function DELETE() {
 const handlers = { POST, GET, PUT, DELETE };
 const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
 try {
-  (handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))();
+  Promise.resolve((handlers[method] || (() => Handler.reply({ ok: false, reason: 'method not allowed' })))())
+    .catch((err) => Handler.reply({ ok: false, reason: err.message }));
 } catch (err) {
   Handler.reply({ ok: false, reason: err.message });
 }

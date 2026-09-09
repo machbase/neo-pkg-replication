@@ -3,7 +3,7 @@ title: Server Settings
 weight: 20
 ---
 
-# Server Settings
+#
 
 Before creating a replication job, you need to register the servers you want to connect to.
 
