@@ -3,6 +3,8 @@ title: Replication User Manual
 weight: 10
 ---
 
+#
+
 This document explains how to install the **Machbase Neo Replication package**, configure servers, create replication jobs, check status, and review logs.
 
 ## Installation
