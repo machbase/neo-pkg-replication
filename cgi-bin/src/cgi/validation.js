@@ -3,6 +3,7 @@
 const { MachbaseClient, ColumnType } = require('../db/client.js');
 const { createQueryClient } = require('../db/remote.js');
 const { FLAG_METADATA, FLAG_PRIMARY, FLAG_BASETIME, FLAG_SUMMARIZED } = require('../db/types.js');
+const { assertDatabaseUsable } = require('../db/database.js');
 const {
   isObject,
   normalizeColumnName,
@@ -208,7 +209,7 @@ function _validateRuntimeOptions(storedConfig) {
  * 주의:
  * - 새 transport를 추가할 때는 "query는 되지만 source는 금지"인지 여부를 여기서 함께 결정해야 한다.
  */
-async function _openQueryClient(endpoint, side) {
+async function _openQueryClient(endpoint, side, options = {}) {
   const type = String(endpoint?.type || 'native').toLowerCase();
   if (type === 'mqtt-api' && side === 'source') {
     throw new Error(`${side}.type 'mqtt-api' is not supported`);
@@ -216,12 +217,47 @@ async function _openQueryClient(endpoint, side) {
   if (type === 'mqtt-publish' && side === 'source') {
     throw new Error(`${side}.type 'mqtt-publish' is not supported`);
   }
-  const client = type === 'native' ? new MachbaseClient(endpoint) : createQueryClient(endpoint);
+  const client = type === 'native'
+    ? new MachbaseClient(endpoint, { useDefaultDatabase: options.useDefaultDatabase !== false })
+    : createQueryClient(endpoint);
   if (!client) {
     throw new Error(`${side}.type '${type}' does not support query operations`);
   }
   await client.connect();
   return client;
+}
+
+async function _inspectConnectedDatabase(client, endpoint, options = {}) {
+  const name = String(endpoint?.database || endpoint?.db || 'MACHBASEDB').trim().toUpperCase() || 'MACHBASEDB';
+  const status = await client.selectDatabaseStatus(name);
+  return assertDatabaseUsable(status, name, options);
+}
+
+async function listServerDatabases(profile) {
+  const normalized = _validateServerProfile(profile, { requireName: false });
+  if (normalized.type === 'mqtt-publish') {
+    throw new Error("server.type 'mqtt-publish' does not use a Machbase database");
+  }
+  const lookupProfile = { ...normalized };
+  delete lookupProfile.database;
+  delete lookupProfile.db;
+  const client = await _openQueryClient(lookupProfile, 'profile', { useDefaultDatabase: false });
+  try {
+    return await client.selectDatabases();
+  } finally {
+    try { await client.close(); } catch (_) {}
+  }
+}
+
+async function validateServerDatabase(profile, options = {}) {
+  const normalized = _validateServerProfile(profile, { requireName: options.requireName !== false });
+  if (normalized.type === 'mqtt-publish') return null;
+  const client = await _openQueryClient(normalized, 'profile');
+  try {
+    return await _inspectConnectedDatabase(client, normalized, options);
+  } finally {
+    try { await client.close(); } catch (_) {}
+  }
 }
 
 function _serializeColumns(columns) {
@@ -793,6 +829,17 @@ async function prepareReplicatorConfig(config, readServerProfile) {
       targetClient = await _openQueryClient(runtimeConfig.target, 'target');
     }
 
+    await _inspectConnectedDatabase(sourceClient, runtimeConfig.source, {
+      label: 'source.database',
+      requireWritable: false,
+    });
+    if (targetClient) {
+      await _inspectConnectedDatabase(targetClient, runtimeConfig.target, {
+        label: 'target.database',
+        requireWritable: true,
+      });
+    }
+
     const sourceInfo = await _describeTable(sourceClient, runtimeConfig.source.table);
     const targetInfo = targetClient
       ? await _describeTable(targetClient, runtimeConfig.target.table)
@@ -921,6 +968,8 @@ async function prepareReplicatorConfig(config, readServerProfile) {
 }
 
 module.exports = {
+  listServerDatabases,
   prepareReplicatorConfig,
+  validateServerDatabase,
   validateServerProfile: _validateServerProfile,
 };

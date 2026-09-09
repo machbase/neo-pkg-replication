@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import Icon from '../common/Icon'
 import { koToEn } from '../../utils/korean'
 import * as serversApi from '../../api/servers'
+import { useApp } from '../../context/AppContext'
 
 const inputClass = 'w-full'
 const labelClass = 'block text-on-surface-secondary mb-2'
@@ -22,12 +23,42 @@ function pickProfile(src) {
   return out
 }
 
+function databaseErrorMessage(error) {
+  const message = String(error?.reason || error?.message || '').trim()
+  const lower = message.toLowerCase()
+  if (!message
+    || lower.includes('loading private key from virtual filesystem is not supported yet')
+    || lower.includes('failed to fetch')
+    || lower.includes('server returned non-json response')) {
+    return ''
+  }
+  return message
+}
+
+function resolveDatabaseSelection(current, databases) {
+  const available = Array.isArray(databases) ? databases : []
+  const currentName = String(current || '').trim().toUpperCase()
+  const currentDatabase = available.find((db) => db.name === currentName)
+  if (currentDatabase) return currentDatabase.name
+  const defaultDatabase = available.find((db) => db.name === 'MACHBASEDB')
+  if (defaultDatabase) return defaultDatabase.name
+  return available[0]?.name || ''
+}
+
 export default function ServerForm({ server, onSave, onClose }) {
+  const { notify } = useApp()
   const isEdit = Boolean(server)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [loadingDatabases, setLoadingDatabases] = useState(false)
+  const [databases, setDatabases] = useState([])
+  const [databaseOpen, setDatabaseOpen] = useState(false)
+  const [credentialError, setCredentialError] = useState('')
   const [testResult, setTestResult] = useState(null) // { ok, message }
   const initialized = useRef(false)
+  const databasePickerRef = useRef(null)
+  const userInputRef = useRef(null)
+  const passwordInputRef = useRef(null)
 
   const [form, setForm] = useState(() => {
     const base = pickProfile(server || {})
@@ -44,6 +75,16 @@ export default function ServerForm({ server, onSave, onClose }) {
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
   }, [onClose])
+
+  useEffect(() => {
+    const handlePointerDown = (e) => {
+      if (databasePickerRef.current && !databasePickerRef.current.contains(e.target)) {
+        setDatabaseOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [])
 
   // create 모드: 최초 마운트 시 native default 로드. 이후 type 변경 시마다 default 로드.
   // edit 모드: 기존 server 값을 우선 사용하고 누락 필드만 default로 보충.
@@ -75,6 +116,7 @@ export default function ServerForm({ server, onSave, onClose }) {
   const onField = (key) => (e) => {
     const v = e.target.type === 'checkbox' ? e.target.checked : e.target.value
     setForm((p) => ({ ...p, [key]: v }))
+    if (credentialError === key) setCredentialError('')
   }
 
   // 저장 payload: null/빈값 필드 + targetOnly 제거. 한국어 password/token은 이미 onChange에서 변환됨.
@@ -140,11 +182,66 @@ export default function ServerForm({ server, onSave, onClose }) {
     }
   }
 
-  const formatTestMessage = (r) => {
-    const probe = r?.probe || 'connect'
-    const targetOnly = r?.targetOnly ? ' · target only' : ''
-    return `Connected (${probe}${targetOnly})`
+  const handleLoadDatabases = async () => {
+    setLoadingDatabases(true)
+    try {
+      let payload
+      if (isEdit && ((form.type === 'native' && !form.password) || (form.type !== 'native' && !form.token && !form.password))) {
+        payload = { name: server.name }
+      } else {
+        const profile = buildPayload()
+        if (!profile.password) profile.password = form.password || ''
+        if (!profile.token) profile.token = form.token || ''
+        payload = { profile }
+      }
+      const result = await serversApi.listDatabases(payload)
+      const nextDatabases = Array.isArray(result?.databases) ? result.databases : []
+      setDatabases(nextDatabases)
+      setForm((prev) => ({
+        ...prev,
+        database: resolveDatabaseSelection(prev.database, nextDatabases),
+      }))
+    } catch (err) {
+      setDatabases([])
+      setDatabaseOpen(false)
+      const message = databaseErrorMessage(err)
+      if (message) notify(message, 'error')
+    } finally {
+      setLoadingDatabases(false)
+    }
   }
+
+  const handleDatabaseToggle = () => {
+    if (databaseOpen) {
+      setDatabaseOpen(false)
+      return
+    }
+    if (form.type === 'native' && !String(form.user || '').trim()) {
+      setCredentialError('user')
+      notify('User is required to load databases', 'error')
+      userInputRef.current?.focus()
+      return
+    }
+    if (form.type === 'native' && !isEdit && !String(form.password || '')) {
+      setCredentialError('password')
+      notify('Password is required to load databases', 'error')
+      passwordInputRef.current?.focus()
+      return
+    }
+    setCredentialError('')
+    setDatabaseOpen(true)
+    handleLoadDatabases()
+  }
+
+  const handleDatabaseKeyDown = (e) => {
+    if (e.key === 'Escape' && databaseOpen) {
+      e.preventDefault()
+      e.stopPropagation()
+      setDatabaseOpen(false)
+    }
+  }
+
+  const formatTestMessage = () => 'Connected'
 
   const showField = (name) => {
     const t = form.type
@@ -226,14 +323,69 @@ export default function ServerForm({ server, onSave, onClose }) {
             {form.type !== 'mqtt-publish' && (
               <div>
                 <label className={labelClass}>Database</label>
-                <input
-                  type="text"
-                  required
-                  value={form.database || 'MACHBASEDB'}
-                  onChange={onField('database')}
-                  className={inputClass}
-                  placeholder="MACHBASEDB"
-                />
+                <div ref={databasePickerRef} className={`database-picker database-picker--drop-up ${databaseOpen ? 'database-picker--open' : ''}`}>
+                  <Icon name="database" className="database-picker__database-icon" />
+                  <input
+                    type="text"
+                    required
+                    value={form.database || 'MACHBASEDB'}
+                    onChange={onField('database')}
+                    onKeyDown={handleDatabaseKeyDown}
+                    role="combobox"
+                    aria-autocomplete="none"
+                    aria-expanded={databaseOpen}
+                    aria-controls="replication-database-list"
+                    className={`${inputClass} database-picker__input`}
+                    placeholder="MACHBASEDB"
+                  />
+                  <button
+                    type="button"
+                    className="database-picker__trigger"
+                    onClick={handleDatabaseToggle}
+                    disabled={loadingDatabases}
+                    aria-label="Show available databases"
+                    aria-expanded={databaseOpen}
+                  >
+                    <Icon name={loadingDatabases ? 'progress_activity' : 'expand_more'} className={`database-picker__trigger-icon ${loadingDatabases ? 'animate-spin' : ''}`} />
+                  </button>
+                  {databaseOpen && (
+                    <div
+                      id="replication-database-list"
+                      role="listbox"
+                      className="database-picker__menu"
+                    >
+                      {loadingDatabases && (
+                        <div className="database-picker__message">Loading databases...</div>
+                      )}
+                      {!loadingDatabases && databases.length === 0 && (
+                        <div className="database-picker__message">No available databases</div>
+                      )}
+                      {!loadingDatabases && databases.map((db) => {
+                        const selected = db.name === form.database
+                        return (
+                          <button
+                            key={db.name}
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            className="database-picker__option"
+                            onClick={() => {
+                              setForm((prev) => ({ ...prev, database: db.name }))
+                              setDatabaseOpen(false)
+                            }}
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <Icon name={selected ? 'check' : 'database'} className={selected ? 'text-primary' : 'text-on-surface-tertiary'} />
+                              <span className="truncate">{db.name}</span>
+                              {db.isDefault && <span className="text-xs text-on-surface-tertiary">default</span>}
+                            </span>
+                            <span className="text-xs text-on-surface-secondary shrink-0">{db.accessMode}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -259,11 +411,13 @@ export default function ServerForm({ server, onSave, onClose }) {
                       ID{form.type === 'mqtt-publish' ? ' (optional)' : ''}
                     </label>
                     <input
+                      ref={userInputRef}
                       type="text"
                       required={form.type === 'native'}
                       value={form.user || ''}
                       onChange={onField('user')}
-                      className={inputClass}
+                      aria-invalid={credentialError === 'user' || undefined}
+                      className={`${inputClass} ${credentialError === 'user' ? '!border-error' : ''}`}
                     />
                   </div>
                 )}
@@ -273,11 +427,16 @@ export default function ServerForm({ server, onSave, onClose }) {
                       Password{form.type === 'mqtt-publish' ? ' (optional)' : ''}
                     </label>
                     <input
+                      ref={passwordInputRef}
                       type="text"
                       required={form.type === 'native' && !isEdit}
                       value={form.password || ''}
-                      onChange={(e) => setForm(p => ({ ...p, password: koToEn(e.target.value) }))}
-                      className={`${inputClass} input-password`}
+                      onChange={(e) => {
+                        setForm(p => ({ ...p, password: koToEn(e.target.value) }))
+                        if (credentialError === 'password') setCredentialError('')
+                      }}
+                      aria-invalid={credentialError === 'password' || undefined}
+                      className={`${inputClass} input-password ${credentialError === 'password' ? '!border-error' : ''}`}
                       placeholder={isEdit ? 'Leave blank to keep current' : ''}
                     />
                   </div>

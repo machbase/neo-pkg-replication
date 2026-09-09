@@ -3,7 +3,7 @@ title: Server 설정
 weight: 20
 ---
 
-# Server 설정
+#
 
 Replication Job을 만들기 전에 먼저 연결할 서버를 등록해야 합니다.
 

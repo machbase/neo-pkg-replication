@@ -3,6 +3,7 @@
 const http = require('http');
 const mqtt = require('mqtt');
 const { ColumnType, FLAG_PRIMARY } = require('./types.js');
+const { DATABASE_LIST_SQL, DATABASE_STATUS_SQL, normalizeDatabaseRows } = require('./database.js');
 const { getInstance: getLogger } = require('../lib/logger.js');
 
 const DEFAULT_HTTP_TIMEOUT_MS = 10000;
@@ -279,6 +280,15 @@ class SqlLikeClient {
     return this.query(sql, values);
   }
 
+  async selectDatabases() {
+    return normalizeDatabaseRows(await this.query(DATABASE_LIST_SQL));
+  }
+
+  async selectDatabaseStatus(name) {
+    const rows = normalizeDatabaseRows(await this.query(DATABASE_STATUS_SQL, [String(name || DEFAULT_DATABASE).toUpperCase()]));
+    return rows.length > 0 ? rows[0] : null;
+  }
+
   splitQualifiedTableName(tableName) {
     const text = String(tableName || '').trim();
     const dot = text.indexOf('.');
@@ -509,17 +519,26 @@ class HttpApiClient extends SqlLikeClient {
   }
 
   async query(sql, values) {
+    return this._query(sql, values, true);
+  }
+
+  async _query(sql, values, includeDatabase) {
     const q = substituteSql(sql, values);
-    const result = await this._request('POST', '/db/query', {
+    const body = {
       q,
-      db: this.database,
       format: 'json',
       timeformat: 'RFC3339Nano',
       tz: 'UTC',
-    }, {
+    };
+    if (includeDatabase) body.db = this.database;
+    const result = await this._request('POST', '/db/query', body, {
       'Content-Type': 'application/json',
     });
     return _parseHttpQueryRows(result);
+  }
+
+  async selectDatabases() {
+    return normalizeDatabaseRows(await this._query(DATABASE_LIST_SQL, undefined, false));
   }
 
   async execute(sql, ...values) {
@@ -722,22 +741,33 @@ class MqttApiClient extends SqlLikeClient {
   }
 
   async query(sql, values) {
+    return this._query(sql, values, true);
+  }
+
+  async _query(sql, values, includeDatabase) {
     const q = substituteSql(sql, values);
     const result = await this._runWithReply({
       publishTopic: 'db/query',
-      buildPayload: (replyTopic) => ({
-        q,
-        db: this.database,
-        format: 'json',
-        timeformat: 'RFC3339Nano',
-        tz: 'UTC',
-        reply: replyTopic,
-      }),
+      buildPayload: (replyTopic) => {
+        const payload = {
+          q,
+          format: 'json',
+          timeformat: 'RFC3339Nano',
+          tz: 'UTC',
+          reply: replyTopic,
+        };
+        if (includeDatabase) payload.db = this.database;
+        return payload;
+      },
     });
     if (!result || !result.success) {
       throw new Error(result && result.reason ? result.reason : 'mqtt query failed');
     }
     return _parseHttpQueryRows(result);
+  }
+
+  async selectDatabases() {
+    return normalizeDatabaseRows(await this._query(DATABASE_LIST_SQL, undefined, false));
   }
 
   async execute(sql, ...values) {

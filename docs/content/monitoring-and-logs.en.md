@@ -3,7 +3,7 @@ title: Monitoring and Logs
 weight: 40
 ---
 
-# Monitoring and Logs
+#
 
 After a job has started, check its status from the dashboard and review log files when needed.
 

@@ -3,7 +3,7 @@ title: Troubleshooting
 weight: 50
 ---
 
-# Troubleshooting
+#
 
 This document explains likely causes and recommended checks for common symptoms in the Replication UI.
 
