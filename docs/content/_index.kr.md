@@ -3,10 +3,6 @@ title: Replication 사용자 매뉴얼
 weight: 10
 ---
 
-# Replication 사용자 매뉴얼
-
-**한국어** | [English]({{< relref "/" >}})
-
 이 문서는 **Machbase Neo Replication 패키지**의 설치, 설정, Job 생성, 상태 확인, 로그 확인 방법을 설명합니다.
 
 ## 설치
